@@ -1470,6 +1470,172 @@ local function do_test_capture()
     Capture.TryDirectCapture(pal, player)
 end
 
+-- Hundred-and-fifty-ninth pass (2026-09-04): direct SelectedFeedingItem
+-- call experiment — CTRL+H, a brand-new isolated test key. IMPORTANT:
+-- this is NOT the same dead end the "RETIRED" note below describes.
+-- That note is about `RequestUseToCharacter` (called ON an item slot,
+-- confirmed gated to the player's own active Otomo only) combined with
+-- Ghidra's finding that the OTOMO menu's real eligibility check is an
+-- unreachable raw vtable call. `SelectedFeedingItem` is a DIFFERENT
+-- real function — the WORKER-menu path's own consumption call
+-- (confirmed live, hundred-and-fifth/sixth passes: fires cleanly for
+-- real base-worker Pals, never for an active Otomo) — and Ghidra found
+-- NO ownership check anywhere inside its own body (hundred-and-
+-- thirty-fourth pass). This calls it DIRECTLY on whatever Pal is
+-- targeted, skipping the Worker Menu's own WorkAssignId eligibility
+-- gate entirely (that gate lives in the UI that decides which menu to
+-- open, not in this function) — genuinely untried territory, not a
+-- retry of something already ruled out.
+--
+-- The one new risk: FPalItemSlotId isn't a field that exists ready-made
+-- anywhere on a live object — UPalItemSlot stores ContainerId and
+-- SlotIndex as two SEPARATE fields (confirmed hundred-and-thirteenth
+-- pass) — so the struct has to be built fresh as a plain Lua table.
+-- Per real, confirmed UE4SS documentation (checked this pass, not
+-- guessed — RE-UE4SS's own docs/examples), struct arguments convert
+-- automatically from plain Lua tables, including NESTED structs (their
+-- own example: a Transform table with nested Rotation/Translation/
+-- Scale3D sub-tables) — the same shape complexity as FPalItemSlotId
+-- {ContainerId: {ID: FGuid}, SlotIndex}. This is a fundamentally
+-- different, safer category than Crash #4: that crash built an FName
+-- (an interned string-table lookup), not plain data. To keep the risk
+-- as low as possible anyway, ContainerId below is the REAL live struct
+-- value read straight off the found slot — never decomposed into raw
+-- GUID ints and rebuilt — only the outer FPalItemSlotId wrapper table
+-- is actually new, since nothing already holds one pre-combined.
+local TEST_SELECTED_FEEDING_KEY = Key.H
+local TEST_SELECTED_FEEDING_MODIFIERS = {ModifierKey.CONTROL}
+local TEST_FOOD_ITEM_STATIC_ID = "Berries" -- same confirmed-real item name already proven end-to-end for CTRL+J (hundred-and-seventeenth/eighteenth passes)
+
+-- Same proven technique as the old CTRL+J test (hundred-and-seventeenth
+-- pass): scan every live PalItemSlot in the world and pick the ONE
+-- matching candidate with the highest StackCount — confirmed live to
+-- reliably pick the player's own real stash over small amounts other
+-- nearby Pals happen to be carrying.
+local function find_best_food_slot(itemStaticId)
+    local best, bestCount = nil, -1
+    local slots = FindAllOf("PalItemSlot")
+    if not slots then return nil, nil end
+    for _, slot in ipairs(slots) do
+        safe_call(function()
+            if not slot or not slot:IsValid() then return end
+            local sidObj = slot.ItemId and slot.ItemId.StaticId
+            local sidStr = sidObj and sidObj:ToString()
+            if sidStr ~= itemStaticId then return end
+            local count = slot.StackCount
+            if count and count > bestCount then
+                bestCount = count
+                best = slot
+            end
+        end)
+    end
+    return best, bestCount
+end
+
+local function do_test_selected_feeding_item()
+    Logger.log("[PalBonds/Interaction] CTRL+H pressed — starting SelectedFeedingItem direct-call experiment")
+
+    local player = FindFirstOf("PalPlayerCharacter")
+    if not player or not player:IsValid() then
+        Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
+        return
+    end
+
+    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
+    if not originLoc then
+        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
+    end
+    if not originLoc then
+        Logger.log("[PalBonds/Interaction] could not read player/camera location")
+        return
+    end
+
+    local controlRot = safe_call(function() return player:GetControlRotation() end)
+    if not controlRot then
+        Logger.log("[PalBonds/Interaction] could not read player control rotation")
+        return
+    end
+    local forward = rotator_to_forward(controlRot)
+
+    local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
+    if not pal then
+        Logger.log(string.format(
+            "[PalBonds/Interaction] [FEED-CALL-TEST] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
+            PET_RANGE, PET_MAX_ANGLE_DEG
+        ))
+        return
+    end
+
+    local actorName = safe_call(function() return pal:GetFullName() end)
+    local ownedAlready = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
+    Logger.log(string.format(
+        "[PalBonds/Interaction] [FEED-CALL-TEST] targeting %s at %.0f units (%.1f deg off-center) — already owned=%s",
+        tostring(actorName), dist, angle, tostring(ownedAlready)
+    ))
+
+    local slot, stackCount = find_best_food_slot(TEST_FOOD_ITEM_STATIC_ID)
+    if not slot then
+        Logger.log(string.format("[PalBonds/Interaction] [FEED-CALL-TEST] no live PalItemSlot found holding \"%s\" — do you have any in your inventory?", TEST_FOOD_ITEM_STATIC_ID))
+        return
+    end
+
+    local containerId = safe_call(function() return slot.ContainerId end)
+    local slotIndex = safe_call(function() return slot.SlotIndex end)
+    if containerId == nil or slotIndex == nil then
+        Logger.log("[PalBonds/Interaction] [FEED-CALL-TEST] could not read ContainerId/SlotIndex off the found slot — aborting")
+        return
+    end
+
+    Logger.log(string.format(
+        "[PalBonds/Interaction] [FEED-CALL-TEST] found slot: SlotIndex=%s StackCount=%s (before)",
+        tostring(slotIndex), tostring(stackCount)
+    ))
+
+    local itemSlotId = {ContainerId = containerId, SlotIndex = slotIndex}
+
+    -- Hundred-and-sixtieth pass (2026-09-04) — DISABLED, CONFIRMED REAL
+    -- CRASH. Dragón's very first live test never printed the line below
+    -- this comment — the unconditional post-call log that a `pcall` can
+    -- never skip on any normal return, Lua error included. A real crash
+    -- dump appeared in ue4ss/ at the exact same second
+    -- (`crash_2026_09_04_23_01_39.1693134.dmp`), and after this call
+    -- fired, this session's own log shows ZERO further key-press lines
+    -- of ANY kind — not just CTRL+H/CTRL+J, but InputSpy's raw WASD
+    -- listener too, which has nothing to do with this code path. That
+    -- means this single call didn't just fail — it wedged the entire
+    -- Lua/input layer for the rest of the session, worse than any prior
+    -- crash in this project (Crashes #1-4 all either errored cleanly in
+    -- Lua or killed the whole process outright; this one left the game
+    -- LOOKING alive while nothing downstream of it could run anymore).
+    --
+    -- Likely cause: unlike every other native call this project has
+    -- ever made, `SelectedFeedingItem` was only ever observed firing as
+    -- part of an already-established internal call sequence (the real
+    -- Worker Menu's own UI flow sets something up first — see the
+    -- hundred-and-fourteenth pass's confirmed real Blueprint graph for
+    -- the sibling Otomo path). Calling it cold, with no such context
+    -- ever established, most plausibly dereferenced something the real
+    -- flow always guarantees is already valid — and it may also be a
+    -- LATENT function (one that doesn't complete synchronously, instead
+    -- resolving later via a delegate the real UI flow listens for) —
+    -- which would separately explain "never returns" even without a
+    -- hard crash. Both explanations point the same direction: this
+    -- function is not safe to call directly outside its real context,
+    -- full stop.
+    --
+    -- The call itself is removed, not just commented past — this stays
+    -- a confirmed-dangerous dead end for the direct-call idea, same
+    -- status as `RequestUseToCharacter` (Otomo-gated) and `SelectedFeed`
+    -- (vtable-gated). Everything above this comment (finding the real
+    -- slot, reading its real ContainerId/SlotIndex, building the
+    -- itemSlotId table) is still safe, still runs, and is left in place
+    -- as proven groundwork in case a SAFER way to reach this function
+    -- (e.g. actually getting the Worker Menu's own UI to open on a wild
+    -- Pal first, so this fires through its real, expected call chain)
+    -- is found later.
+    Logger.log("[PalBonds/Interaction] [FEED-CALL-TEST] DISABLED — the direct SelectedFeedingItem() call is a confirmed real crash (see hook-points.md, hundred-and-sixtieth pass). Stopping here; itemSlotId was built successfully but nothing is called with it.")
+end
+
 -- Hundred-and-twenty-seventh pass (2026-09-03): Dragón hit a real practical
 -- wall trying to test Skittish→Curious — he can't tell which wild Pals
 -- actually rolled "skittish" just by watching them, because ENFORCEMENT
@@ -1789,6 +1955,7 @@ function Interaction.Init()
     ))
     Logger.log("[PalBonds/Interaction] [EXPERIMENT] CTRL+K = direct-capture test (Capture.TryDirectCapture) — see Capture.lua for the full risk breakdown before using this")
     Logger.log(string.format("[PalBonds/Interaction] %s = Play — random Pal idle animation + trust grant, same range/gating as Pet/Feed", PLAY_KEY))
+    Logger.log("[PalBonds/Interaction] [DISABLED] CTRL+H = SelectedFeedingItem direct-call test — the actual call is disabled after a confirmed real crash (hook-points.md, hundred-and-sixtieth pass); only the safe slot-finding diagnostics still run")
 
     RegisterKeyBind(Key[PET_KEY], function()
         safe_call(do_pet)
@@ -1798,6 +1965,9 @@ function Interaction.Init()
     end)
     RegisterKeyBindAsync(TEST_CAPTURE_KEY, TEST_CAPTURE_MODIFIERS, function()
         safe_call(do_test_capture)
+    end)
+    RegisterKeyBindAsync(TEST_SELECTED_FEEDING_KEY, TEST_SELECTED_FEEDING_MODIFIERS, function()
+        safe_call(do_test_selected_feeding_item)
     end)
     -- Hundred-and-thirty-ninth pass (2026-09-04): a real crash happened
     -- right after Init() logged the "Play" line above and before any

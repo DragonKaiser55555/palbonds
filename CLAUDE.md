@@ -31,6 +31,7 @@ Recalcular esta tabla cada vez que una categoría avance — no es una sensació
 1h. **Discrepancias de personalidad — medidas con datos reales (2026-09-04):** ~95% de enforcement real exitoso (37/39 rolls relevantes), 2 casos reales sin aplicar. Hueco chico, probablemente probabilístico, no perseguido más por ahora.
 2. Huida real al perder toda la confianza — **IMPLEMENTADO (2026-09-04), sin confirmar todavía.** `Capture.OnTrustLost` ahora fuerza tier="escape" vía `Personality.ForceTier`, reusando el enforcement ya probado hoy. Aviso: el hook reactivo no reintenta un tier nuevo si el sensor de ese Pal ya disparó antes — solo el scan proactivo (menos confiable) lo cubriría en ese caso. Ver Continuación 129 / hook-points.md ("Hundred-and-fifty-sixth pass").
 3. VFX del haz de luz al unirse (ya hay un candidato real encontrado: `ABP_ReturnPalEffect_C`)
+1i. **CAUSA RAÍZ ENCONTRADA (2026-09-04): solo Pet otorga amistad real hoy — Feed y Play dan 0.** Confirmado con datos exactos de una prueba controlada de Dragón sobre 3 Pals (9 puntos de dato, cero excepciones). Pet funciona porque la acción REAL de Cuidar del juego dispara directo sobre el Pal sustituido por el menú radial (independiente de nuestro propio `do_pet()`, que casi siempre queda descartado por nuestro propio gate); Feed/Play dependen 100% de nuestro `Happy()`, que no otorga nada en ese contexto. Ver Continuación 132 / hook-points.md ("Hundred-and-fifty-ninth pass") para el detalle completo y el experimento en curso (punto 7, reabierto).
 
 **Fase 2 — investigación acotada, con payoff real, NO abierta indefinidamente:**
 4. Arreglar la lectura del sensor de IA — **MUY PROBABLEMENTE ARREGLADO (2026-09-04), falta confirmar con `[ENFORCE] SUCCESS` real en el próximo test.** En vez de seguir buscando el sensor proactivamente (roto), se agregó un hook REACTIVO sobre `SelectResponseBySenses` (la función que el juego llama solo cuando un Pal decide algo) que recibe el sensor directo del propio hook, sin buscar nada. Ver Continuación 121 / hook-points.md ("Hundred-and-forty-eighth pass").
@@ -38,8 +39,8 @@ Recalcular esta tabla cada vez que una categoría avance — no es una sensació
 6. Que los Pals en vínculo ayuden en combate (depende de que el punto 5 tenga resultado primero)
 
 **Fase 3 — engavetado, NO reabrir sin evidencia nueva:**
-7. Comida real para Pals salvajes — tratado como límite permanente (Ghidra mostró que el chequeo real es una llamada nativa que ningún hook de Lua puede alcanzar)
-8. Kinship peaches (bloqueado por el punto 7)
+7. Comida real para Pals salvajes — **REABIERTO (2026-09-04), en investigación activa, ver punto 1i arriba.** El límite confirmado por Ghidra aplica solo al camino del Otomo (`RequestUseToCharacter`/`SelectedFeed`, vtable inalcanzable). Se encontró un candidato distinto: `SelectedFeedingItem` (el camino del menú de Worker) NO tiene ningún chequeo de propiedad en su propio cuerpo — pero llamarla DIRECTO causó un crash real (Continuación 133/Crash #5 en hook-points.md), ya arreglado sacando la llamada. Ese camino queda como tercer callejón sin salida confirmado. Lo único sin probar todavía: lograr que el menú de Worker REAL se abra apuntando a un Pal salvaje (falsificar `WorkAssignId`), para que `SelectedFeedingItem` se dispare por su flujo real en vez de en frío.
+8. Kinship peaches (bloqueado por el punto 7, ahora en investigación activa otra vez)
 9. Balance/rendimientos decrecientes — Dragón pidió dejarlo para el final a propósito
 10. Pantalla de configuración — baja prioridad, "tal vez más adelante"
 11. Optimización general — la de `[INDICATOR-WATCH]` ya se arregló esta sesión; el resto son costos aceptados a propósito, no descuidos
@@ -1810,6 +1811,46 @@ Dragón: el "?" seguía apareciendo, algunos Pals seguían sin coincidir con su 
 **Discrepancias de personalidad — reales, medidas, no una percepción.** 40 individuos con roll no-normal esta sesión, 37 con `[ENFORCE] SUCCESS` real, y exactamente 2 casos reales sin aplicar (de un tercero que coincidía con su default de todos modos). ~95% de éxito real — un hueco chico y probablemente probabilístico, no perseguido más esta pasada.
 
 Verificado con `luaparse`, desplegado. **Prueba pendiente:** mismo test — el bind-hook ahora sí tiene reintento real. Las discrepancias de personalidad deberían ser raras (un par, no "varias") si el diagnóstico de hoy es correcto. Detalle en `hook-points.md` ("Hundred-and-fifty-seventh pass").
+
+## Continuación 134 (2026-09-04): el fallback "friendly" era engañoso — reemplazado por "unknown"
+
+Dragón preguntó directo si "friendly" se estaba usando como respaldo silencioso cuando la lectura de personalidad fallaba. Confirmado que sí: `PresetClassNameToDisposition` devolvía "friendly" tanto cuando no se podía leer el preset real como cuando el preset no estaba mapeado — y como esa lectura falla casi siempre (confirmado en el log de cada sesión), la etiqueta en pantalla mostraba "friendly" para la mayoría de los Pals con tier "normal" sin que fuera un dato real. Sumado al 20% que sí rolea "friendly" de verdad, más de la mitad de las etiquetas podían decir "friendly" sin serlo.
+
+Pedido textual de Dragón: "from now on if it fails, show fail or show null or whatever it does normally, that way i know that its actually failing instead of thinking its a friendly pal."
+
+**Arreglado:** las dos ramas de fallo ahora devuelven "unknown" en vez de "friendly" — un valor distinto, no uno de los 7 tiers reales, revisado contra todo lo que consume ese dato (nada se rompe, ni el chequeo de WON-OVER ni la etiqueta). Verificado con `luaparse`, desplegado. La próxima sesión probablemente muestre "unknown" en la mayoría de los Pals "normal" — no es una regresión nueva, es el estado real que antes se escondía. Detalle en `hook-points.md` ("Hundred-and-sixty-first pass").
+
+## Continuación 133 (2026-09-04): CTRL+H causó un crash real — confirmado, arreglado (llamada sacada, no solo comentada)
+
+La primera prueba real de Dragón de CTRL+H mostró algo nuevo: el juego siguió corriendo visualmente, pero saltó un aviso de crash igual, y varias cosas dejaron de responder (CTRL+H, CTRL+J, que segundos antes había funcionado bien).
+
+**Confirmado con evidencia real, no con la descripción de Dragón solamente.** El log muestra la secuencia normal hasta "calling pal:SelectedFeedingItem(itemSlotId, 1) NOW" a las 23:01:39 — y la línea siguiente, que el propio `pcall` de esa llamada SIEMPRE debería imprimir (éxito o error de Lua, no importa cuál), nunca aparece. Existe un dump de crash real de Windows exactamente en ese mismo segundo (`crash_2026_09_04_23_01_39.1693134.dmp`). Y después de ese momento, el log de esa sesión no vuelve a registrar NINGUNA tecla presionada — ni siquiera el espía de WASD de `InputSpy`, que no tiene nada que ver con este código. `UE4SS.log` no muestra ningún "ensure"/"Fatal error" cerca — el crash ocurrió por debajo de lo que ese log de texto puede ver.
+
+**Esto es peor que cualquier crash anterior del proyecto**: los 4 crashes previos siempre mataban el proceso entero (obvio, imposible de no notar) o tiraban un error de Lua atrapable. Este dejó el juego pareciendo sano mientras nada volvía a responder — mucho más difícil de detectar sin revisar el log real.
+
+**Causa probable:** `SelectedFeedingItem` solo se había visto disparar antes como parte de una secuencia interna ya armada por el propio menú de Worker — llamarla en frío, sin esa preparación, probablemente lee algo que el flujo real siempre garantiza que existe. También podría ser una función "latente" (que nunca retorna sincrónicamente, solo por un delegado que el flujo real escucha) — cualquiera de las dos explica el "nunca vuelve" sin necesitar un crash duro.
+
+**Arreglo:** la llamada real se sacó por completo del código (no solo comentada) — todo lo de antes (encontrar el slot real, leer ContainerId/SlotIndex, armar la tabla) se queda funcionando y logueando, CTRL+H ahora se detiene justo antes de la llamada peligrosa siempre. Verificado con `luaparse`, desplegado.
+
+**Este camino (llamar `SelectedFeedingItem` directo) queda como tercer callejón sin salida confirmado**, junto a `RequestUseToCharacter` (atado al Otomo) y `SelectedFeed` (atado a la vtable). Lo único que queda por probar es lograr que el menú de Worker de verdad se abra apuntando a un Pal salvaje — un problema de elegibilidad de UI, no de seguridad de llamada nativa.
+
+**Sobre los Pals amigables huyendo esa misma sesión:** sin evidencia que lo conecte al crash — el sistema de personalidad ya tiene un hueco real y separado (~95% de éxito, Continuación 130) que podría explicarlo solo. No se investigó más esta pasada.
+
+Detalle completo en `hook-points.md` ("Crash #5"). **Prueba pendiente:** ninguna para este arreglo en particular (solo saca una llamada peligrosa) — antes de seguir con el menú de Worker, vale la pena que Dragón confirme que todo lo demás (F9/F10/Play/CTRL+K, la barra, personalidad) sigue andando normal después de reiniciar el juego, ya que esta sesión específica quedó con el estado interno roto.
+
+## Continuación 132 (2026-09-04): causa raíz real de por qué Pet funciona y Feed/Play no — y un candidato genuinamente nuevo para comida real, nunca antes probado
+
+Dragón hizo una prueba controlada y precisa (3 Pals salvajes, conteo exacto de acciones, valor final exacto de amistad) y pidió comparar contra el log real. El cruce fue exacto, sin excepciones: cada ganancia real de amistad equivale a +10 por cada Pet real, con Feed y Play aportando +0 en los 9 puntos de datos.
+
+**Causa real, sacada de las líneas de log, no inferida:** para el Sheepball, 6 de 8 presiones reales (las 4 de Pet incluidas) quedaron descartadas por nuestro propio "player is already mid-action — ignoring press" antes de llegar siquiera a `Happy()`. Aun así la amistad real seguía subiendo +10 por cada pet. La explicación más consistente: la acción real de Cariciar del juego (no nuestro `do_pet()`) está disparando directo sobre el Pal salvaje sustituido a través del menú radial, totalmente independiente de nuestro propio gate — el mismo mecanismo de sustitución que ya existe hace semanas, solo que nunca se le había atribuido el mérito real de por qué Pet funciona. Feed nunca tiene esa ayuda real (confirmado hace semanas: el sistema profundo de comida nunca se activa para un Pal sustituido), así que depende 100% de nuestro propio `Happy()` — que, cuando sí logra dispararse, igual da 0. Esto tira abajo un supuesto viejo de este proyecto (que Happy() siempre otorga amistad como efecto secundario) — no es cierto para Feed/Play.
+
+**Dragón rechazó, con razón, arreglar solo el número de hoy** (llamar `AddFriendShip` a mano para Feed/Play) — no construye hacia comida real (los kinship peaches). Preguntó si se podía aplicar el mismo truco de Pet a Feed — la respuesta, con evidencia ya generada por este mismo proyecto: no, ya se probó dos veces contra Feed específicamente (pasadas 123/124 de hook-points.md) y ambas confirmadas como callejón sin salida — el picker real de comida nunca se activa, muy probablemente porque el chequeo real es una llamada de vtable en C++ crudo, invisible para cualquier hook de Lua.
+
+**La pregunta de Dragón sobre el menú de Worker abrió un candidato genuinamente nuevo.** Nunca se había probado alimentar a un Pal salvaje por el menú de Worker (el de apuntar, para Pals de base) — y su función real de consumo, `SelectedFeedingItem`, ya estaba confirmada por Ghidra SIN ningún chequeo de propiedad en su propio cuerpo (a diferencia de `RequestUseToCharacter`, que sí está atado al Otomo activo). Investigado y confirmado (documentación real de UE4SS, no adivinado): sí se puede construir una tabla de Lua anidada para pasar un struct como argumento — la misma categoría seguro, distinta a la que causó el Crash #4 (eso era un FName, no datos planos).
+
+**Implementado: CTRL+H, tecla de prueba nueva** (las 4 teclas existentes están todas en uso activo, nada muerto para reusar esta vez). Llama `pal:SelectedFeedingItem(itemSlotId, 1)` directo sobre el Pal apuntado (salvaje incluido), reusando la técnica ya probada de CTRL+J para encontrar el stack real de Berries, y construyendo el struct nuevo solo con el mínimo necesario (el `ContainerId` real ya leído, nunca reconstruido desde cero). Verificado con `luaparse`, desplegado.
+
+**Prueba pendiente:** apuntar CTRL+H a un Pal salvaje con al menos 1 Berry en el inventario, revisar si el StackCount baja de verdad y si el Pal reacciona — los hooks `[FOOD-DIAG]`/`[SLOT-USE-DIAG]` ya existentes confirmarán independientemente si esto realmente disparó la función real. Detalle completo en `hook-points.md` ("Hundred-and-fifty-ninth pass").
 
 ## Continuación 131 (2026-09-04): "¿siguen haciendo falta o es basura acumulada?" — auditoría real, un hook realmente muerto sacado
 

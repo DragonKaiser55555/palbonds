@@ -714,8 +714,25 @@ end
 -- Maps a real preset class name to one of our DISPOSITIONS. Logs the
 -- first time an unrecognized preset is seen (not every time — see the
 -- thirty-third pass lesson about unthrottled logging).
+--
+-- Hundred-and-sixty-first pass (2026-09-04): the fallback used to be
+-- "friendly" for both failure cases below (unreadable preset, and a
+-- real-but-unmapped preset name) — Dragón pointed out directly that
+-- this was actively misleading: since `GetPresetClassName` fails to
+-- read a real preset for nearly every Pal (confirmed live — the [DIAG]
+-- failure line fires on almost every new individual), most of what
+-- looked like a genuinely friendly species default on the on-screen
+-- label was actually just this fallback silently standing in for "we
+-- don't know," making a broken read look identical to a real, confirmed
+-- disposition. Changed the fallback to a distinct sentinel, "unknown",
+-- specifically so a failed read is visibly different from a real
+-- "friendly" species default everywhere this value surfaces (the label
+-- in Indicator.lua, GetDisposition() callers, this project's own
+-- future debugging). "unknown" is deliberately NOT added to the
+-- DISPOSITIONS list above — it's not a real, rollable tier, just a
+-- failure marker for this one specific lookup.
 function Personality.PresetClassNameToDisposition(presetClassName)
-    if presetClassName == nil then return "friendly" end
+    if presetClassName == nil then return "unknown" end
 
     local mapped = PRESET_NAME_TO_DISPOSITION[presetClassName]
     if mapped then return mapped end
@@ -723,11 +740,11 @@ function Personality.PresetClassNameToDisposition(presetClassName)
     if not loggedUnknownPresets[presetClassName] then
         loggedUnknownPresets[presetClassName] = true
         Logger.log(string.format(
-            "[PalBonds/Personality] unrecognized AIResponsePreset '%s' — defaulting to 'friendly', add it to PRESET_NAME_TO_DISPOSITION when convenient",
+            "[PalBonds/Personality] unrecognized AIResponsePreset '%s' — defaulting to 'unknown', add it to PRESET_NAME_TO_DISPOSITION when convenient",
             presetClassName
         ))
     end
-    return "friendly"
+    return "unknown"
 end
 
 -- Convenience: species-default disposition for a live Pal actor, in one
