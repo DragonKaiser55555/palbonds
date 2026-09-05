@@ -185,14 +185,17 @@ Personality.DISPOSITIONS = DISPOSITIONS
 -- warlike_without_player) he wants to compare live against plain
 -- "warlike" (which he confirmed did NOT attack him in the last two real
 -- tests — see hook-points.md's hypothesis on why). Sums to 100.
+-- Hundred-and-sixty-second pass (2026-09-04): Dragón's rebalance —
+-- friendly 20->30, warlike_anyway and warlike_without_player both
+-- 10->5 each (still sums to 100).
 local PERSONALITY_TIERS = {
     { tier = "normal", weight = 35 },
-    { tier = "friendly", weight = 20 },
+    { tier = "friendly", weight = 30 },
     { tier = "escape", weight = 10 },
     { tier = "notinterested", weight = 10 },
     { tier = "warlike", weight = 5 },
-    { tier = "warlike_anyway", weight = 10 },
-    { tier = "warlike_without_player", weight = 10 },
+    { tier = "warlike_anyway", weight = 5 },
+    { tier = "warlike_without_player", weight = 5 },
 }
 
 -- Hundred-and-twenty-eighth pass (2026-09-03): Dragón hit a real, fair
@@ -322,6 +325,31 @@ local PRESET_NAME_TO_DISPOSITION = {
 -- real preset is one of these three is forced to rolledTier="normal"
 -- unconditionally, skipping the random roll entirely, so it's never
 -- enforcement-swapped no matter what.
+-- Hundred-and-sixty-second pass (2026-09-04): Dragón's ask — Pals whose
+-- REAL current preset is already NotInterested should be left alone
+-- entirely (same exclusion category as VillageNPC/Kill_All/Boss),
+-- since several human NPCs use this real preset and were getting swept
+-- into the random roll like any other Pal. This did NOT remove
+-- "notinterested" from the weighted table above — a Pal whose real
+-- default is something else (friendly/escape/warlike/etc.) could still
+-- randomly roll "notinterested" as its assigned tier; this only stopped
+-- an already-genuinely-notinterested Pal from being re-rolled into
+-- something else.
+-- Hundred-and-seventy-eighth pass (2026-09-05): REMOVED. This entry only
+-- ever existed as an indirect proxy for catching human NPCs by their
+-- preset — a real, direct check now exists instead
+-- (is_confirmed_pal_monster, gated in GetOrInitState BEFORE this table
+-- is even consulted), which catches every human NPC regardless of what
+-- preset they resolve to. Dragón confirmed this directly: "that means
+-- we can include notinterested pals once more... now that you've found
+-- that separation, then we can use that instead." Any actual MONSTER
+-- (passes IsPalMonster) whose species default happens to be
+-- NotInterested is no longer force-excluded from the roll — it can now
+-- roll a real personality tier like any other monster. VillageNPC/
+-- Kill_All/Boss are left in place: Boss in particular is a real
+-- monster-preset category (Alpha Pals) Dragón explicitly wants excluded
+-- regardless of the human/monster question, and removing the other two
+-- wasn't asked for.
 local EXCLUDED_FROM_ROLLING = {
     ["BP_AIResponsePreset_VillageNPC_C"] = true,
     ["BP_AIResponsePreset_Kill_All_C"] = true,
@@ -440,6 +468,44 @@ local function get_pal_utility()
         return StaticFindObject("/Script/Pal.Default__PalUtility")
     end)
     return PalUtilityCDO
+end
+
+-- Hundred-and-seventy-first pass (2026-09-05): Dragón found human NPCs
+-- (traders in a town) rolling "warlike" and actually shooting at him —
+-- the EXCLUDED_FROM_ROLLING check above only ever worked by resolving
+-- the individual's REAL preset class name, which depends on the whole
+-- AISensorComponent/AIResponsePreset chain already documented elsewhere
+-- in this file as frequently failing to resolve at all. A human NPC
+-- likely never resolves a preset the same way a monster does, so it
+-- silently fell through EXCLUDED_FROM_ROLLING (checking a table with a
+-- nil/wrong key) straight into the random roll.
+--
+-- Found a real, structural fix while investigating the "Pal Analyzer"
+-- reference mod (Dragón's ask — it shows Pal info without the lag our
+-- own Indicator.lua has, so its Blueprint graph was inspected for
+-- technique): its own logic explicitly branches on
+-- `UPalUtility::IsPalMonster(AActor*)` before ever treating something
+-- as an actual creature. Confirmed live in this game's own native
+-- header dump (CXXHeaderDump/Pal.hpp, class UPalUtility) — same trusted
+-- static utility class this file already calls via get_pal_utility()
+-- for GetIndividualCharacterHandleByActor. Unlike the preset chain,
+-- this takes the raw actor directly — no AISensorComponent, no preset
+-- object, nothing that can silently fail to resolve.
+--
+-- Fails toward the SAFE side on purpose (same convention as
+-- Capture.IsAlreadyOwned): if this call itself fails for any reason,
+-- treat the actor as NOT a monster (exclude it from rolling) rather
+-- than risk repeating the trader incident. The only cost of a false
+-- exclusion is one fewer Pal getting personality variety; the cost of
+-- a false inclusion is a human NPC turned hostile.
+local function is_confirmed_pal_monster(palActor)
+    local utility = get_pal_utility()
+    if utility == nil then return false end
+
+    local isMonster = safe_call(function()
+        return utility:IsPalMonster(palActor)
+    end)
+    return isMonster == true
 end
 
 -- Hundred-and-twenty-ninth pass: the native class every fresh, private
@@ -781,7 +847,12 @@ function Personality.GetOrInitState(palActor)
         -- spawn hook). "normal" tier just keeps the species default;
         -- anything else OVERRIDES it as the effective disposition.
         local rolledTier
-        if EXCLUDED_FROM_ROLLING[presetClassName] then
+        if not is_confirmed_pal_monster(palActor) then
+            -- Hundred-and-seventy-first pass: structural exclusion, checked
+            -- BEFORE the preset-name table — catches human NPCs even when
+            -- their preset never resolves (the trader incident).
+            rolledTier = "normal"
+        elseif EXCLUDED_FROM_ROLLING[presetClassName] then
             rolledTier = "normal"
         elseif ENABLE_PERSONALITY_TIER_ROLL then
             rolledTier = roll_personality_tier()
@@ -1469,7 +1540,7 @@ function Personality.Init()
     if ENABLE_PERSONALITY_TIER_ROLL and FORCE_ALL_CURIOUS then
         Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] FORCE_ALL_CURIOUS active — every wild Pal gets tier=friendly, weighted roll bypassed (hundred-and-forty-sixth pass, Dragón's request)")
     elseif ENABLE_PERSONALITY_TIER_ROLL then
-        Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] weighted personality-tier assignment active (35% normal / 20% friendly / 10% escape / 10% notinterested / 5% warlike / 10% warlike_anyway / 10% warlike_without_player)")
+        Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] weighted personality-tier assignment active (35% normal / 30% friendly / 10% escape / 10% notinterested / 5% warlike / 5% warlike_anyway / 5% warlike_without_player)")
     else
         Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] tier roll DISABLED (hundred-and-twenty-eighth pass, temporary) — every Pal's tracked disposition is its real species default, no override")
     end

@@ -50,10 +50,24 @@ local InputSpy     = require("InputSpy") -- TEMPORARY research tool, see
                                           -- functions. Logs every key/mouse
                                           -- button press so it's visible
                                           -- next to the RADIAL-WATCH/
-                                          -- MENU-WATCH lines. Disable
-                                          -- (comment out this require and
-                                          -- InputSpy.Init() below) once the
-                                          -- radial-menu question is closed.
+                                          -- MENU-WATCH lines.
+                                          -- Hundred-and-seventy-eighth pass
+                                          -- (2026-09-05): the radial-menu
+                                          -- question this was built for is
+                                          -- long closed (WORKER-WATCH/
+                                          -- RADIAL-WATCH mappings confirmed,
+                                          -- the real wild-feed mechanism
+                                          -- fully working since pass 173) —
+                                          -- InputSpy.Init() below is now
+                                          -- commented out per this file's
+                                          -- own original removal plan. It
+                                          -- was firing on every WASD/mouse
+                                          -- press during ordinary movement,
+                                          -- a real ongoing log-volume cost
+                                          -- for a question that's already
+                                          -- answered. require() left in
+                                          -- place (harmless, does nothing
+                                          -- unless .Init() is called).
 
 local PalBonds = {}
 
@@ -84,7 +98,7 @@ function PalBonds.Init()
     Combat.Init()
     Capture.Init()
     OtomoWatch.Init()
-    InputSpy.Init()
+    -- InputSpy.Init() -- disabled hundred-and-seventy-eighth pass, see require() note above
 
     print("[PalBonds] all modules initialized (stub mode — no real hooks registered yet)\n")
 end

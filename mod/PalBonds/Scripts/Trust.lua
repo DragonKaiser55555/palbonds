@@ -80,8 +80,24 @@ local Logger = require("Logger")
 
 local Trust = {}
 
--- Tunable.
-local INTERACTIONS_TO_START_FOLLOWING = 5
+-- Hundred-and-eighty-first pass (2026-09-05): Dragón asked for confirmation
+-- that testing-friendly and real-balanced configurations can coexist as a
+-- toggle, ahead of the actual balance pass. This flag is the single place
+-- that decides which set of numbers below applies — flip it here, nothing
+-- else needs to change. EASY_TEST_MODE (default, unchanged from every
+-- prior pass) keeps today's fast, convenient-to-iterate-on numbers.
+-- BALANCED_MODE's numbers are deliberately identical placeholders for now
+-- (structure only) — real values are pending Dragón's balance pass itself
+-- (per-Pal scaling by level/rarity, the real friendship-rank curve just
+-- retrieved via repak, and the still-pending live read of vanilla's real
+-- Petting/Kinship-Peach values — see [BALANCE-DIAG] in Interaction.lua).
+local EASY_TEST_MODE = true
+
+-- Tunable. Structured as EASY_/BALANCED_ pairs so EASY_TEST_MODE above
+-- picks between them in one place — see that flag's own comment.
+local EASY_INTERACTIONS_TO_START_FOLLOWING = 5
+local BALANCED_INTERACTIONS_TO_START_FOLLOWING = 5 -- placeholder, pending balance pass
+local INTERACTIONS_TO_START_FOLLOWING = EASY_TEST_MODE and EASY_INTERACTIONS_TO_START_FOLLOWING or BALANCED_INTERACTIONS_TO_START_FOLLOWING
 -- Seventeenth pass (2026-09-01): was 5000ms. Dragón's own test report
 -- ("started following but irregularly", a Pal "ran away from its normal
 -- skittish behavior" mid-follow) matches a real gap in the old design:
@@ -92,13 +108,17 @@ local INTERACTIONS_TO_START_FOLLOWING = 5
 -- while bonding (see that file's seventeenth-pass note).
 local TICK_INTERVAL_MS = 1500          -- how often the follower tick runs (move order + distance check)
 local PASSIVE_GAIN_EVERY_N_TICKS = 10  -- passive friendship applied every Nth tick (~15s at the new 1.5s interval, same real-world cadence as before)
-local PASSIVE_FRIENDSHIP_PER_GAIN = 2  -- our own approximation of the real Otomo auto-increment
+local EASY_PASSIVE_FRIENDSHIP_PER_GAIN = 2  -- our own approximation of the real Otomo auto-increment
+local BALANCED_PASSIVE_FRIENDSHIP_PER_GAIN = 2 -- placeholder, pending balance pass (real value now retrievable — UPalGameSetting.FriendshipPoint_AutoIncrementOtomo, see [BALANCE-DIAG])
+local PASSIVE_FRIENDSHIP_PER_GAIN = EASY_TEST_MODE and EASY_PASSIVE_FRIENDSHIP_PER_GAIN or BALANCED_PASSIVE_FRIENDSHIP_PER_GAIN
 -- Eighteenth pass (2026-09-01): Dragón gave real numbers relative to the
 -- +10 per pet/feed (INTERACTION_FRIENDSHIP_GAIN in Interaction.lua):
 -- "receiving a hit either by the player or by other pals should take
 -- away 25 friendship." Was -50 ("huge chunks", a rough guess before real
 -- numbers were given) — now the exact value Dragón specified.
-local DAMAGE_FRIENDSHIP_PENALTY = -25
+local EASY_DAMAGE_FRIENDSHIP_PENALTY = -25
+local BALANCED_DAMAGE_FRIENDSHIP_PENALTY = -25 -- placeholder, pending balance pass
+local DAMAGE_FRIENDSHIP_PENALTY = EASY_TEST_MODE and EASY_DAMAGE_FRIENDSHIP_PENALTY or BALANCED_DAMAGE_FRIENDSHIP_PENALTY
 local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following Pal loses all trust
 -- FORTY-FIRST PASS (2026-09-02): Dragón, fairly, called out the previous
 -- plan (find the real game's own point-per-rank curve before testing the
@@ -110,7 +130,9 @@ local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following
 -- 5 pets (50) + roughly one round of passive gain (+2 per ~15s) lands
 -- right around Dragón's own "5 pets then about a minute of following"
 -- expectation.
-local CAPTURE_AT_FRIENDSHIP_POINT = 55
+local EASY_CAPTURE_AT_FRIENDSHIP_POINT = 55
+local BALANCED_CAPTURE_AT_FRIENDSHIP_POINT = 55 -- placeholder, pending balance pass (real vanilla curve for comparison: rank1=6000...rank10=200000, see CLAUDE.md this pass — nowhere near this scale, a real design decision Dragón still needs to make)
+local CAPTURE_AT_FRIENDSHIP_POINT = EASY_TEST_MODE and EASY_CAPTURE_AT_FRIENDSHIP_POINT or BALANCED_CAPTURE_AT_FRIENDSHIP_POINT
 
 -- Fifty-seventh pass (2026-09-03, Indicator.lua): exposed so the on-screen
 -- trust bar can compute the same ratio (FriendshipPoint / this) this file

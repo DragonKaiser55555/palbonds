@@ -1349,10 +1349,113 @@ local function compute_trust_bar_color(ratio)
     return { R = 1.00, G = 0.84, B = 0.00, A = 1 }
 end
 
+-- Hundred-and-eightieth pass (2026-09-05): Dragón asked to try the
+-- technique found while reading the "Pal Analyzer" reference mod's
+-- extracted Blueprint strings — it keeps its own Pal-actor-keyed map
+-- (Map_Add/Map_Find/Map_Keys/Map_Values, confirmed in its strings) and
+-- reuses one widget per Pal, rather than rebuilding whenever the
+-- underlying gauge changes. A real log breakdown (previous pass) showed
+-- 315 full StaticConstructObject+AddChildToCanvas builds in a 3-minute
+-- busy-base session — far more than the number of actually-distinct
+-- Pals near a base, confirming the game's own gauge-widget pool
+-- genuinely recycles/rebinds the SAME small set of widgets across
+-- DIFFERENT Pals over time (matches the sixty-fifth pass's own finding,
+-- "gauge widgets are apparently POOLED/reused"), and every single
+-- recycle was paying full construction cost again even for a Pal this
+-- mod was already tracking.
+--
+-- This moves an ALREADY-BUILT bar+label onto a NEW gauge widget's real
+-- parent panel instead of building new ones — `UPanelWidget:RemoveChild`
+-- confirmed real in this game's own UMG.hpp (same header this file
+-- already trusts for AddChildToCanvas/GetChildrenCount/GetChildAt). The
+-- widget OBJECTS themselves persist; only their panel membership and
+-- position change, skipping StaticConstructObject/StaticFindObject/the
+-- label-class lookup entirely. First attempt at moving an already-added
+-- widget between different parent panels in this project — wrapped in
+-- the same per-step pcall discipline as every other untested operation
+-- here, with a full-construction fallback if any step fails.
+local function reparent_existing_bar(entry, newGaugeWidget)
+    local barOk, barValid = pcall(function() return entry.bar:IsValid() end)
+    if not (barOk and barValid) then return false end
+
+    local refOk, realParent, refX, refY, refW, refH = pcall(function()
+        local hpSlot = newGaugeWidget.WBP_EnemyGauge.ProgressBar_HP.Slot
+        local pos = hpSlot:GetPosition()
+        local size = hpSlot:GetSize()
+        return hpSlot.Parent, pos.X, pos.Y, size.X, size.Y
+    end)
+
+    local targetPanel
+    if refOk and realParent ~= nil and realParent:IsValid() then
+        targetPanel = realParent
+    else
+        local innerOk, innerCanvas = pcall(function() return newGaugeWidget.Canvas_Innner end)
+        if innerOk and innerCanvas ~= nil and innerCanvas:IsValid() then
+            targetPanel = innerCanvas
+        else
+            return false
+        end
+    end
+
+    pcall(function()
+        local oldParent = entry.bar.Slot and entry.bar.Slot.Parent
+        if oldParent ~= nil and oldParent:IsValid() then
+            oldParent:RemoveChild(entry.bar)
+        end
+    end)
+    local addOk, newSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.bar) end)
+    if not (addOk and newSlot ~= nil and newSlot:IsValid()) then return false end
+
+    local newY = (refY or 0) + (refH or 6) + 2
+    pcall(function() newSlot:SetPosition({X = refX or 0, Y = newY}) end)
+    pcall(function() newSlot:SetSize({X = refW or 80, Y = 6}) end)
+
+    if entry.label ~= nil then
+        local labelOk, labelValid = pcall(function() return entry.label:IsValid() end)
+        if labelOk and labelValid then
+            pcall(function()
+                local oldLabelParent = entry.label.Slot and entry.label.Slot.Parent
+                if oldLabelParent ~= nil and oldLabelParent:IsValid() then
+                    oldLabelParent:RemoveChild(entry.label)
+                end
+            end)
+            local labelAddOk, labelSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.label) end)
+            if labelAddOk and labelSlot ~= nil and labelSlot:IsValid() then
+                pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + 12}) end)
+                pcall(function() labelSlot:SetSize({X = refW or 80, Y = 14}) end)
+            end
+        end
+    end
+
+    entry.gaugeWidget = newGaugeWidget
+    entry.targetPanel = targetPanel
+    return true
+end
+
 local function install_trust_bar(gaugeWidget)
     local key = describe_widget(gaugeWidget)
     if barInstalledForGauge[key] then return end
     barInstalledForGauge[key] = true
+
+    -- Hundred-and-eightieth pass: try resolving this gauge's real Pal
+    -- BEFORE building anything. If this exact Pal already has a live
+    -- tracked bar (from a different, now-stale gauge widget the game
+    -- already recycled away from), reuse it via reparent_existing_bar
+    -- instead of paying full construction cost again. Falls through to
+    -- the normal build path below if resolution fails (typical
+    -- BindFromHandle race — the same retry mechanism in update_trust_bars
+    -- covers that, unchanged) or if reparenting itself fails for any
+    -- reason.
+    local earlyActor = resolve_pal_actor_from_gauge(gaugeWidget)
+    local earlyPalId = earlyActor and safe_call(Personality.GetStableId, earlyActor)
+    if earlyPalId and trackedBars[earlyPalId] then
+        local reused = reparent_existing_bar(trackedBars[earlyPalId], gaugeWidget)
+        if reused then
+            Logger.log("[PalBonds/Indicator] [DIAG-CREATE] REUSED existing bar for already-tracked Pal " .. describe_pal(earlyActor) .. " on recycled gauge " .. key .. " (no new widgets built)")
+            return
+        end
+        Logger.log("[PalBonds/Indicator] [DIAG-CREATE] reparent attempt failed for already-tracked Pal " .. describe_pal(earlyActor) .. " — falling back to full construction")
+    end
 
     Logger.log("[PalBonds/Indicator] [DIAG-CREATE] attempting to construct a brand-new UProgressBar widget for gauge: " .. key)
 
@@ -1458,7 +1561,13 @@ local function install_trust_bar(gaugeWidget)
     -- resolution each tick for any entry that hasn't resolved yet —
     -- instead of the fifty-seventh pass's one-shot-at-creation-only
     -- attempt, which could never recover from an early miss.
-    local actor, actorErr = resolve_pal_actor_from_gauge(gaugeWidget)
+    -- Hundred-and-eightieth pass: reuse earlyActor (resolved at the top
+    -- of this function for the reparent-reuse check) instead of calling
+    -- resolve_pal_actor_from_gauge a second time for the same gauge.
+    local actor, actorErr = earlyActor, nil
+    if actor == nil then
+        actor, actorErr = resolve_pal_actor_from_gauge(gaugeWidget)
+    end
     if actor then
         local ratio, ratioErr = get_friendship_ratio(actor)
         if ratio then
@@ -1542,7 +1651,18 @@ local function install_trust_bar(gaugeWidget)
         Logger.log("[PalBonds/Indicator] [DIAG-LABEL] could not read Text_WorkName's real class FAILED: " .. tostring(labelClass))
     end
 
-    trackedBars[key] = { bar = newBar, gaugeWidget = gaugeWidget, actor = actor, label = newLabel }
+    -- Hundred-and-eightieth pass: store under the real Pal ID when
+    -- already known at this point (either from earlyPalId above, or
+    -- resolved fresh in `actor`/get_friendship_ratio just above) rather
+    -- than the gauge's own temporary identity — that's what lets a LATER
+    -- gauge recycle for this same Pal find and reuse this entry via
+    -- reparent_existing_bar instead of building yet another one. Falls
+    -- back to the gauge-widget key (old behavior) when the Pal still
+    -- isn't resolvable yet; update_trust_bars promotes it to the real
+    -- key once resolution succeeds on a later retry.
+    local resolvedPalId = earlyPalId or (actor and safe_call(Personality.GetStableId, actor))
+    local trackKey = resolvedPalId or key
+    trackedBars[trackKey] = { bar = newBar, gaugeWidget = gaugeWidget, actor = actor, label = newLabel, palId = resolvedPalId }
 end
 
 -- Fifty-seventh pass: periodic refresh for every installed bar — re-reads
@@ -1560,6 +1680,14 @@ end
 -- gaugeWidget has gone invalid (Pal despawned/left range, or the gauge
 -- widget itself was destroyed) rather than erroring on it.
 local function update_trust_bars()
+    -- Hundred-and-eightieth pass: promotions (moving an entry from its
+    -- temporary gauge-widget key to its real Pal-ID key once resolution
+    -- succeeds) are collected here and applied AFTER the loop below —
+    -- Lua's `pairs()` doesn't allow inserting a NEW key into a table
+    -- while traversing it (removing/nil-ing an EXISTING key, as already
+    -- done below, is explicitly fine; adding one is not).
+    local promotions = {}
+
     for key, entry in pairs(trackedBars) do
         local barOk, barValid = pcall(function() return entry.bar:IsValid() end)
         local gaugeOk, gaugeValid = pcall(function() return entry.gaugeWidget:IsValid() end)
@@ -1571,6 +1699,23 @@ local function update_trust_bars()
                 if actor then
                     entry.actor = actor
                     Logger.log("[PalBonds/Indicator] [DIAG-TRUST] resolved a real Pal actor on a retry for a previously-unresolved gauge: " .. describe_pal(actor))
+
+                    -- This entry may still be keyed by its gauge widget's
+                    -- own temporary identity (Pal ID wasn't known yet at
+                    -- creation). Now that it is, promote it to the real
+                    -- Pal-ID key so a FUTURE gauge recycle for this same
+                    -- Pal can find and reuse it (install_trust_bar's
+                    -- early-reuse check) instead of building fresh again.
+                    -- Skipped if this Pal already has a different tracked
+                    -- entry (a rare duplicate — left as accepted, cosmetic
+                    -- debt rather than merging/destroying widgets here).
+                    if entry.palId == nil then
+                        local palId = safe_call(Personality.GetStableId, actor)
+                        if palId and palId ~= key and trackedBars[palId] == nil then
+                            entry.palId = palId
+                            promotions[#promotions + 1] = { oldKey = key, newKey = palId }
+                        end
+                    end
                 end
             end
             if entry.actor ~= nil then
@@ -1620,6 +1765,14 @@ local function update_trust_bars()
                     end
                 end
             end
+        end
+    end
+
+    for _, promotion in ipairs(promotions) do
+        local entry = trackedBars[promotion.oldKey]
+        if entry ~= nil then
+            trackedBars[promotion.oldKey] = nil
+            trackedBars[promotion.newKey] = entry
         end
     end
 end
