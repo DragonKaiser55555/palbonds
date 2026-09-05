@@ -1,0 +1,1556 @@
+--[[
+    Personality.lua — DESIGN.md §3.1
+
+    NINETY-FOURTH PASS (2026-09-03) — fixed a real lag bug found in
+    Dragón's very first live test of the ninety-third pass's enforcement
+    scan: the old find_live_preset_donor called GetPresetClassName (a real
+    engine round-trip PLUS logging) fresh for every nearby Pal, every time
+    an unresolved individual needed a donor — with an 8s scan and several
+    unresolved individuals, that produced 2813 identical log lines and
+    visible lag in a ~3-minute session, the same shape of bug as this
+    project's earlier per-actor-lookup lag fixes. Fixed by building one
+    presetClassName->live-actor lookup per scan cycle instead, reusing data
+    each Pal's own GetOrInitState call already resolved — zero extra
+    GetPresetClassName calls for donor-searching. Also throttled
+    GetPresetClassName's [DIAG] logging to once per (actor, failure-type)
+    instead of every call, and made GetOrInitState retry a failed
+    presetClassName resolution on later calls instead of permanently
+    caching a "curious" fallback from one bad first read — needed because
+    that same test's Pals hit a NEW failure shape 100% of the time
+    (preset:IsValid()==false, never seen before this session; every prior
+    test hit a different silent-GetFullName-failure shape instead) and
+    zero enforcement successes occurred, consistent with the preset
+    pointer genuinely not being resolvable on some/most Pals this session
+    — root cause still open, see the status note at the bottom.
+
+    NINETY-THIRD PASS (2026-09-03) — the ENFORCEMENT half, first real
+    attempt. Dragón confirmed personality should affect a wild Pal's real
+    behavior as soon as it's nearby — not only after the player has already
+    pet/fed it once (that order is backwards: it wouldn't let a player spot
+    a friendly individual on a hostile species from a distance, and a
+    "hostile" Pal would only turn hostile right after the player already
+    safely pet it).
+
+    Mechanism (confirmed via read-only research into the game's own data —
+    see CLAUDE.md "Continuación 66"/hook-points.md): every wild Pal's
+    AISensorComponent has an AIResponsePreset field, a plain object
+    reference the AI reads to decide "what do I do if I see/get hurt by the
+    player." That object is normally SHARED by every individual of the same
+    species — editing its fields directly would change EVERY Pal of that
+    species at once, the same class of mistake already made (and fixed) in
+    the eighteenth and eighty-second passes. Instead, for a Pal that rolled
+    a non-"normal" tier, this pass finds another ALREADY-LIVE wild Pal
+    elsewhere in the currently-loaded world whose species naturally uses
+    the preset we want (real, existing presets confirmed via repak/strings
+    against the vanilla game pak: Warlike for hostile, escape for skittish,
+    friendly for curious — only 11 such presets exist in the whole game),
+    and re-points just THIS ONE Pal's own AIResponsePreset field at that
+    already-existing, already-safe object. Nothing shared is ever written
+    to; nothing is constructed from scratch (UE4SS has no safe "load an
+    object that isn't already in memory" call, confirmed absent this pass —
+    only StaticFindObject on already-loaded objects and StaticConstructObject
+    exist).
+
+    Runs from a NEW recurring scan (PERSONALITY_SCAN_INTERVAL_MS, 8s,
+    self-rescheduling via ExecuteInGameThreadWithDelay — the same pattern
+    already proven safe by Trust.lua's follow tick and OtomoWatch.lua's
+    PrismSpy poll) instead of only at pet/feed time. If no live donor of
+    the desired preset exists yet nearby, it's logged and retried on the
+    next scan — never invented, loaded, or force-constructed. UNTESTED
+    LIVE as of this pass — see the updated status note at the bottom.
+
+    NINETY-SECOND PASS (2026-09-03) — second, independent frontier from
+    the radial-menu/WorkAssignId investigation (Dragón wanted two things
+    moving in parallel so a block on one doesn't stall the other). Real
+    spec from Dragón: every wild Pal should get a randomly-rolled
+    personality tier, independent of species — 50% normal (species
+    default), 25% curious, 10% hostile, 15% skittish — so players can
+    occasionally meet a friendly individual of an otherwise-hostile
+    species (or vice versa) worth trying to tame. Implemented the
+    ASSIGNMENT half only this pass: `GetOrInitState` now rolls a tier once
+    per stable individual ID (`PERSONALITY_TIERS`/`roll_personality_tier`),
+    stores it, and folds it into the existing `disposition`/`GetDisposition`
+    result so nothing downstream needs to change. Deliberately did NOT
+    attempt the ENFORCEMENT half (making the game's actual AI behave
+    according to the rolled tier) — that needs either overriding a live
+    Pal's `AIResponsePreset` field or a properly-throttled
+    `SelectResponseBySenses` override, both bigger, riskier steps than
+    anything in this file so far, and explicitly deferred until tested in
+    isolation. See the updated status note at the bottom of this file.
+
+    Goal: give each wild Pal instance a current disposition (curious /
+    skittish / hostile / etc.) that starts at the species default but can
+    drift per-individual, tracked in OUR OWN state table (not yet wired
+    into the game's actual AI decision — that's a later, riskier step,
+    see the note at the bottom of this file).
+
+    REWRITTEN 2026-09-02 (see hook-points.md's thirtieth-through-thirty-
+    third passes) once real research answers were in hand for the two
+    things this module used to be blocked on:
+
+    - Question 5 (stable per-instance ID): `UPalIndividualCharacterHandle
+      :GetIndividualID()` returns a real `FPalInstanceID` struct
+      (PlayerUId: FGuid, InstanceId: FGuid, DebugName: FString) — a
+      genuinely stable, save-persistent identifier. We format
+      `InstanceId`'s four int32 fields (A/B/C/D) as a hex string for use
+      as a plain Lua table key.
+
+    - Question 1 (species-default disposition source): confirmed real —
+      `class UPalAISensorComponent` (native, on every Pal actor) has a
+      plain field `AIResponsePreset` pointing at a real
+      `UPalAIResponsePreset` data asset. We don't read that asset's 8
+      internal fields directly (haven't confirmed we can from Lua) — we
+      read the PRESET'S OWN CLASS NAME instead (e.g.
+      `BP_AIResponsePreset_friendly_C`), which is already enough to
+      classify a species into one of our own disposition buckets, and is
+      a much cheaper, simpler read.
+
+    IMPORTANT — this module makes REAL, ACTIVE function calls (not just
+    RegisterHook watches), for the first time in this project:
+    `UPalUtility:GetIndividualCharacterHandleByActor(actor)` and
+    `actor:GetComponentByClass(sensorClass)`. Both are deliberately
+    chosen because they are PURE, SIDE-EFFECT-FREE getters/converters —
+    they don't create, destroy, capture, or move anything, they just look
+    up and return an existing reference. That's a categorically different
+    (and much smaller) risk than the party/capture functions this project
+    is still being careful about. Every call is still pcall-wrapped.
+
+    PERFORMANCE NOTE (learned the hard way in the thirty-third pass):
+    nothing in this file registers a hook that fires every tick. Every
+    function here is meant to be called ON DEMAND, from some other
+    module's already-rare event (a pet/feed interaction, a follow-tick
+    that already runs on a multi-second timer) — never from a new
+    per-frame or per-sensor-call hook. If a future pass wants to react to
+    every AI decision in real time, it needs its own throttling/dedup
+    thought through BEFORE it's turned on, not after.
+]]
+
+local Logger = require("Logger")
+
+local Personality = {}
+
+-- Per-instance state, keyed by the real stable ID (see GetStableId).
+-- Shape: PersonalityState[palId] = { disposition = "friendly", speciesDefault = "friendly", presetClassName = "BP_AIResponsePreset_friendly_C" }
+local PersonalityState = {}
+
+-- Hundred-and-fifty-third pass (2026-09-04): renamed from the old
+-- curious/skittish/hostile vocabulary to the REAL AIResponsePreset base
+-- names, at Dragón's explicit request — he originally used curious/
+-- hostile/skittish only because he didn't know the real in-code names,
+-- and asked to switch once he did, specifically so the exact bug found
+-- this same session (a species defaulting to plain "escape" silently
+-- misread as "curious" because only "Escape_to_Battle" was recognized)
+-- can't happen again the same way, and so the debug label can show which
+-- of the three "warlike" variants a Pal actually has (they behave very
+-- differently — see hook-points.md). "normal" is not a real preset name,
+-- it's this project's own sentinel for "don't touch it, use the species'
+-- real default."
+local DISPOSITIONS = {
+    "normal",                  -- leave the species' own real preset alone
+    "friendly",                -- BP_AIResponsePreset_friendly — stays, watches the player
+    "escape",                  -- BP_AIResponsePreset_escape (and Escape_to_Battle) — flees on approach
+    "notinterested",           -- BP_AIResponsePreset_NotInterested — ignores the player entirely
+    "warlike",                 -- BP_AIResponsePreset_Warlike — attacks, but conditionally (see hook-points.md)
+    "warlike_anyway",          -- BP_AIResponsePreset_Warlike_Anyway — attacks unconditionally
+    "warlike_without_player",  -- BP_AIResponsePreset_Warlike_WithoutPlayer — aggressive even without the player around
+}
+Personality.DISPOSITIONS = DISPOSITIONS
+
+-- Ninety-second pass (2026-09-03) — Dragón's spec, a second, independent
+-- frontier from the radial-menu work: every wild Pal, regardless of
+-- species, gets ONE randomly-rolled "personality tier" the first time we
+-- see it, weighted:
+--   50% normal   — behaves exactly as its species naturally would
+--                  (whatever GetSpeciesDefaultDisposition() already
+--                  resolves — curious/skittish/hostile per real
+--                  AIResponsePreset, same as before this pass)
+--   25% curious  — forced curious regardless of species (a Daedream-like
+--                  "watches, doesn't flee or attack" even on a normally
+--                  skittish or hostile species)
+--   10% hostile  — forced hostile regardless of species (even a normally
+--                  docile species can roll aggressive)
+--   15% skittish — forced skittish regardless of species
+-- This is the ASSIGNMENT half only. Rolled once per stable individual ID,
+-- persisted in PersonalityState so it doesn't re-roll on every
+-- interaction. IMPORTANT, same honesty this file has kept from the start:
+-- this pass only decides and STORES the tier — it does not yet make the
+-- game's actual AI behave differently (a hostile-tier Lamball won't
+-- really attack yet, a skittish-tier boss won't really flee yet). That's
+-- a separate, harder enforcement step (see the note at the bottom of this
+-- file, now updated) — needs either overriding a live Pal's
+-- AIResponsePreset pointer or a properly-throttled SelectResponseBySenses
+-- override, neither attempted yet.
+-- Hundred-and-fifty-third pass (2026-09-04): Dragón's new split, adding
+-- the three previously-unused real presets (notinterested, warlike_anyway,
+-- warlike_without_player) he wants to compare live against plain
+-- "warlike" (which he confirmed did NOT attack him in the last two real
+-- tests — see hook-points.md's hypothesis on why). Sums to 100.
+local PERSONALITY_TIERS = {
+    { tier = "normal", weight = 35 },
+    { tier = "friendly", weight = 20 },
+    { tier = "escape", weight = 10 },
+    { tier = "notinterested", weight = 10 },
+    { tier = "warlike", weight = 5 },
+    { tier = "warlike_anyway", weight = 10 },
+    { tier = "warlike_without_player", weight = 10 },
+}
+
+-- Hundred-and-twenty-eighth pass (2026-09-03): Dragón hit a real, fair
+-- problem testing Skittish→Curious — with the roll active, a Pal that
+-- LOOKS skittish (fleeing) usually isn't tracked as skittish at all (real
+-- session data: 5/5 fleeing Pals he petted rolled curious/hostile), since
+-- real behavior is driven by the UNMODIFIED species AI, not our tracked
+-- tier (enforcement remains unconfirmed). Checking each one with CTRL+P
+-- turned out impractical too — the console scrolls faster than he can
+-- read it. His own framing: either make Pals really behave like their
+-- rolled tier, or turn the roll off for now so a Pal that's naturally
+-- skittish (real species default, already reflected in real vanilla
+-- behavior — no enforcement needed for THIS to be true) is the one that's
+-- actually tracked as skittish, letting Won-Over be tested against ground
+-- truth instead of a hidden, invisible roll.
+--
+-- This flag does exactly that: false means every individual's rolled tier
+-- is forced to "normal," so the tracked/effective disposition always
+-- equals the real species default — genuinely skittish species (whatever
+-- the real AIResponsePreset says) are visibly, trackedly skittish, with
+-- zero dependency on enforcement. The weighted-roll system itself is left
+-- fully intact below, purely toggled off — flip this back to true once
+-- Skittish→Curious (and, ideally, enforcement) are confirmed working, to
+-- resume the original "every Pal gets its own rolled personality" design.
+--
+-- Hundred-and-twenty-ninth pass (2026-09-03) RE-ENABLED: enforcement was
+-- just rewritten to no longer need a live donor Pal at all (see
+-- find_preset_cdo/apply_forced_preset below — technique confirmed via a
+-- real, shipped reference mod, "Passive Pals"). With the roll left off,
+-- every individual's rolledTier is "normal" and try_enforce_personality's
+-- very first check exits immediately — the new mechanism would never
+-- actually run. Turned back on so this fix gets a real test.
+local ENABLE_PERSONALITY_TIER_ROLL = true
+
+-- Hundred-and-forty-sixth pass (2026-09-04): Dragón's ask — the original
+-- "Passive Pals"-inspired design (a weighted RANDOM personality roll per
+-- individual, so some Pals stay skittish/hostile and some don't) never
+-- got confirmed working end-to-end the way it was meant to. For now, he
+-- wants every wild Pal simply calm/approachable — his own word is
+-- "curious" (this project's own DISPOSITIONS bucket for "watches the
+-- player instead of fleeing or attacking," matching what he described)
+-- — so he doesn't have to chase fleeing Pals down just to interact with
+-- them. Forces EVERY newly-seen individual's rolled tier to "curious"
+-- unconditionally, skipping the weighted table below entirely. The
+-- ENFORCEMENT mechanism further down (confirmed working on 1170/1173
+-- real attempts) then does the actual work of swapping each individual's
+-- real AIResponsePreset to match, exactly as it already does for any
+-- other rolled tier — nothing new needed there.
+--
+-- Kept as a separate toggle rather than deleting PERSONALITY_TIERS/
+-- roll_personality_tier's weighted logic — same "toggle, don't delete"
+-- convention this file already uses for ENABLE_PERSONALITY_TIER_ROLL
+-- itself — so the original per-individual-variety design is one flag
+-- away from resuming later if Dragón wants that back.
+-- Hundred-and-forty-ninth pass (2026-09-04): flipped off for a real test
+-- of the per-individual randomizer, now that the reactive sensor hook
+-- (hundred-and-forty-eighth pass) confirmed the enforcement path actually
+-- works end-to-end (real [ENFORCE] SUCCESS lines). Dragón's own bar,
+-- correctly held: "if it's not visible in behavior, it's not confirmed
+-- working" — this is that real test. The weighted table below
+-- (PERSONALITY_TIERS, still 50/25/10/15) is UNCHANGED — comparing
+-- same-species Pals for different rolled behavior with the existing
+-- weights is the actual ask, not a new split yet.
+local FORCE_ALL_CURIOUS = false
+
+local function roll_personality_tier()
+    if FORCE_ALL_CURIOUS then
+        return "friendly"
+    end
+    local total = 0
+    for _, entry in ipairs(PERSONALITY_TIERS) do
+        total = total + entry.weight
+    end
+    local roll = math.random() * total
+    local cumulative = 0
+    for _, entry in ipairs(PERSONALITY_TIERS) do
+        cumulative = cumulative + entry.weight
+        if roll < cumulative then
+            return entry.tier
+        end
+    end
+    return PERSONALITY_TIERS[1].tier -- fallback, should never hit given the loop above
+end
+
+-- Maps a real UPalAIResponsePreset Blueprint class name to one of our own
+-- DISPOSITIONS buckets. Only 3 real presets confirmed live so far
+-- (thirty-third pass) — there are certainly more (this is a small game
+-- with dozens of species/archetypes). Unrecognized presets fall back to
+-- "curious" and get logged ONCE so we can extend this table over time
+-- without needing another risky broad hook.
+-- Hundred-and-fifty-third pass (2026-09-04) BUG FIX: plain
+-- "BP_AIResponsePreset_escape_C" was NEVER in this table — only
+-- "Escape_to_Battle_C" was. Any species whose real default is plain
+-- "escape" fell through to the unrecognized-preset fallback and got
+-- silently mislabeled "curious" (now "friendly") even though its real,
+-- untouched behavior is to flee — this is very likely the exact
+-- explanation for Dragón's "some curious Pals run away" observation
+-- (a normal-tier roll on one of these species never gets enforced,
+-- since normal means "leave it alone," but the TRACKED label was wrong).
+-- Fixed by adding the missing entry, and renamed every value to the real
+-- preset base names throughout, per Dragón's explicit request.
+local PRESET_NAME_TO_DISPOSITION = {
+    ["BP_AIResponsePreset_friendly_C"] = "friendly",
+    ["BP_AIResponsePreset_escape_C"] = "escape",
+    ["BP_AIResponsePreset_Escape_to_Battle_C"] = "escape",
+    ["BP_AIResponsePreset_NotInterested_C"] = "notinterested",
+    ["BP_AIResponsePreset_Warlike_C"] = "warlike",
+    ["BP_AIResponsePreset_Warlike_Anyway_C"] = "warlike_anyway",
+    ["BP_AIResponsePreset_Warlike_WithoutPlayer_C"] = "warlike_without_player",
+    -- VillageNPC/Kill_All/Boss are deliberately NOT mapped to a real
+    -- tracked disposition here — GetOrInitState below excludes them from
+    -- rolling/enforcement entirely (Dragón: "npc, bosses and other
+    -- things, those should stay normal always"). Left as "friendly" here
+    -- only as a harmless label if ever displayed, never acted on.
+    ["BP_AIResponsePreset_VillageNPC_C"] = "friendly",
+}
+
+-- Hundred-and-fifty-third pass (2026-09-04): Dragón — "npc, bosses and
+-- other things, those should stay normal always." Before this, the
+-- weighted roll ran unconditionally on every actor GetOrInitState saw
+-- (including human NPCs and bosses, which do get swept up by the periodic
+-- scan's FindAllOf("PalCharacter")/enforcement path) — meaning an NPC or
+-- boss could in principle get randomly rolled "warlike_anyway" and have
+-- its real AI swapped, which was never the intent. Checked by the
+-- individual's REAL current preset class name (already resolved for
+-- every Pal anyway) rather than guessing at actor type — any Pal whose
+-- real preset is one of these three is forced to rolledTier="normal"
+-- unconditionally, skipping the random roll entirely, so it's never
+-- enforcement-swapped no matter what.
+local EXCLUDED_FROM_ROLLING = {
+    ["BP_AIResponsePreset_VillageNPC_C"] = true,
+    ["BP_AIResponsePreset_Kill_All_C"] = true,
+    ["BP_AIResponsePreset_Boss_C"] = true,
+}
+
+-- Ninety-third pass — ENFORCEMENT: which real, existing preset class
+-- corresponds to each forced tier. Confirmed via repak/strings against the
+-- vanilla game's own Pal-Windows.pak that these are 3 of only 11 total
+-- AIResponsePreset variants that exist anywhere in the game (the others:
+-- Default, NotInterested, Warlike_Anyway, Warlike_WithoutPlayer, Kill_All,
+-- Boss — not used here, either redundant with these three or carrying
+-- scope beyond "attack/flee/watch the player" specifically). "normal" is
+-- deliberately absent — it means "leave the species' own preset alone,"
+-- never a swap. Base names (no "_C" suffix) — the "_C" is appended where
+-- needed, matching the real asset path shape used below.
+--
+-- Hundred-and-twenty-ninth pass (2026-09-03): these used to be full class
+-- names (with "_C") because the OLD mechanism needed to match a live
+-- donor Pal's class name string. See find_preset_cdo below for why a
+-- donor Pal is no longer needed at all.
+local TIER_TO_DONOR_PRESET_CLASS = {
+    friendly = "BP_AIResponsePreset_friendly",
+    escape = "BP_AIResponsePreset_escape",
+    notinterested = "BP_AIResponsePreset_NotInterested",
+    warlike = "BP_AIResponsePreset_Warlike",
+    warlike_anyway = "BP_AIResponsePreset_Warlike_Anyway",
+    warlike_without_player = "BP_AIResponsePreset_Warlike_WithoutPlayer",
+}
+
+-- Hundred-and-twenty-ninth pass (2026-09-03) — REAL FIX, found by reading a
+-- second reference mod Dragón provided ("Passive Pals"), which is a real
+-- UE4SS Lua mod (not a compiled Blueprint like every other reference mod
+-- so far) doing almost exactly what this project's enforcement half needs,
+-- and doing it more reliably. Two things it does differently, both proven
+-- (it's a real, shipped mod):
+--
+-- 1. It never needs a live "donor" Pal at all. Every `AIResponsePreset` is
+--    a normal Blueprint DATA ASSET with its own Class Default Object
+--    (CDO) — and a CDO is resolvable via `StaticFindObject` the moment its
+--    class is loaded, with ZERO dependency on any Pal actor existing
+--    anywhere nearby (this project's entire "no live donor found nearby
+--    yet, will keep retrying" blocker was solved by realizing this: we
+--    were seeting a live Pal instance as a proxy for the object we
+--    actually wanted, when the object itself was reachable directly the
+--    whole time). Real path pattern, confirmed via the reference mod's own
+--    `config.lua`: `/Game/Pal/Blueprint/Controller/AIResponsePreset/
+--    <name>.Default__<name>_C` (its fallback path, only needed if the
+--    first one somehow fails, reads the class then calls `:GetCDO()`).
+-- 2. It builds a FRESH, PRIVATE preset instance via `StaticConstructObject`
+--    (owned by the sensor component, never shared with any other Pal) and
+--    copies the source preset's 8 real fields into it, rather than ever
+--    pointing two different Pals at the exact same shared object. This
+--    project's own prior attempts already avoided ever WRITING to a
+--    shared object — this goes one step further and avoids even having
+--    two Pals ever POINT AT the same object at all, which is strictly
+--    safer.
+local PRESET_ASSET_DIR = "/Game/Pal/Blueprint/Controller/AIResponsePreset/"
+local NATIVE_PRESET_CLASS_PATH = "/Script/Pal.PalAIResponsePreset"
+
+-- The 8 real fields on UPalAIResponsePreset (DESIGN.md/hook-points.md
+-- Question 1, confirmed since the thirty-second pass) — same names
+-- confirmed again independently in the Passive Pals reference mod's own
+-- config.lua (config.discoverProps/config.damagedProps).
+local PRESET_SLOTS = {
+    "Discover_Player", "Discover_Greater", "Discover_Equal", "Discover_Smaller",
+    "Damaged_Player", "Damaged_Greater", "Damaged_Equal", "Damaged_Smaller",
+}
+
+-- How often the enforcement scan re-checks nearby wild Pals. 8s, matching
+-- OtomoWatch.lua's PrismSpy poll interval — deliberately NOT a per-tick or
+-- sub-second hook (see this project's thirty-third and ninth pass lag
+-- lessons); this scan walks every currently-loaded PalCharacter, which is
+-- more actors than the follow-tick's small bonding-only set, so it runs
+-- less often to compensate.
+local PERSONALITY_SCAN_INTERVAL_MS = 8000
+
+-- Presets we've seen but didn't recognize, logged once each so Dragón (or
+-- a future pass) can extend PRESET_NAME_TO_DISPOSITION above.
+local loggedUnknownPresets = {}
+
+-- NINETY-FOURTH PASS (2026-09-03): GetPresetClassName's [DIAG] logging
+-- below was written in the thirty-fifth/thirty-sixth passes when it was
+-- only ever called from a rare pet/feed event — logging every single call
+-- was fine then. It's now also called from GetOrInitState's retry path
+-- (see below) every time the periodic personality-enforcement scan sees a
+-- Pal whose preset still hasn't resolved, every 8s, for as long as that
+-- stays true. Dragón's first live test of that scan produced 2813
+-- identical copies of one of these lines in ~3 minutes and visible lag.
+-- Throttled to once per (actor, failure-reason) pair — a persistently
+-- unreadable Pal still gets retried silently forever, just not re-logged.
+local loggedDiagOnce = {}
+local function log_diag_once(actorKey, reasonKey, message)
+    local key = tostring(actorKey) .. "|" .. reasonKey
+    if loggedDiagOnce[key] then return end
+    loggedDiagOnce[key] = true
+    Logger.log(message)
+end
+
+local function safe_call(fn, ...)
+    local ok, result = pcall(fn, ...)
+    if ok then return result end
+    return nil
+end
+
+-- Cache the UClass lookups (StaticFindObject) once — these are cheap,
+-- static, unchanging references, no need to re-resolve every call.
+local PalUtilityCDO = nil
+local PalAISensorComponentClass = nil
+local NativePresetClass = nil
+local presetCDOCache = {}
+
+local function get_pal_utility()
+    if PalUtilityCDO then return PalUtilityCDO end
+    PalUtilityCDO = safe_call(function()
+        return StaticFindObject("/Script/Pal.Default__PalUtility")
+    end)
+    return PalUtilityCDO
+end
+
+-- Hundred-and-twenty-ninth pass: the native class every fresh, private
+-- preset instance is constructed from (StaticConstructObject needs the
+-- CLASS, not an instance) — cached once, same pattern as every other
+-- StaticFindObject lookup in this file.
+local function get_native_preset_class()
+    if NativePresetClass then return NativePresetClass end
+    NativePresetClass = safe_call(function()
+        return StaticFindObject(NATIVE_PRESET_CLASS_PATH)
+    end)
+    return NativePresetClass
+end
+
+-- Resolves a real preset's Class Default Object (CDO) directly — no live
+-- Pal actor needed anywhere. Tries the default-object path first (fast,
+-- one lookup); if that fails for any reason, falls back to resolving the
+-- class itself and calling :GetCDO() on it (same two-step fallback the
+-- Passive Pals reference mod itself uses). Cached per base name since a
+-- CDO is a permanent, unchanging reference once its class is loaded.
+local function find_preset_cdo(baseName)
+    if presetCDOCache[baseName] then return presetCDOCache[baseName] end
+
+    local cdo = safe_call(function()
+        return StaticFindObject(PRESET_ASSET_DIR .. baseName .. ".Default__" .. baseName .. "_C")
+    end)
+    local validOk, isValid = pcall(function() return cdo ~= nil and cdo:IsValid() end)
+    if not (validOk and isValid) then
+        cdo = safe_call(function()
+            local cls = StaticFindObject(PRESET_ASSET_DIR .. baseName .. "." .. baseName .. "_C")
+            if cls == nil or not cls:IsValid() then return nil end
+            return cls:GetCDO()
+        end)
+        validOk, isValid = pcall(function() return cdo ~= nil and cdo:IsValid() end)
+    end
+
+    if validOk and isValid then
+        presetCDOCache[baseName] = cdo
+        return cdo
+    end
+    return nil
+end
+
+local function get_sensor_component_class()
+    if PalAISensorComponentClass then return PalAISensorComponentClass end
+    PalAISensorComponentClass = safe_call(function()
+        return StaticFindObject("/Script/Pal.PalAISensorComponent")
+    end)
+    return PalAISensorComponentClass
+end
+
+-- Hundred-and-thirty-fifth pass (2026-09-03): Dragón's live test of the
+-- lag fix (hundred-and-thirty-second pass) confirmed `GetComponentByClass`
+-- doesn't just fail SOMETIMES for a wild Pal's AISensorComponent — it
+-- failed 41/41 real ENFORCE attempts and all 92 new-individual species-
+-- preset reads in one full ~5-minute session, never once resolving. Not a
+-- spawn-timing race (retrying every 8s for 5 minutes would have caught
+-- that) — an outright broken path for this specific component class.
+--
+-- Same fix already proven in this exact project for the same shape of
+-- problem (a class-based getter that just doesn't reach real live
+-- instances, even though they demonstrably exist): `FindAllOf` for every
+-- live instance of the class, then match by owner — the technique that
+-- found the real HP-gauge canvas widget in Indicator.lua after
+-- `GetComponentByClass`/`RegisterHook` both failed there too. Rebuilt at
+-- most once per SENSOR_INDEX_REFRESH_SECONDS (never per-Pal-per-scan —
+-- that exact mistake caused the ninety-fourth pass's lag bug), reused by
+-- both GetPresetClassName (species default) and find_sensor_component
+-- (enforcement/Won-Over) below.
+local SENSOR_INDEX_REFRESH_SECONDS = 5
+local sensorIndexByOwnerKey = {}
+local sensorIndexBuiltAt = nil
+
+-- Hundred-and-thirty-sixth pass (2026-09-03): Dragón's retest showed the
+-- FindAllOf fallback ALSO failed for every Pal (still 0 real species
+-- presets read, 98/98 fell back to "curious"). Logged once ever, so the
+-- next session finally shows WHICH half is empty: FindAllOf itself
+-- returning nothing/very little (wrong class name, or these aren't
+-- separately-reflected UActorComponent instances the way this project
+-- assumed), or instances existing but the owner-key match failing (a
+-- GetFullName() format mismatch between a component's :GetOwner() and the
+-- Pal actor reference used elsewhere).
+local loggedIndexBuildOnce = false
+local function log_index_build_once(instanceCount, matchedCount)
+    if loggedIndexBuildOnce then return end
+    loggedIndexBuildOnce = true
+    Logger.log(string.format(
+        "[PalBonds/Personality] [DIAG] rebuild_sensor_index first run: FindAllOf('PalAISensorComponent') returned %d instance(s), %d resolved to a usable owner key",
+        instanceCount, matchedCount
+    ))
+end
+
+local function rebuild_sensor_index()
+    sensorIndexByOwnerKey = {}
+    local instances = safe_call(function() return FindAllOf("PalAISensorComponent") end)
+    if not instances then
+        log_index_build_once(0, 0)
+        return
+    end
+    local matchedCount = 0
+    for _, comp in ipairs(instances) do
+        local ownerKey = safe_call(function()
+            local owner = comp:GetOwner()
+            return owner and owner:IsValid() and owner:GetFullName() or nil
+        end)
+        if ownerKey then
+            sensorIndexByOwnerKey[ownerKey] = comp
+            matchedCount = matchedCount + 1
+        end
+    end
+    log_index_build_once(#instances, matchedCount)
+end
+
+-- Returns a valid sensor component for palActor via the FindAllOf-based
+-- index, rebuilding the index first if it's stale or has never been built.
+local function find_sensor_component_via_index(palActor)
+    local now = safe_call(function() return os.clock() end) or 0
+    if not sensorIndexBuiltAt or (now - sensorIndexBuiltAt) > SENSOR_INDEX_REFRESH_SECONDS then
+        rebuild_sensor_index()
+        sensorIndexBuiltAt = now
+    end
+    local actorKey = safe_call(function() return palActor:GetFullName() end)
+    if not actorKey then return nil end
+    local comp = sensorIndexByOwnerKey[actorKey]
+    if comp then
+        local validOk, isValid = pcall(function() return comp:IsValid() end)
+        if validOk and isValid then
+            return comp
+        end
+    end
+    return nil
+end
+
+-- Real stable ID for a live Pal actor (wild or owned). Returns nil if
+-- anything along the chain fails (actor invalid, no handle yet, etc.) —
+-- callers must handle nil, never assume this always succeeds.
+function Personality.GetStableId(palActor)
+    if palActor == nil then return nil end
+
+    local utility = get_pal_utility()
+    if utility == nil then return nil end
+
+    local handle = safe_call(function()
+        return utility:GetIndividualCharacterHandleByActor(palActor)
+    end)
+    if handle == nil then return nil end
+
+    local id = safe_call(function() return handle:GetIndividualID() end)
+    if id == nil then return nil end
+
+    local guid = safe_call(function() return id.InstanceId end)
+    if guid == nil then return nil end
+
+    -- THIRTY-FIFTH PASS FIX (2026-09-02): the first live test produced a
+    -- correct, STABLE id (same Pal -> same string, confirmed across two
+    -- separate interactions) but a cosmetically wrong one — some fields
+    -- came out 16 hex digits instead of 8. Root cause: UE4SS returns each
+    -- int32 field as a full Lua number, and a NEGATIVE int32 (e.g. -1)
+    -- sign-extends to a huge 64-bit value once handed to Lua's integer
+    -- string.format — "%08X" only sets a MINIMUM width, so a negative
+    -- field prints 16 hex digits instead of being masked to 32 bits.
+    -- Masking each field with `% 0x100000000` first forces exactly 8 hex
+    -- digits every time, regardless of sign.
+    return safe_call(function()
+        local function mask32(n)
+            return math.floor((n or 0)) % 0x100000000
+        end
+        return string.format("%08X%08X%08X%08X",
+            mask32(guid.A), mask32(guid.B), mask32(guid.C), mask32(guid.D))
+    end)
+end
+
+-- Reads the real UPalAIResponsePreset class name off a live Pal actor's
+-- sensor component, e.g. "BP_AIResponsePreset_friendly_C". Returns nil if
+-- the actor has no sensor component or anything fails.
+--
+-- THIRTY-FIFTH PASS (2026-09-02): the first live test returned nil here
+-- for a real Chikipi (logged as "preset=nil"), silently — safe_call
+-- swallows the actual Lua error, so we couldn't tell which step failed.
+-- Instrumented every step with its own explicit ok/err capture (same
+-- "log the exact failing line" approach that found the real crash cause
+-- back in Interaction.lua's seventh pass) so the NEXT test tells us
+-- exactly where this breaks instead of just "nil". Logs every call for
+-- now (still only from the already-rare pet/feed event, not per-tick) —
+-- trim back to once-per-failure-type once the real cause is known.
+function Personality.GetPresetClassName(palActor)
+    if palActor == nil then return nil end
+
+    -- NINETY-FOURTH PASS: dedup key for log_diag_once below — best-effort,
+    -- falls back to the raw wrapper's tostring() if GetFullName() itself
+    -- fails (rare, but this key only needs to be "stable enough," not
+    -- perfect).
+    local actorKey = safe_call(function() return palActor:GetFullName() end) or tostring(palActor)
+
+    local sensorClass = get_sensor_component_class()
+    if sensorClass == nil then
+        log_diag_once(actorKey, "no-sensor-class", "[PalBonds/Personality] [DIAG] GetPresetClassName: could not resolve PalAISensorComponent class via StaticFindObject")
+        return nil
+    end
+
+    local sensorOk, sensor = pcall(function()
+        return palActor:GetComponentByClass(sensorClass)
+    end)
+    local sensorValidOk, sensorIsValid = false, false
+    if sensorOk and sensor ~= nil then
+        sensorValidOk, sensorIsValid = pcall(function() return sensor:IsValid() end)
+    end
+    if not (sensorOk and sensor ~= nil and sensorValidOk and sensorIsValid) then
+        -- Hundred-and-thirty-fifth pass: GetComponentByClass confirmed
+        -- broken for this component (see find_sensor_component_via_index's
+        -- own comment above) — fall back to the FindAllOf-based index
+        -- before giving up.
+        sensor = find_sensor_component_via_index(palActor)
+        if sensor == nil then
+            log_diag_once(actorKey, "no-sensor", "[PalBonds/Personality] [DIAG] GetPresetClassName: GetComponentByClass AND the FindAllOf-based fallback both failed for " .. tostring(actorKey))
+            return nil
+        end
+    end
+
+    local presetOk, preset = pcall(function() return sensor.AIResponsePreset end)
+    if not presetOk then
+        log_diag_once(actorKey, "read-failed", "[PalBonds/Personality] [DIAG] GetPresetClassName: reading sensor.AIResponsePreset FAILED for " .. tostring(actorKey) .. " — " .. tostring(preset))
+        return nil
+    end
+    if preset == nil then
+        log_diag_once(actorKey, "preset-nil", "[PalBonds/Personality] [DIAG] GetPresetClassName: sensor.AIResponsePreset is nil for " .. tostring(actorKey) .. " (component found, but no preset assigned?)")
+        return nil
+    end
+
+    -- THIRTY-SIXTH PASS (2026-09-02): every real test so far (Sheepball,
+    -- PinkCat/Cattiva, across two separate sessions) reaches this point
+    -- with no earlier failure logged, then fails at GetFullName() with a
+    -- plain "nil" — no Lua error message at all. That specific shape
+    -- (silent nil, not a thrown error) matches a known UE4SS pattern:
+    -- a field read can hand back a valid-looking Lua wrapper table around
+    -- a NULL underlying UObject pointer, and calling a method on it
+    -- returns nil instead of erroring. Checking preset:IsValid() first
+    -- lets us tell "the pointer really is null for this Pal" (logged
+    -- explicitly below) apart from some other, still-unexplained
+    -- GetFullName failure (which would still fall through to the
+    -- original diagnostic below).
+    local validOk, isValid = pcall(function() return preset:IsValid() end)
+    if validOk and isValid == false then
+        -- NINETY-FOURTH PASS: Dragón's first live test of the new
+        -- enforcement scan hit THIS exact branch 2813 times in ~3 minutes
+        -- — a NEW failure shape (every prior test, thirty-fifth/-sixth
+        -- passes, hit the GetFullName()-fails-silently branch below
+        -- instead). Whether that's because these particular Pals were
+        -- freshly spawned when first scanned (preset pointer genuinely not
+        -- set up yet) or something else is still an open question — see
+        -- CLAUDE.md's "Continuación 68". GetOrInitState now retries this
+        -- resolution on later calls instead of caching nil forever, so if
+        -- it's a timing issue this self-heals; log throttled either way.
+        log_diag_once(actorKey, "null-preset", "[PalBonds/Personality] [DIAG] GetPresetClassName: sensor.AIResponsePreset is a NULL object reference (preset:IsValid() == false) for " .. tostring(actorKey) .. " — this Pal's preset pointer isn't actually set (yet?), despite the field read succeeding")
+        return nil
+    end
+
+    -- GetClass():GetFName() would be more "correct," but GetFullName()
+    -- already gives us a path ending in the class name, same pattern
+    -- used everywhere else in this project (OtomoWatch.lua's describe()).
+    local nameOk, fullName = pcall(function() return preset:GetFullName() end)
+    if not nameOk or fullName == nil then
+        log_diag_once(actorKey, "getfullname-failed", "[PalBonds/Personality] [DIAG] GetPresetClassName: preset:GetFullName() FAILED for " .. tostring(actorKey) .. " — " .. tostring(fullName) .. " (preset:IsValid() check " .. (validOk and tostring(isValid) or ("also failed: " .. tostring(isValid))) .. ")")
+        return nil
+    end
+
+    -- fullName looks like "BP_AIResponsePreset_friendly_C /Game/.../Foo.Foo:...Preset_2147459442"
+    -- — the class name is the first token.
+    return fullName:match("^(%S+)")
+end
+
+-- Maps a real preset class name to one of our DISPOSITIONS. Logs the
+-- first time an unrecognized preset is seen (not every time — see the
+-- thirty-third pass lesson about unthrottled logging).
+function Personality.PresetClassNameToDisposition(presetClassName)
+    if presetClassName == nil then return "friendly" end
+
+    local mapped = PRESET_NAME_TO_DISPOSITION[presetClassName]
+    if mapped then return mapped end
+
+    if not loggedUnknownPresets[presetClassName] then
+        loggedUnknownPresets[presetClassName] = true
+        Logger.log(string.format(
+            "[PalBonds/Personality] unrecognized AIResponsePreset '%s' — defaulting to 'friendly', add it to PRESET_NAME_TO_DISPOSITION when convenient",
+            presetClassName
+        ))
+    end
+    return "friendly"
+end
+
+-- Convenience: species-default disposition for a live Pal actor, in one
+-- call. nil if anything along the chain fails.
+function Personality.GetSpeciesDefaultDisposition(palActor)
+    local presetClassName = Personality.GetPresetClassName(palActor)
+    if presetClassName == nil then return nil end
+    return Personality.PresetClassNameToDisposition(presetClassName)
+end
+
+-- Ensures per-instance state exists for a given live Pal actor, seeding
+-- it from the species default the first time we see this Pal. Safe to
+-- call repeatedly — a no-op after the first successful call for a given
+-- Pal. Returns the palId (or nil if a stable ID couldn't be resolved) so
+-- callers can use it for subsequent Get/SetDisposition calls without
+-- resolving the ID twice.
+function Personality.GetOrInitState(palActor)
+    local palId = Personality.GetStableId(palActor)
+    if palId == nil then return nil end
+
+    if PersonalityState[palId] == nil then
+        -- THIRTY-SIXTH PASS (2026-09-02) FIX: this used to call
+        -- GetPresetClassName(palActor) twice — once indirectly via
+        -- GetSpeciesDefaultDisposition, once again just to populate the
+        -- presetClassName field below — which meant every [DIAG] failure
+        -- line got logged twice per new Pal. One call now, reused for both.
+        local presetClassName = Personality.GetPresetClassName(palActor)
+        local speciesDefault = Personality.PresetClassNameToDisposition(presetClassName)
+
+        -- Ninety-second pass: roll this individual's personality tier ONCE,
+        -- right here, at the same moment its state is first created (first
+        -- pet/feed/interaction encounter — the closest on-demand proxy this
+        -- project has to "at spawn," since nothing here runs a real per-
+        -- spawn hook). "normal" tier just keeps the species default;
+        -- anything else OVERRIDES it as the effective disposition.
+        local rolledTier
+        if EXCLUDED_FROM_ROLLING[presetClassName] then
+            rolledTier = "normal"
+        elseif ENABLE_PERSONALITY_TIER_ROLL then
+            rolledTier = roll_personality_tier()
+        else
+            rolledTier = "normal"
+        end
+        local effectiveDisposition = speciesDefault
+        if rolledTier ~= "normal" then
+            effectiveDisposition = rolledTier
+        end
+
+        PersonalityState[palId] = {
+            disposition = effectiveDisposition,
+            speciesDefault = speciesDefault,
+            presetClassName = presetClassName,
+            rolledTier = rolledTier,
+            -- Ninety-third pass: whether the ENFORCEMENT swap (see below)
+            -- has been successfully applied (or deliberately skipped as
+            -- not-needed) for this individual. false means "keep retrying
+            -- on the next scan" — e.g. no live donor Pal of the desired
+            -- species happens to be nearby yet.
+            enforcementApplied = false,
+        }
+
+        Logger.log(string.format(
+            "[PalBonds/Personality] [PERSONALITY-ROLL] new individual %s — rolled tier=%s, species default=%s, effective disposition=%s",
+            tostring(palId), tostring(rolledTier), tostring(speciesDefault), tostring(effectiveDisposition)
+        ))
+    elseif PersonalityState[palId].presetClassName == nil then
+        -- NINETY-FOURTH PASS: the very first read can fail if the preset
+        -- pointer genuinely isn't set yet at the exact moment we first see
+        -- a Pal (Dragón's first live enforcement test hit this 100% of the
+        -- time, unlike any prior session — see the null-preset note in
+        -- GetPresetClassName above). Without this, that individual would
+        -- be stuck on the "curious" fallback default forever, and
+        -- enforcement could never confirm "already naturally uses X."
+        -- Retrying here (called every scan pass anyway) costs nothing when
+        -- it keeps failing (throttled logging) and self-heals once the
+        -- pointer becomes valid — never re-rolls the tier itself, only
+        -- refreshes the species-default side of the state.
+        local retryPresetClassName = Personality.GetPresetClassName(palActor)
+        if retryPresetClassName ~= nil then
+            local state = PersonalityState[palId]
+            state.presetClassName = retryPresetClassName
+            state.speciesDefault = Personality.PresetClassNameToDisposition(retryPresetClassName)
+            local logSuffix
+            if state.rolledTier == "normal" then
+                state.disposition = state.speciesDefault
+                logSuffix = ", effective disposition now=" .. tostring(state.disposition)
+            else
+                logSuffix = " (rolled tier=" .. tostring(state.rolledTier) .. " already overrides this)"
+            end
+            Logger.log(string.format(
+                "[PalBonds/Personality] [PERSONALITY-ROLL] %s — species preset resolved on retry (was unreadable at first sight): %s, species default=%s%s",
+                tostring(palId), tostring(retryPresetClassName), tostring(state.speciesDefault), logSuffix
+            ))
+        end
+    end
+
+    return palId
+end
+
+-- Read-only accessor for just the rolled tier (as opposed to the
+-- resolved effective disposition GetDisposition returns) — mainly for
+-- logging/debugging so "normal that happens to default to hostile" and
+-- "actually rolled hostile" stay distinguishable.
+function Personality.GetRolledTier(palId)
+    if palId == nil then return nil end
+    local state = PersonalityState[palId]
+    return state and state.rolledTier or nil
+end
+
+function Personality.SetDisposition(palId, disposition)
+    if palId == nil then return end
+    PersonalityState[palId] = PersonalityState[palId] or {}
+    PersonalityState[palId].disposition = disposition
+end
+
+function Personality.GetDisposition(palId)
+    if palId == nil then return nil end
+    local state = PersonalityState[palId]
+    return state and state.disposition or nil
+end
+
+-- Read-only accessor for the full per-instance state table, mainly for
+-- logging/debugging (e.g. seeing the original species default alongside
+-- the current, possibly-drifted disposition).
+function Personality.GetState(palId)
+    if palId == nil then return nil end
+    return PersonalityState[palId]
+end
+
+-- ==========================================================================
+-- NINETY-THIRD PASS — ENFORCEMENT. Everything below is new this pass, all
+-- read-only against shared game data (only ever WRITES to one specific
+-- wild Pal's own AIResponsePreset field, gated by an explicit ownership
+-- check first — see try_enforce_personality below).
+-- ==========================================================================
+
+-- Reads a live Pal actor's AISensorComponent, or nil if anything fails.
+-- Small, standalone helper (deliberately not reusing GetPresetClassName's
+-- internals) so this new, untested enforcement path can't regress the
+-- already-working species-default detection above.
+-- Hundred-and-thirty-second pass (2026-09-03): find_sensor_component fails
+-- on 1170 out of 1173 real [ENFORCE] attempts in Dragón's own test session
+-- — near-100%, not "sometimes." That's a real, un-diagnosed reliability
+-- problem, not just a rare edge case — but the three possible failure
+-- branches below were never individually logged, so it was impossible to
+-- tell WHICH one was actually happening. Logs the exact failure branch
+-- ONCE EVER (a single global flag, not per-individual — this function is
+-- called constantly, every scan, for every non-done Pal, so anything less
+-- strict would reintroduce the exact lag bug just fixed above) so the
+-- next test session finally shows which of the three is the real cause.
+local loggedSensorFailureOnce = false
+local function log_sensor_failure_once(reason)
+    if loggedSensorFailureOnce then return end
+    loggedSensorFailureOnce = true
+    Logger.log("[PalBonds/Personality] [DIAG] find_sensor_component's first real failure this session: " .. reason)
+end
+
+local function find_sensor_component(palActor)
+    if palActor == nil then return nil end
+    local sensorClass = get_sensor_component_class()
+    if sensorClass ~= nil then
+        local ok, sensor = pcall(function() return palActor:GetComponentByClass(sensorClass) end)
+        if ok and sensor ~= nil then
+            local validOk, isValid = pcall(function() return sensor:IsValid() end)
+            if validOk and isValid then
+                return sensor
+            end
+        end
+    end
+    -- Hundred-and-thirty-fifth pass: Dragón's live test confirmed
+    -- GetComponentByClass is broken for this component, not just
+    -- unreliable — 41/41 real ENFORCE attempts and all 92 new-individual
+    -- species-preset reads failed the same way in one full session. Fall
+    -- back to the FindAllOf-based index (see its own comment above) before
+    -- giving up.
+    local viaIndex = find_sensor_component_via_index(palActor)
+    if viaIndex ~= nil then
+        return viaIndex
+    end
+    log_sensor_failure_once("GetComponentByClass AND the FindAllOf-based fallback both failed to resolve a valid sensor component")
+    return nil
+end
+
+-- Hundred-and-forty-seventh pass (2026-09-04): Dragón's direct pushback —
+-- "isn't the answer in the mod? copy what the reference does" — was right.
+-- Re-read the Passive Pals reference mod's actual main.lua (not just its
+-- comments already summarized in this file) and found its PRIMARY, DEFAULT
+-- mechanism was never the per-individual "species layer" this project had
+-- been trying to replicate (that's an OPT-IN refinement in the reference
+-- mod, off by default) — it's a much simpler "preset layer" that never
+-- touches individual Pal instances or their sensor components AT ALL: it
+-- directly rewrites the SHARED preset Class Default Objects themselves
+-- (findPreset in main.lua — the exact same find_preset_cdo technique this
+-- file already uses for apply_forced_preset above). Every wild Pal that
+-- uses a given AIResponsePreset points at the SAME shared object, so one
+-- write to that preset's own 8 fields changes every Pal using it globally
+-- and instantly — zero dependency on FindAllOf("PalAISensorComponent")
+-- (the still-broken mechanism item 4 on the saved priority list depends
+-- on), zero per-individual retry loop, zero waiting for a specific Pal's
+-- sensor component to exist. This sidesteps that whole bug entirely for
+-- the "make every wild Pal calm" goal, rather than needing it fixed first.
+--
+-- Real values confirmed via the reference mod's own config.lua
+-- (EPalAIResponseType: Ignore=0, Escape=1, Battle=2, Special=3,
+-- Battle_Anyway=4) and its own humanPresetNames list (VillageNPC/Kill_All
+-- are human-NPC-only presets, never real Pals — excluded here too).
+-- Deliberately narrower than "every preset in the game": only the
+-- confirmed real wild-Pal flee/combat presets are targeted, leaving
+-- Default/NotInterested/Boss untouched for now (Boss especially — pacifying
+-- boss encounters is a separate design question Dragón hasn't asked for).
+--
+-- Safety copied directly from the reference mod's own applyProfileToObject:
+-- a slot already holding EPalAIResponseType.Special (3) is left alone,
+-- never overwritten. This project's own Pet/Feed interaction relies on a
+-- real Special-tagged reaction existing somewhere in the game's own data —
+-- blindly overwriting it here could break vanilla pet/feed eligibility on
+-- whatever species carry it, so this preserves it exactly as the reference
+-- mod does, not a new guess.
+local RESPONSE_SPECIAL = 3
+local GLOBAL_OVERRIDE_SOURCE_PRESET = "BP_AIResponsePreset_friendly"
+local GLOBAL_OVERRIDE_TARGET_PRESETS = {
+    "BP_AIResponsePreset_escape",
+    "BP_AIResponsePreset_Escape_to_Battle",
+    "BP_AIResponsePreset_Warlike",
+    "BP_AIResponsePreset_Warlike_Anyway",
+    "BP_AIResponsePreset_Warlike_WithoutPlayer",
+}
+local GLOBAL_CURIOUS_MAX_ROUNDS = 20
+local GLOBAL_CURIOUS_RETRY_MS = 5000
+local globalCuriousOverrideApplied = false
+
+local function apply_global_curious_preset_override(round)
+    if globalCuriousOverrideApplied then return end
+    round = round or 1
+
+    local sourceCdo = find_preset_cdo(GLOBAL_OVERRIDE_SOURCE_PRESET)
+    local sourceValues = nil
+    if sourceCdo then
+        local readOk = pcall(function()
+            sourceValues = {}
+            for _, prop in ipairs(PRESET_SLOTS) do
+                sourceValues[prop] = sourceCdo[prop]
+            end
+        end)
+        if not readOk then sourceValues = nil end
+    end
+
+    if not sourceValues then
+        Logger.log(string.format("[PalBonds/Personality] [GLOBAL-CURIOUS] round %d: source preset (%s) not resolvable yet", round, GLOBAL_OVERRIDE_SOURCE_PRESET))
+    else
+        local allResolved = true
+        for _, presetName in ipairs(GLOBAL_OVERRIDE_TARGET_PRESETS) do
+            local targetCdo = find_preset_cdo(presetName)
+            if not targetCdo then
+                allResolved = false
+            else
+                local changes = {}
+                pcall(function()
+                    for _, prop in ipairs(PRESET_SLOTS) do
+                        local current = targetCdo[prop]
+                        if tonumber(current) ~= RESPONSE_SPECIAL and current ~= sourceValues[prop] then
+                            targetCdo[prop] = sourceValues[prop]
+                            changes[#changes + 1] = prop
+                        end
+                    end
+                end)
+                Logger.log(string.format(
+                    "[PalBonds/Personality] [GLOBAL-CURIOUS] round %d: %s — %s",
+                    round, presetName, (#changes > 0) and ("changed " .. table.concat(changes, ", ")) or "already matched or Special-preserved, nothing changed"
+                ))
+            end
+        end
+        if allResolved then
+            globalCuriousOverrideApplied = true
+            Logger.log("[PalBonds/Personality] [GLOBAL-CURIOUS] all target presets processed — every wild Pal using them should now behave like the friendly/curious preset, globally, no per-individual lookup needed")
+            return
+        end
+    end
+
+    if round >= GLOBAL_CURIOUS_MAX_ROUNDS then
+        Logger.log("[PalBonds/Personality] [GLOBAL-CURIOUS] giving up after " .. round .. " rounds — some presets never resolved")
+        return
+    end
+    local rescheduleOk = pcall(function()
+        ExecuteInGameThreadWithDelay(GLOBAL_CURIOUS_RETRY_MS, function()
+            safe_call(function() apply_global_curious_preset_override(round + 1) end)
+        end)
+    end)
+    if not rescheduleOk then
+        Logger.log("[PalBonds/Personality] [GLOBAL-CURIOUS] could not schedule a retry round — stopping after round " .. round)
+    end
+end
+
+-- Hundred-and-twenty-ninth pass (2026-09-03): shared core, used by both the
+-- periodic enforcement scan and the one-shot Won-Over event. Builds a
+-- fresh, PRIVATE preset object (never shared with any other Pal) matching
+-- `desiredBaseName`'s real 8 field values, read from that preset's own
+-- Class Default Object (`find_preset_cdo` above — no live donor Pal needed
+-- anywhere, see that function's own comment for the real reference-mod
+-- technique this is based on), and assigns it to `sensor`. Returns
+-- `true, nil` on success or `false, reason` on failure — the caller
+-- decides how to log/retry, this function never touches PersonalityState
+-- itself so it stays reusable from either call site.
+local function apply_forced_preset(sensor, desiredBaseName)
+    local cdo = find_preset_cdo(desiredBaseName)
+    if not cdo then
+        return false, "could not resolve the default preset object for " .. tostring(desiredBaseName)
+    end
+
+    local nativeClass = get_native_preset_class()
+    if not nativeClass then
+        return false, "could not resolve the native PalAIResponsePreset class"
+    end
+
+    local fresh = safe_call(function() return StaticConstructObject(nativeClass, sensor) end)
+    local freshValidOk, freshValid = pcall(function() return fresh ~= nil and fresh:IsValid() end)
+    if not (freshValidOk and freshValid) then
+        return false, "StaticConstructObject failed"
+    end
+
+    local copyOk, copyErr = pcall(function()
+        for _, prop in ipairs(PRESET_SLOTS) do
+            fresh[prop] = cdo[prop]
+        end
+    end)
+    if not copyOk then
+        return false, "failed copying preset fields: " .. tostring(copyErr)
+    end
+
+    local setOk, setErr = pcall(function() sensor.AIResponsePreset = fresh end)
+    if not setOk then
+        return false, "AIResponsePreset write FAILED: " .. tostring(setErr)
+    end
+
+    return true, nil
+end
+
+-- Hundred-and-forty-eighth pass (2026-09-04) REFACTOR: split the old
+-- try_enforce_personality into a sensor-AGNOSTIC core (everything except
+-- actually finding a sensor) plus two thin callers — the original
+-- proactive scan (finds a sensor via the broken find_sensor_component,
+-- kept running as a fallback) and a new REACTIVE hook below (gets a
+-- sensor handed to it directly, no search needed at all). Behavior
+-- unchanged for the scan path; this is a pure extraction.
+local function try_enforce_personality_with_sensor(palActor, palId, sensor)
+    local state = PersonalityState[palId]
+    if not state or state.enforcementApplied then return end
+
+    if state.rolledTier == "normal" then
+        -- Nothing to enforce — species default IS the rolled result.
+        state.enforcementApplied = true
+        return
+    end
+
+    -- SAFETY: never touch an owned Pal. Ownership can change after the
+    -- roll (a wild Pal gets captured), so this is re-checked every time
+    -- for anything not yet marked done, same "verify before writing to
+    -- real game state" discipline this project has kept since the
+    -- eighteenth/eighty-second passes. Capture.lua doesn't require this
+    -- module (confirmed no circular require), but this still loads it
+    -- lazily/defensively, matching Trust.lua's tick_followers pattern.
+    local okReq, Capture = pcall(require, "Capture")
+    if not okReq or not Capture or not Capture.IsAlreadyOwned then
+        Logger.log("[PalBonds/Personality] [ENFORCE] could not load Capture.IsAlreadyOwned — skipping this attempt for " .. tostring(palId) .. " out of caution (ownership unknown)")
+        return
+    end
+    local isOwned = safe_call(function() return Capture.IsAlreadyOwned(palActor) end)
+    if isOwned ~= false then
+        -- true, or unknown (safe_call failed) — either way, never write.
+        -- Mark done: an owned Pal's personality tier no longer matters
+        -- (it's the player's Otomo now, this system is wild-Pal-only).
+        state.enforcementApplied = true
+        Logger.log("[PalBonds/Personality] [ENFORCE] " .. tostring(palId) .. " is owned (or ownership unreadable) — leaving its AI untouched, marking done")
+        return
+    end
+
+    local desiredBaseName = TIER_TO_DONOR_PRESET_CLASS[state.rolledTier]
+    if not desiredBaseName then
+        state.enforcementApplied = true -- unknown tier, nothing defined to enforce
+        return
+    end
+    local desiredClassName = desiredBaseName .. "_C"
+
+    if state.presetClassName == desiredClassName then
+        -- This species already naturally uses the preset the rolled tier
+        -- wants (e.g. rolled "hostile" on an already-Warlike species) —
+        -- nothing to swap.
+        Logger.log(string.format(
+            "[PalBonds/Personality] [ENFORCE] %s already naturally uses %s (matches rolled tier=%s) — no swap needed",
+            tostring(palId), tostring(desiredClassName), tostring(state.rolledTier)
+        ))
+        state.enforcementApplied = true
+        return
+    end
+
+    local ok, err = apply_forced_preset(sensor, desiredBaseName)
+    if ok then
+        state.enforcementApplied = true
+        Logger.log(string.format(
+            "[PalBonds/Personality] [ENFORCE] SUCCESS — %s (rolled tier=%s) now has its own private preset copied from %s's real defaults",
+            tostring(palId), tostring(state.rolledTier), tostring(desiredBaseName)
+        ))
+    else
+        Logger.log("[PalBonds/Personality] [ENFORCE] " .. tostring(palId) .. " — " .. tostring(err) .. ", will retry")
+    end
+end
+
+-- Attempts to make ONE wild Pal's real behavior match its already-rolled
+-- tier, via the proactive scan (finds its own sensor — the historically
+-- unreliable path, kept as a fallback for whatever the reactive hook
+-- below misses). Safe to call repeatedly — becomes a no-op once
+-- state.enforcementApplied is true.
+local function try_enforce_personality(palActor, palId)
+    local state = PersonalityState[palId]
+    if not state or state.enforcementApplied then return end
+
+    local sensor = find_sensor_component(palActor)
+    if not sensor then
+        -- Hundred-and-thirty-second pass (2026-09-03) FIX, REAL LAG
+        -- REGRESSION FOUND: unlike the old donor-search failure (which was
+        -- throttled via state.noDonorLoggedOnce), this rewrite never
+        -- throttled this specific line — and it turns out
+        -- find_sensor_component fails almost every time in practice (1170
+        -- of 1173 real [ENFORCE] lines in Dragón's very next test session
+        -- were this exact message, repeating every 8s forever for every
+        -- non-normal-tier Pal). Same shape of self-inflicted lag bug this
+        -- project has hit before (ninety-fourth/ninety-fifth passes) —
+        -- should have been throttled from the start, same discipline as
+        -- every other "will keep retrying" message in this file.
+        if not state.noSensorLoggedOnce then
+            state.noSensorLoggedOnce = true
+            Logger.log("[PalBonds/Personality] [ENFORCE] " .. tostring(palId) .. " has no readable AISensorComponent via the proactive scan — cannot enforce this way yet, will keep quietly retrying every scan until it resolves (logged once). The reactive hook below may catch it first.")
+        end
+        return
+    end
+
+    try_enforce_personality_with_sensor(palActor, palId, sensor)
+end
+
+-- Hundred-and-forty-eighth pass (2026-09-04): the REAL fix for the sensor
+-- bug, found by re-reading the Passive Pals reference mod's own "species
+-- layer" in full (not just its already-summarized preset-layer technique
+-- — see hook-points.md/the design-for-future-scale memory's third
+-- recurrence). Instead of proactively SEARCHING for each Pal's
+-- AISensorComponent (find_sensor_component above, confirmed broken —
+-- 1170/1173 real failures), hook the function the GAME itself calls every
+-- time a sensor makes a decision, and take the sensor directly from the
+-- hook's own Context. This was already flagged as a real candidate back
+-- in the ninety-second pass's own notes ("a properly-throttled
+-- SelectResponseBySenses override, neither attempted yet") but never
+-- actually wired until now.
+--
+-- Real hook path, confirmed via the reference mod's own config.lua:
+-- `/Script/Pal.PalAISensorComponent:SelectResponseBySenses`.
+--
+-- LAG DISCIPLINE (this project has been burned by unthrottled per-event
+-- hooks before — ninety-fourth/ninety-fifth/hundred-and-thirty-second
+-- passes): this can fire at real AI decision-making frequency for every
+-- wild Pal in range, so `handledSensorKeys` dedupes FIRST, before any
+-- other work, so every fire after the first for a given sensor is just a
+-- cheap table lookup — never a repeat of the ownership check/preset
+-- resolution/apply_forced_preset. Marking a sensor handled even after a
+-- FAILED attempt (rather than retrying every single fire) is a
+-- deliberate tradeoff: a Pal that fails here can still be caught later by
+-- the proactive scan above instead of this hook hammering it forever.
+local handledSensorKeys = {}
+local function on_sensor_select_response(Context)
+    local sensor = safe_call(function() return Context:get() end)
+    if not sensor then return end
+    local sensorKey = safe_call(function() return sensor:GetFullName() end)
+    if not sensorKey or handledSensorKeys[sensorKey] then return end
+    handledSensorKeys[sensorKey] = true
+
+    local owner = safe_call(function() return sensor:GetOuter() end)
+    local pawn = owner and safe_call(function() return owner.Pawn end)
+    local validOk, isValid = pcall(function() return pawn ~= nil and pawn:IsValid() end)
+    if not (validOk and isValid) then return end
+
+    local palId = Personality.GetOrInitState(pawn)
+    if not palId then return end
+
+    try_enforce_personality_with_sensor(pawn, palId, sensor)
+end
+
+local SENSOR_HOOK_MAX_ROUNDS = 20
+local SENSOR_HOOK_RETRY_MS = 5000
+local function register_sensor_sense_hook(round)
+    round = round or 1
+    local ok, err = pcall(function()
+        RegisterHook("/Script/Pal.PalAISensorComponent:SelectResponseBySenses", function(Context)
+            safe_call(function() on_sensor_select_response(Context) end)
+        end)
+    end)
+    if ok then
+        Logger.log(string.format("[PalBonds/Personality] [ENFORCE] round %d: SelectResponseBySenses hook registered — reactive enforcement armed", round))
+        return
+    end
+    Logger.log(string.format("[PalBonds/Personality] [ENFORCE] round %d: RegisterHook(SelectResponseBySenses) FAILED: %s", round, tostring(err)))
+    if round >= SENSOR_HOOK_MAX_ROUNDS then
+        Logger.log("[PalBonds/Personality] [ENFORCE] giving up on the reactive hook after " .. round .. " rounds — falling back to the proactive scan only")
+        return
+    end
+    local rescheduleOk = pcall(function()
+        ExecuteInGameThreadWithDelay(SENSOR_HOOK_RETRY_MS, function()
+            safe_call(function() register_sensor_sense_hook(round + 1) end)
+        end)
+    end)
+    if not rescheduleOk then
+        Logger.log("[PalBonds/Personality] [ENFORCE] could not schedule a retry for the reactive hook")
+    end
+end
+
+-- Hundred-and-twenty-fifth pass (2026-09-03) — Dragón's original personality
+-- idea, from before the tier-rolling system even existed: "if the player
+-- chases a skittish pal to pet it, and once it manages, the pal is like
+-- 'hey, this hoomin is not so bad' then changes to curious." Deliberately
+-- self-contained from the still-unconfirmed ENFORCEMENT scan above and the
+-- still-stalled food-picker research — this triggers off
+-- Interaction.OnWildPalPetted, an event already confirmed reliable across
+-- many real sessions, not a per-tick scan or anything touching the food/
+-- Otomo systems.
+--
+-- Only affects a Pal whose CURRENT effective disposition is "skittish" —
+-- whether that's because it rolled the skittish tier, or because it's
+-- "normal" tier on a naturally-skittish species; either way, a real
+-- successful interaction (petting/feeding it despite it being flighty) wins
+-- it over, once, permanently. Updates the tracked disposition immediately
+-- (cheap, always happens). Then, best-effort, tries to ALSO make this show
+-- up in real AI behavior by re-pointing this one Pal's own AIResponsePreset
+-- at an already-live "curious" donor — the exact same safe, ownership-
+-- gated, never-touch-the-shared-object pattern try_enforce_personality
+-- already uses above, just triggered by this one specific event instead of
+-- the periodic scan. If no live curious donor happens to be loaded nearby
+-- yet, the disposition STATE still updates (visible via GetDisposition/
+-- GetState) even though the real-behavior swap can't happen this time —
+-- same "state-only progress is still real progress" approach already used
+-- for the tier roll itself before enforcement existed.
+function Personality.OnSuccessfulInteraction(palId, palActor)
+    if palId == nil then return end
+    local state = PersonalityState[palId]
+    if not state then return end
+    if state.disposition ~= "escape" then return end
+    if state.becameFriendlyAfterInteraction then return end -- already won over once, no-op forever after
+
+    state.becameFriendlyAfterInteraction = true
+    state.disposition = "friendly"
+    Logger.log(string.format(
+        "[PalBonds/Personality] [WON-OVER] %s was escape, but a successful interaction won it over — tracked disposition now 'friendly' (rolled tier stays recorded as '%s' for history/debugging)",
+        tostring(palId), tostring(state.rolledTier)
+    ))
+
+    if not palActor then return end
+
+    -- Same ownership re-check discipline as try_enforce_personality — a
+    -- Pal's real-world status can change between the roll and this event.
+    local okReq, Capture = pcall(require, "Capture")
+    local isOwned = true -- fail-safe default: unknown -> don't touch real AI
+    if okReq and Capture and Capture.IsAlreadyOwned then
+        isOwned = safe_call(function() return Capture.IsAlreadyOwned(palActor) end)
+        if isOwned == nil then isOwned = true end
+    end
+    if isOwned ~= false then
+        return -- owned (or unreadable) — tracked-state change above is still real, just no AI swap
+    end
+
+    local desiredBaseName = TIER_TO_DONOR_PRESET_CLASS["friendly"]
+    local desiredClassName = desiredBaseName .. "_C"
+    if state.presetClassName == desiredClassName then
+        return -- this species already naturally uses the friendly preset, nothing to swap
+    end
+
+    local sensor = find_sensor_component(palActor)
+    if not sensor then
+        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " has no readable AISensorComponent — cannot swap its real AI, tracked disposition still updated")
+        return
+    end
+
+    local ok, err = apply_forced_preset(sensor, desiredBaseName)
+    if ok then
+        state.enforcementApplied = true
+        Logger.log(string.format(
+            "[PalBonds/Personality] [WON-OVER] %s real AIResponsePreset ALSO swapped to friendly (private preset, no live donor Pal needed — hundred-and-twenty-ninth pass)",
+            tostring(palId)
+        ))
+    else
+        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " — " .. tostring(err) .. " (tracked disposition still updated)")
+    end
+end
+
+-- Hundred-and-fifty-sixth pass (2026-09-04): generic version of the
+-- WON-OVER pattern above, for the opposite direction — Dragón's real
+-- fleeing on trust-loss (item 2 on the saved priority list). Capture.lua
+-- used to just flag a Pal internally and block further interaction,
+-- with an honest TODO admitting real flee behavior was never attempted
+-- (forcing an actor to flee looked like a new, risky call category at
+-- the time). It isn't anymore: this reuses the EXACT same private-preset
+-- swap already confirmed live today for the "escape" tier — no new
+-- native call, just forcing the tracked tier and letting the
+-- already-proven enforcement path apply it.
+--
+-- Resets `enforcementApplied = false` before attempting anything, so a
+-- Pal that was already successfully enforced under its OLD tier gets a
+-- genuine new attempt rather than being silently skipped (every
+-- enforcement path below gates on this flag). Honest caveat: the
+-- REACTIVE hook (on_sensor_select_response) dedupes by sensor identity,
+-- not by tier — a Pal whose sensor already fired through that hook once
+-- won't be re-caught by it for this NEW tier; only the immediate attempt
+-- here and the proactive periodic scan (find_sensor_component, the
+-- historically less reliable path) can retry it after that. Worth
+-- watching in real testing, not something to solve blind right now.
+function Personality.ForceTier(palId, palActor, tier)
+    if palId == nil then return end
+    local state = PersonalityState[palId]
+    if not state then return end
+
+    state.rolledTier = tier
+    state.disposition = tier
+    state.enforcementApplied = false
+    Logger.log(string.format(
+        "[PalBonds/Personality] [FORCE-TIER] %s tracked tier/disposition forced to '%s'",
+        tostring(palId), tostring(tier)
+    ))
+
+    if not palActor then return end
+
+    local okReq, Capture = pcall(require, "Capture")
+    local isOwned = true -- fail-safe default: unknown -> don't touch real AI
+    if okReq and Capture and Capture.IsAlreadyOwned then
+        isOwned = safe_call(function() return Capture.IsAlreadyOwned(palActor) end)
+        if isOwned == nil then isOwned = true end
+    end
+    if isOwned ~= false then
+        return -- owned (or unreadable) — tracked-state change above is still real, just no AI swap
+    end
+
+    local desiredBaseName = TIER_TO_DONOR_PRESET_CLASS[tier]
+    if not desiredBaseName then
+        Logger.log("[PalBonds/Personality] [FORCE-TIER] no donor preset defined for tier '" .. tostring(tier) .. "' — tracked state updated, no AI swap")
+        return
+    end
+    local desiredClassName = desiredBaseName .. "_C"
+    if state.presetClassName == desiredClassName then
+        return -- this species already naturally uses the desired preset, nothing to swap
+    end
+
+    local sensor = find_sensor_component(palActor)
+    if not sensor then
+        Logger.log("[PalBonds/Personality] [FORCE-TIER] " .. tostring(palId) .. " has no readable AISensorComponent right now — cannot swap its real AI immediately, tracked state still updated (the periodic scan will keep retrying)")
+        return
+    end
+
+    local ok, err = apply_forced_preset(sensor, desiredBaseName)
+    if ok then
+        state.enforcementApplied = true
+        Logger.log(string.format(
+            "[PalBonds/Personality] [FORCE-TIER] %s real AIResponsePreset ALSO swapped to '%s' (private preset)",
+            tostring(palId), tostring(tier)
+        ))
+    else
+        Logger.log("[PalBonds/Personality] [FORCE-TIER] " .. tostring(palId) .. " — " .. tostring(err) .. " (tracked state still updated, periodic scan will retry)")
+    end
+end
+
+-- Periodic scan. Hundred-and-twenty-ninth pass SIMPLIFICATION: this used
+-- to be two passes (build a presetClassName->live-actor donor lookup,
+-- THEN attempt enforcement using it) because the old mechanism needed a
+-- live Pal of the right species to borrow a preset reference from. Now
+-- that apply_forced_preset resolves each desired preset's own Class
+-- Default Object directly (find_preset_cdo — no donor Pal needed at all),
+-- enforcement no longer depends on anything else found in this same scan,
+-- so it's back to one straightforward pass: initialize state (rolling a
+-- tier the first time a Pal is seen) and attempt enforcement immediately,
+-- per Pal, independently. Each Pal is wrapped in its own safe_call so one
+-- bad actor can't stop the rest of the scan.
+local function scan_nearby_wild_pals_for_personality()
+    local pals = safe_call(function() return FindAllOf("PalCharacter") end)
+    if not pals then return end
+
+    local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+    local playerName = player and safe_call(function() return player:GetFullName() end)
+
+    for _, palActor in ipairs(pals) do
+        safe_call(function()
+            local validOk, isValid = pcall(function() return palActor ~= nil and palActor:IsValid() end)
+            if not (validOk and isValid) then return end
+
+            local actorName = safe_call(function() return palActor:GetFullName() end)
+            if actorName and playerName and actorName == playerName then
+                return -- FindAllOf("PalCharacter") also returns the player's own actor
+            end
+
+            local palId = Personality.GetOrInitState(palActor)
+            if palId == nil then return end
+
+            try_enforce_personality(palActor, palId)
+        end)
+    end
+end
+
+local function schedule_personality_scan()
+    local ok = pcall(function()
+        ExecuteInGameThreadWithDelay(PERSONALITY_SCAN_INTERVAL_MS, function()
+            safe_call(scan_nearby_wild_pals_for_personality)
+            schedule_personality_scan()
+        end)
+    end)
+    if not ok then
+        Logger.log("[PalBonds/Personality] [ENFORCE] could not schedule the personality scan — ExecuteInGameThreadWithDelay itself failed, enforcement will never run this session")
+    end
+end
+
+function Personality.Init()
+    -- Ninety-second pass: seed math.random once at mod load so the
+    -- personality-tier roll below isn't the same fixed sequence every
+    -- single game session (Lua's default seed is otherwise deterministic).
+    -- Wrapped in pcall purely out of this project's usual caution — os.time
+    -- is expected to be available in this UE4SS Lua environment, but a
+    -- missing/sandboxed os library should degrade to "still random within
+    -- a session, just the same sequence across sessions," not a crash.
+    pcall(function() math.randomseed(os.time()) end)
+    Logger.log("[PalBonds/Personality] real read-only helpers active (GetStableId, GetSpeciesDefaultDisposition) — no per-tick hooks, on-demand only, see file header")
+    if ENABLE_PERSONALITY_TIER_ROLL and FORCE_ALL_CURIOUS then
+        Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] FORCE_ALL_CURIOUS active — every wild Pal gets tier=friendly, weighted roll bypassed (hundred-and-forty-sixth pass, Dragón's request)")
+    elseif ENABLE_PERSONALITY_TIER_ROLL then
+        Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] weighted personality-tier assignment active (35% normal / 20% friendly / 10% escape / 10% notinterested / 5% warlike / 10% warlike_anyway / 10% warlike_without_player)")
+    else
+        Logger.log("[PalBonds/Personality] [PERSONALITY-ROLL] tier roll DISABLED (hundred-and-twenty-eighth pass, temporary) — every Pal's tracked disposition is its real species default, no override")
+    end
+
+    -- Ninety-third pass: start the recurring enforcement scan (see
+    -- schedule_personality_scan above) so tiers start affecting real
+    -- behavior as soon as a wild Pal is nearby, not only at pet/feed time.
+    -- Hundred-and-forty-seventh pass: confirmed live (no longer
+    -- "untested") — real testing shows this scan runs and finds Pals, but
+    -- every attempt currently fails on the still-open sensor-component bug
+    -- (item 4 on the saved priority list). GLOBAL-CURIOUS below doesn't
+    -- depend on this scan at all, so it isn't blocked by that bug.
+    schedule_personality_scan()
+    Logger.log("[PalBonds/Personality] [ENFORCE] recurring personality-enforcement scan scheduled, every " .. tostring(PERSONALITY_SCAN_INTERVAL_MS) .. "ms — proactive fallback path, still blocked by the sensor-component bug on its own")
+
+    -- Hundred-and-forty-eighth pass (2026-09-04): the REAL per-individual
+    -- fix — arm the reactive SelectResponseBySenses hook (see its own
+    -- comment above) so enforcement no longer depends on the broken
+    -- proactive scan at all. This is what actually lets per-individual
+    -- variety (the weighted tier roll) work in real gameplay, not just
+    -- get rolled and stored.
+    register_sensor_sense_hook(1)
+
+    -- Hundred-and-forty-seventh pass (2026-09-04): the real fix for
+    -- "wild Pals should just be calm, I shouldn't have to chase them" —
+    -- see apply_global_curious_preset_override's own comment above for
+    -- the full reasoning (copied from the Passive Pals reference mod's
+    -- actual default mechanism, not the per-individual one this project
+    -- had been trying). Runs independently of FORCE_ALL_CURIOUS/the
+    -- ENFORCE scan — a global, one-time (per session) shared-preset
+    -- rewrite, not per-Pal.
+    if FORCE_ALL_CURIOUS then
+        Logger.log("[PalBonds/Personality] [GLOBAL-CURIOUS] starting global preset override (rewrites shared AIResponsePreset objects directly — affects every wild Pal using them, no per-individual lookup)")
+        safe_call(function() apply_global_curious_preset_override(1) end)
+    end
+end
+
+--[[
+    STATUS as of the ninety-fourth pass — split into two distinct halves:
+
+    1. ASSIGNMENT (DONE): every wild Pal individual gets a randomly-rolled
+       personality tier the first time it's seen (50% normal / 25% curious
+       / 10% hostile / 15% skittish, see PERSONALITY_TIERS above),
+       persisted per stable ID, logged via [PERSONALITY-ROLL].
+       GetDisposition(palId) already returns the EFFECTIVE disposition
+       (the roll, if not "normal"; the species default otherwise) — any
+       code that already reads GetDisposition automatically gets the new
+       behavior with no changes needed on its end.
+
+    2. ENFORCEMENT (attempted twice now — ninety-third pass shipped it,
+       ninety-fourth pass fixed a real lag bug found in the first live
+       test, STILL UNCONFIRMED whether it actually changes behavior): a
+       recurring scan (scan_nearby_wild_pals_for_personality,
+       PERSONALITY_SCAN_INTERVAL_MS=8s) runs continuously, not just at
+       pet/feed time. For every wild Pal whose rolled tier isn't "normal,"
+       it looks for another already-loaded wild Pal whose species
+       naturally uses the matching real preset (Warlike/escape/friendly —
+       confirmed via repak/strings against the vanilla pak, see CLAUDE.md
+       "Continuación 66") and re-points just that ONE Pal's own
+       AIResponsePreset reference at it — never editing the shared preset
+       object itself, only ever writing to one specific wild (ownership-
+       checked) Pal's own field.
+
+       Dragón's first live test (ninety-third pass code) surfaced two real
+       problems, both addressed this pass:
+         - LAG (CONFIRMED, FIXED): the donor search re-called
+           GetPresetClassName fresh for every nearby Pal, every scan, for
+           every unresolved individual — 2813 identical log lines in ~3
+           minutes. Fixed by caching one presetClassName->actor lookup per
+           scan cycle. GetPresetClassName's own [DIAG] logging is now also
+           throttled to once per (actor, failure-type). If Dragón still
+           notices lag after this fix, this scan is still the first
+           suspect — check the log's line volume/timing again before
+           assuming otherwise.
+         - ZERO enforcement successes, and every single GetPresetClassName
+           call that session hit a NEW failure shape (preset:IsValid() ==
+           false — never seen before this session; every prior real test,
+           thirty-fifth/-sixth passes, hit a different silent-GetFullName-
+           failure instead). GetOrInitState now retries a failed
+           presetClassName resolution on later calls instead of
+           permanently caching the "curious" fallback from one bad first
+           read — if this was a "Pal was too freshly spawned when first
+           scanned" timing issue, it should now self-heal within a scan or
+           two. WHETHER THAT'S THE REAL ROOT CAUSE IS STILL UNCONFIRMED —
+           open question, needs another live test to know if it's fixed or
+           if presetClassName resolution is broken for a deeper reason.
+
+       Still true, unchanged from the ninety-third pass: if no live Pal
+       using the desired preset is loaded anywhere nearby, enforcement
+       can't happen yet for that individual (retries forever, not a
+       crash); and whether writing to AIResponsePreset from Lua actually
+       changes a live Pal's real in-game behavior (vs. being silently
+       ignored, cached elsewhere, or only read once at spawn) remains
+       COMPLETELY UNCONFIRMED until a SUCCESS line is seen AND the named
+       Pal is checked in person for a real behavior change. Once a Pal's
+       tier is confirmed either applied or deliberately skipped (owned,
+       "normal," or already-matching species), it's marked done and the
+       scan stops touching it.
+]]
+
+return Personality

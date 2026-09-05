@@ -1,0 +1,22 @@
+# Third-party reference mods (downloaded, not ours to redistribute)
+5055 QuickConsumableSlots 110 5055 1.1.0 2026-08-14T10-58Z 9AXTDKCQb/
+Food Expansion (with Buffs)-3159-2-0-0-1772850247/
+MultiPals/
+Pal Analyzer 0.86 (STEAM)-336-0-86-1772533592/
+PalFollowerTweaks 5343 1.0 2026-08-24T19-56Z YU8ZI94VI/
+Passive Pals 5445 1.0.0 2026-08-29T06-40Z qJmcAdFYa/
+PassiveWildPals (Steam) 5031 1 2026-08-11T20-21Z Len4csvLY/
+RemoteAccessEverything (Steam) 4698 4 2026-08-06T03-06Z nOvzQ7f8n/
+Schema Studio (palschema mod builder) 5095 v3.34.0 2026-08-30T22-42Z x2FA7zZeW/
+VisiblePalCaptureCounter 190 1.0.1 2026-07-12T21-28Z lEU84uZe8/
+
+# Extracted/unpacked third-party mod assets and repak mapping data
+research/
+
+# Stray backup and empty leftover folders
+_to_delete/
+palbonds-mod/
+palbonds-mod.zip
+
+# Never track live game logs
+*.log
