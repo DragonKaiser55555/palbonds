@@ -139,7 +139,23 @@ local TICK_INTERVAL_MS = 1500          -- how often the follower tick runs (move
 -- to retune live. NOT scaled by the level-gap multiplier (multiplier now
 -- only affects the bonding threshold size, not individual gains — see
 -- BONDING_TRIGGER_THRESHOLD_BASE).
-local PASSIVE_FRIENDSHIP_PER_TICK = 2
+-- ===================================================================
+-- BALANCE VERIFICATION MODE (two-hundred-and-seventh pass, 2026-09-06)
+-- ===================================================================
+-- Paired with Interaction.lua's BALANCE_VERIFICATION_MODE — flip both back
+-- together. See Trust.ComputeLevelMultiplier for what the first one does.
+local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = true
+
+-- Passive gain is also silenced during the verification run, and this is
+-- NOT cosmetic — it would corrupt the test. At 100 per interaction against
+-- a 500 threshold, the 3rd interaction crosses 50% (300 >= 250) and the Pal
+-- starts following, at which point passive gain begins adding 2 every 1.5s
+-- on its own. By the 5th interaction the total would already be past 500
+-- from passive drip alone, so a capture at "5" would prove nothing and a
+-- capture at 4 would look like a grant bug that isn't one. Restore to 2
+-- when BALANCE_VERIFICATION_MODE goes off.
+local REAL_PASSIVE_FRIENDSHIP_PER_TICK = 2
+local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST and 0 or REAL_PASSIVE_FRIENDSHIP_PER_TICK
 -- Hundred-and-eighty-fifth pass (2026-09-05): rescaled after Dragón's
 -- simplification (small vanilla-scale bonding numbers, one lump bonus
 -- at actual capture — see BONDING_TRIGGER_THRESHOLD_BASE and
@@ -292,6 +308,18 @@ local EASY_TEST_SPEEDUP = 10
 local LevelMultiplierCache = {}
 
 function Trust.ComputeLevelMultiplier(palActor)
+    -- Two-hundred-and-seventh pass (2026-09-06): Dragón's balance
+    -- verification run, his own design — "turn off the multipliers by level
+    -- for now, so i can test the base with all and any pal." With this on,
+    -- every Pal's bonding threshold is exactly BONDING_TRIGGER_THRESHOLD_BASE
+    -- (500) regardless of its level or the player's, so 5 interactions worth
+    -- 100 each capture ANY Pal and a wrong count points at a wrong grant
+    -- rather than at level scaling. Set back to false together with
+    -- Interaction.lua's BALANCE_VERIFICATION_MODE.
+    if LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST then
+        return 1.0
+    end
+
     if EASY_TEST_MODE then
         return 1 / EASY_TEST_SPEEDUP
     end

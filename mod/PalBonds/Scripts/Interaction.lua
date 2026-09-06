@@ -411,6 +411,39 @@ local PET_GRANT_CHECK_DELAY_MS = 3000
 local KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = 250   -- AffectionFruit_02
 local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     -- AffectionFruit_01
 
+-- ===================================================================
+-- BALANCE VERIFICATION MODE (two-hundred-and-seventh pass, 2026-09-06)
+-- ===================================================================
+-- Dragón's own test design, to prove the three interaction types actually
+-- pay out the numbers they claim before any real balancing is done on top:
+-- set Pet, Feed and Play all to the same round number, turn the level-gap
+-- multiplier off so every Pal behaves identically, and check that exactly
+-- 5 interactions of ANY type capture a Pal (5 x 100 = the 500 bonding
+-- threshold). If a type takes more or fewer than 5, that type's grant is
+-- wrong, and the [BALANCE-TEST] log line says by how much.
+--
+-- Flip this ONE flag back to false to restore the real balance values.
+-- Nothing else needs changing — every real number is preserved in the
+-- REAL_* constants below, untouched.
+-- The real values, for when this flag goes back to false:
+--   Pet 25, Feed 50, Play 25, Kinship Peach 250/500 (peaches are NOT
+--   overridden below — they are already confirmed correct, and leaving
+--   them real keeps the one-shot peach behaviour testable too).
+local BALANCE_VERIFICATION_MODE = true
+
+if BALANCE_VERIFICATION_MODE then
+    PET_FRIENDSHIP_GAIN  = 100
+    FEED_FRIENDSHIP_BASE = 100
+end
+local PLAY_FRIENDSHIP_GAIN = BALANCE_VERIFICATION_MODE and 100 or 25
+
+-- Forward declaration. The real definition lives next to
+-- closeRadialMenuActionWindow (it needs the radial-menu state), but do_play
+-- above it also grants through it, and Lua locals are not hoisted. Assigned
+-- immediately after that definition; every call site is inside a safe_call,
+-- so even a missing assignment degrades to a logged failure, not an error.
+local grant_wild_interaction = nil
+
 -- EPalActionType values, from Pal_enums.hpp.
 -- HumanPetting/HumanFeeding: the PLAYER's own "reach out" gesture,
 -- self-targeted on the player's own ActionComponent, aimed at the Pal.
@@ -1649,12 +1682,34 @@ local function do_play()
                     actionComp:PlayActionByType(pal, ACTION_TYPE_HAPPY)
                 end)
                 Logger.log(string.format(
-                    "[PalBonds/Interaction] Play: Happy follow-up call returned — result=%s (the [WATCH] AddFriendShip hook will log the real grant a couple seconds from now)",
+                    "[PalBonds/Interaction] Play: Happy follow-up call returned — result=%s",
                     happyOk and "ok" or tostring(happyErr)
                 ))
-                if Interaction.OnWildPalPetted then
-                    Interaction.OnWildPalPetted(pal)
-                end
+
+                -- Two-hundred-and-seventh pass (2026-09-06) — REAL BUG FIX.
+                -- This used to grant nothing at all and simply call
+                -- OnWildPalPetted, on the assumption (stated in the old log
+                -- line here: "the [WATCH] hook will log the real grant a
+                -- couple seconds from now") that the Happy action above
+                -- grants friendship as a side effect.
+                --
+                -- The hundred-and-fifty-ninth pass DISPROVED that with a
+                -- controlled 9-datapoint test: Happy() grants exactly zero
+                -- in this context. So Play has been worth 0 friendship the
+                -- entire time, and the 10 -> 25 rebalance Dragón asked for
+                -- in the two-hundred-and-first pass was applied to a
+                -- constant that only appears in the fallback branch below —
+                -- a branch that runs only if SCHEDULING fails, i.e.
+                -- essentially never. Play's number has never once been the
+                -- number Dragón configured.
+                --
+                -- Now granted explicitly, through the same bookkeeping path
+                -- Pet and Feed use (ownership-guarded, logs [BALANCE-TEST],
+                -- notifies Trust). The Happy animation above still plays —
+                -- that part was always fine, it just never paid out.
+                safe_call(function()
+                    grant_wild_interaction(pal, PLAY_FRIENDSHIP_GAIN, "Play")
+                end)
             end)
         end)
     end)
@@ -2388,6 +2443,17 @@ local radialMenuRedirectedThisWindow = false
 -- re-announces even if you happen to aim at the same Pal as last time.
 local lastRedirectedWildPalName = nil
 
+-- Two-hundred-and-seventh pass (2026-09-06): the ACTOR, not just its name.
+-- closeRadialMenuActionWindow needs a real reference to the wild Pal that
+-- was substituted for this window, so it can grant friendship to it
+-- directly rather than routing through do_pet()/do_interaction() and being
+-- swallowed by that function's anti-spam gate (see grant_wild_interaction's
+-- comment for the full bug). Set on every qualifying redirect and cleared
+-- when a new window opens, exactly like lastRedirectedWildPalName above —
+-- and re-validated with IsValid() at the point of use, since a wild Pal can
+-- despawn between the menu opening and the action resolving.
+local lastRedirectedWildPalActor = nil
+
 -- Hundredth pass (2026-09-03) FIX: this was 1500ms, and Dragón's live test
 -- proved that's too short — real decision events (OnDecidedInstructionCare/
 -- Feed) kept firing 3-4 real seconds after the menu opened, well past this
@@ -2466,6 +2532,7 @@ local function openRadialMenuActionWindow(widget)
     radialMenuActionWindowOpen = true
     radialMenuRedirectedThisWindow = false
     lastRedirectedWildPalName = nil
+    lastRedirectedWildPalActor = nil
     lastDecidedInstruction = nil
     cachedRedirectWildPal = nil
     lastRedirectComputeClock = nil
@@ -2557,15 +2624,115 @@ local function do_real_wild_feed_via_worker_menu()
     return true
 end
 
+-- Two-hundred-and-seventh pass (2026-09-06) — THE ROOT CAUSE OF THE
+-- IRREGULAR FRIENDSHIP GAINS, and the fix.
+--
+-- The bug: for a radial-menu Pet on a substituted wild Pal, this function
+-- called `do_pet()`, which routes into `do_interaction()`. But
+-- `do_interaction`'s FIRST gate is "is the player already mid-action? if
+-- so, ignore this press" — an anti-spam guard written for a raw keypress.
+-- On the radial path that guard is not just useless but actively wrong:
+-- the whole point of the substitution is that the game's OWN Cuidar action
+-- is starting on the player at that exact moment. So the player is
+-- legitimately mid-action, the gate fires, and `do_interaction` returns
+-- before ever reaching the friendship grant OR the
+-- `Interaction.OnWildPalPetted(pal)` call at its end.
+--
+-- That call is what gates EVERYTHING downstream in Trust.lua: the 20%
+-- friendly trigger, the 50% follow trigger, the capture-threshold check,
+-- and whether the Pal gets a trust bar at all. So a radial Pet would
+-- sometimes register fully and sometimes register nothing, depending purely
+-- on whether our call won a race against vanilla's own animation starting.
+-- That is exactly the "friendship gains working irregularly" Dragón has
+-- been reporting across several runs, and it also explains bars that appear
+-- late and thresholds that fire several at once.
+--
+-- The fix: on the radial path, stop calling `do_pet()` at all. Vanilla is
+-- already playing the real animation — we do not want to play another one,
+-- we only want the BOOKKEEPING half. `grant_wild_interaction` below is that
+-- half, extracted with no busy-gates and no `PlayActionByType`: resolve the
+-- wild target, grant the configured amount, notify Trust. It cannot be
+-- raced or silently skipped.
+-- NOTE: assignment, not `local function` — this fills in the forward
+-- declaration near the top of the file (see PLAY_FRIENDSHIP_GAIN's block).
+-- Writing `local function` here would create a second, shadowing local and
+-- leave do_play's earlier reference permanently nil.
+grant_wild_interaction = function(pal, amount, label)
+    if pal == nil then
+        Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": no target actor — nothing granted")
+        return false
+    end
+    local valid = safe_call(function() return pal:IsValid() end)
+    if not valid then
+        Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": target actor no longer valid — nothing granted")
+        return false
+    end
+
+    -- Same hard ownership guard every other real-effect path in this
+    -- project uses, and the specific reason the eighty-second pass's
+    -- re-capture incident cannot repeat here: an owned Pal is never
+    -- granted through this path, and IsAlreadyOwned fails safe toward
+    -- "treat as owned".
+    local isOwned = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
+    if isOwned ~= false then
+        Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": target is owned (or ownership unreadable) — refusing to grant, this path is wild-Pal only")
+        return false
+    end
+
+    local param = get_individual_parameter(pal)
+    if not param or not param:IsValid() then
+        Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": could not resolve IndividualParameter — nothing granted")
+        return false
+    end
+
+    local before = safe_call(function() return param:GetFriendshipPoint() end)
+    local grantOk, grantErr = pcall(function() param:AddFriendShip(amount, false) end)
+    local after = safe_call(function() return param:GetFriendshipPoint() end)
+
+    -- [BALANCE-TEST] is the line to read during Dragón's 5-interactions-per-
+    -- Pal verification run: it states the exact before, the exact after and
+    -- the amount intended, so a wrong number is visible directly instead of
+    -- being inferred from how many interactions a capture took.
+    Logger.log(string.format(
+        "[PalBonds/Interaction] [BALANCE-TEST] %s on %s — intended +%s, friendship %s -> %s (call=%s)",
+        tostring(label), tostring(safe_call(function() return pal:GetFullName() end)),
+        tostring(amount), tostring(before), tostring(after),
+        grantOk and "ok" or tostring(grantErr)
+    ))
+
+    if Interaction.OnWildPalPetted then
+        Interaction.OnWildPalPetted(pal)
+    end
+    return true
+end
+
 local function closeRadialMenuActionWindow()
     if radialMenuRedirectedThisWindow and lastDecidedInstruction then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] window closing with a substituted wild Pal and a decided instruction=" .. tostring(lastDecidedInstruction) .. " — firing the real action now")
         if lastDecidedInstruction == "care" then
-            safe_call(do_pet)
+            -- Bookkeeping only. Vanilla's own Cuidar action is already
+            -- playing on this Pal because of the substitution — calling
+            -- do_pet() here would try to play a SECOND animation and, far
+            -- worse, would be swallowed by its own anti-spam gate.
+            safe_call(function()
+                grant_wild_interaction(lastRedirectedWildPalActor, PET_FRIENDSHIP_GAIN, "Pet (radial)")
+            end)
         elseif lastDecidedInstruction == "feed" then
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
             if not realFeedOk then
-                safe_call(do_feed)
+                -- Two-hundred-and-seventh pass: the real feed path grants
+                -- on its own, from the RequestUseToCharacter post-hook
+                -- (which reads the actual item consumed, so Kinship Peaches
+                -- get their own amounts) — that path is untouched and stays
+                -- the primary one. This is only the fallback for when the
+                -- real worker-menu dispatch fails, and it had the exact same
+                -- swallowed-by-the-busy-gate problem Pet had: do_feed()
+                -- routes into do_interaction, which bails before granting.
+                -- Bookkeeping-only here too, so a fallback feed is no longer
+                -- silently worth zero.
+                safe_call(function()
+                    grant_wild_interaction(lastRedirectedWildPalActor, FEED_FRIENDSHIP_BASE, "Feed (radial fallback)")
+                end)
             end
         end
     end
@@ -2727,12 +2894,28 @@ function Interaction.Init()
     -- pass. Runs once automatically — no key needed, no gameplay effect.
     safe_call(run_balance_diagnostic_once)
 
-    RegisterKeyBind(Key[PET_KEY], function()
-        safe_call(do_pet)
-    end)
-    RegisterKeyBind(Key[FEED_KEY], function()
-        safe_call(do_feed)
-    end)
+    -- Two-hundred-and-seventh pass (2026-09-06) — F9/F10 REMOVED, at
+    -- Dragón's explicit request. His words: "i havent used f9 in a while,
+    -- idk why you IA's keep bringing it out... all this time i've been
+    -- using the radial menu, so no, no f9 have been triggered on purpose,
+    -- at least not by my own purpose, this same happens with f10."
+    --
+    -- The design rule this sets, which should not be re-litigated by a
+    -- later session: **Pet and Feed are radial-menu interactions, not
+    -- hotkeys.** Pressing "4" and picking the action is what the game
+    -- itself does and what the player finds intuitive; a raw function key
+    -- is not. Play (F8) keeps its key ONLY because it has no radial
+    -- equivalent yet — and per Dragón, Play should move into the radial
+    -- menu too once that's possible.
+    --
+    -- do_pet/do_feed themselves are NOT deleted: the radial path still
+    -- routes through them for the animation-playing case (see
+    -- closeRadialMenuActionWindow). Only the key bindings are gone.
+    --
+    -- This also removes a real source of confusion in this project's own
+    -- diagnosis: several passes reasoned about "F9's grant" as though it
+    -- were the number Dragón was seeing in game, when he was never
+    -- pressing F9 at all.
     RegisterKeyBindAsync(TEST_CAPTURE_KEY, TEST_CAPTURE_MODIFIERS, function()
         safe_call(do_test_capture)
     end)
@@ -4068,6 +4251,14 @@ function Interaction.Init()
                     -- second for as long as you keep aiming at the same
                     -- wild Pal within the window; only log again if the
                     -- aimed Pal itself changes.
+                    -- Two-hundred-and-seventh pass: capture the actor on
+                    -- EVERY qualifying redirect, deliberately outside the
+                    -- name-change dedup below (that dedup exists only to
+                    -- throttle the log line). If this were inside it, a
+                    -- second "4" press aimed at the same Pal would leave a
+                    -- stale/cleared reference and the grant would be lost.
+                    lastRedirectedWildPalActor = wildPal
+
                     if lastRedirectedWildPalName ~= wildPalName then
                         lastRedirectedWildPalName = wildPalName
                         Logger.log(string.format(

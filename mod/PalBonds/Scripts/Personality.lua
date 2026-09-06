@@ -1643,6 +1643,115 @@ end
 -- here and the proactive periodic scan (find_sensor_component, the
 -- historically less reliable path) can retry it after that. Worth
 -- watching in real testing, not something to solve blind right now.
+-- Two-hundred-and-seventh pass (2026-09-06) — COMPANION PRESET.
+--
+-- The reasoning, so a later session doesn't mistake this for another blind
+-- attempt at the follow problem. Every previous follow mechanism tried to
+-- ADD a following behaviour (a move order, an Otomo composite, the Funnel
+-- system) and lost to the Pal's own AI, which kept re-deciding and
+-- overriding it. Dragón's own observation was the clearest evidence: a
+-- FlowerRabbit turned to look at him as the order landed, then resumed its
+-- own path one frame later, every 1.5 seconds.
+--
+-- This takes the opposite approach: instead of out-shouting the wild AI,
+-- SILENCE IT. The AI's whole decision vocabulary about the player is one of
+-- four values (EPalAIResponseType: Ignore=0, Escape=1, Battle=2,
+-- Special=3). Setting every "what do I do about the player" slot to Ignore
+-- means the Pal's own AI stops producing any decision about the player at
+-- all — so there is nothing left to override the move order Combat.lua
+-- issues. This is not a new mechanism: it is the exact private-preset write
+-- that already demonstrably works (Dragón confirmed warlike Pals really do
+-- attack and escape Pals really do flee), just aimed at a different result.
+--
+-- Note honestly what this does NOT do: it does not make the Pal follow. It
+-- removes the interference. The actual movement still comes from Combat's
+-- move order, which is still an approximation, not real Otomo following.
+--
+-- combatAssist additionally sets the three non-player Discover slots to
+-- Battle, so a bonded companion engages other Pals it notices while leaving
+-- the player alone. That is the same Warlike behaviour already proven to
+-- work, scoped to exclude the player.
+local COMPANION_RESPONSE_IGNORE = 0
+local COMPANION_RESPONSE_BATTLE = 2
+local COMPANION_PLAYER_SLOTS = { "Discover_Player", "Damaged_Player" }
+local COMPANION_OTHER_DISCOVER_SLOTS = { "Discover_Greater", "Discover_Equal", "Discover_Smaller" }
+
+function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
+    if palId == nil or palActor == nil then return false end
+
+    local okReq, Capture = pcall(require, "Capture")
+    local isOwned = true
+    if okReq and Capture and Capture.IsAlreadyOwned then
+        isOwned = safe_call(function() return Capture.IsAlreadyOwned(palActor) end)
+        if isOwned == nil then isOwned = true end
+    end
+    if isOwned ~= false then
+        return false -- owned or unreadable: never touch a real Otomo's AI
+    end
+
+    local sensor = find_cached_sensor(palId) or find_sensor_component(palActor)
+    if not sensor then
+        Logger.log("[PalBonds/Personality] [COMPANION] " .. tostring(palId) .. " — no readable sensor yet, cannot apply the companion preset (will be retried on the next follow tick)")
+        return false
+    end
+
+    -- Start from the friendly preset's real defaults, then override. Using a
+    -- real CDO as the base (rather than constructing every field from
+    -- scratch) keeps any slot this project doesn't know about at a sane,
+    -- game-authored value.
+    local cdo = find_preset_cdo("BP_AIResponsePreset_friendly")
+    local nativeClass = get_native_preset_class()
+    if not cdo or not nativeClass then
+        Logger.log("[PalBonds/Personality] [COMPANION] could not resolve the friendly CDO or the native preset class — no companion preset applied")
+        return false
+    end
+
+    local fresh = safe_call(function() return StaticConstructObject(nativeClass, sensor) end)
+    local freshOk, freshValid = pcall(function() return fresh ~= nil and fresh:IsValid() end)
+    if not (freshOk and freshValid) then
+        Logger.log("[PalBonds/Personality] [COMPANION] StaticConstructObject failed — no companion preset applied")
+        return false
+    end
+
+    local buildOk, buildErr = pcall(function()
+        for _, prop in ipairs(PRESET_SLOTS) do
+            fresh[prop] = cdo[prop]
+        end
+        for _, prop in ipairs(COMPANION_PLAYER_SLOTS) do
+            fresh[prop] = COMPANION_RESPONSE_IGNORE
+        end
+        if combatAssist then
+            for _, prop in ipairs(COMPANION_OTHER_DISCOVER_SLOTS) do
+                fresh[prop] = COMPANION_RESPONSE_BATTLE
+            end
+        end
+    end)
+    if not buildOk then
+        Logger.log("[PalBonds/Personality] [COMPANION] failed building the companion preset: " .. tostring(buildErr))
+        return false
+    end
+
+    local setOk, setErr = pcall(function() sensor.AIResponsePreset = fresh end)
+    if not setOk then
+        Logger.log("[PalBonds/Personality] [COMPANION] AIResponsePreset write FAILED: " .. tostring(setErr))
+        return false
+    end
+
+    local st = PersonalityState[palId]
+    if st then st.disposition = combatAssist and "companion_combat" or "companion" end
+
+    Logger.log(string.format(
+        "[PalBonds/Personality] [COMPANION] %s now has a companion preset (player slots=Ignore%s) — its own AI should no longer generate decisions about the player",
+        tostring(palId), combatAssist and ", other Discover slots=Battle" or ""
+    ))
+
+    -- Same interrupt already proven to succeed 5/5 on wild Pals: drop
+    -- whatever the Pal decided a moment ago so the new preset is consulted
+    -- on its next decision instead of a stale one being held.
+    interrupt_and_resense(palActor, sensor, palId)
+    return true
+end
+
 function Personality.ForceTier(palId, palActor, tier)
     if palId == nil then return end
     local state = PersonalityState[palId]

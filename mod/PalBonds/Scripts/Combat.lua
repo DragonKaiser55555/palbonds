@@ -118,8 +118,40 @@ local FOLLOW_ACCEPTANCE_RADIUS = 200.0 -- how close the move order tries to brin
 -- purpose before). See CLAUDE.md's Daedream/Dazzi/Floppie research note for
 -- the live investigation into whether/how that's reachable for a Pal that
 -- was never captured at all.
-local USE_OLD_MOVE_ORDER_NUDGE = false
+-- Two-hundred-and-seventh pass (2026-09-06): the move-order nudge is back
+-- ON, but it is NOT the same nudge that was switched off in the
+-- two-hundred-and-third pass. Two things changed around it, both built from
+-- calls already proven to work on wild Pals:
+--
+--   1. Personality.ApplyCompanionPreset (called from StartFollowing) sets
+--      the Pal's own "what do I do about the player" responses to Ignore,
+--      so its AI stops generating the competing decisions that were
+--      overriding the order. The old nudge failed because it was fighting
+--      that AI; now there is nothing to fight.
+--   2. Each order is preceded by AllCancelAction_Logic_HardScript_Reaction
+--      (see IssueFollowMoveOrder), the same interrupt confirmed to succeed
+--      5/5 on wild Pals, so whatever action is currently occupying the Pal
+--      is dropped immediately before the order lands rather than continuing
+--      to run over it.
+--
+-- The repeated Otomo composite stays OFF: it was tested cleanly on its own
+-- in the two-hundred-and-third pass (3/3 Pals broke the leash without
+-- moving toward the player once) and depends on ownership this Pal doesn't
+-- have. Nothing learned since changes that assessment.
+local USE_OLD_MOVE_ORDER_NUDGE = true
 local USE_REPEATED_OTOMO_COMPOSITE = false
+
+-- Combat assist, per Dragón's explicit go-ahead this pass. Applied as part
+-- of the same companion preset: a following Pal's Discover responses to
+-- OTHER Pals become Battle, while its responses to the player stay Ignore.
+-- This reuses the exact mechanism already confirmed working (a Warlike
+-- preset really does make a wild Pal attack) rather than inventing a new
+-- targeting system. Known limitation, stated honestly: this makes the
+-- companion engage what it notices, not specifically what the player is
+-- fighting. Targeting the player's own current enemy would need the Hate
+-- system (HateSystem:ChangeHate / APalAIController.TargetPlayers), which is
+-- real but has never been explored for this purpose.
+local ENABLE_COMBAT_ASSIST = true
 
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
@@ -344,6 +376,25 @@ function Combat.StartFollowing(pal)
     -- (or pushed) here as a one-shot — see TickRealOtomoFollow above.
     -- Trust.lua's tick_followers calls that function every tick from here
     -- on, which lazily builds the cached composite on its first real call.
+
+    -- Two-hundred-and-seventh pass (2026-09-06): apply the companion preset
+    -- the moment a Pal starts following. See Personality.ApplyCompanionPreset
+    -- for the full reasoning — in short, this silences the Pal's own AI
+    -- decisions ABOUT THE PLAYER (setting them to Ignore) so they stop
+    -- overriding the move order below, which is the specific failure Dragón
+    -- observed directly (a Pal turning toward him, then resuming its own
+    -- path a frame later, once per tick).
+    --
+    -- Also switches on combat assist, per Dragón's explicit go-ahead: the
+    -- three non-player Discover slots become Battle, so a bonded companion
+    -- engages other Pals it notices while never turning on the player.
+    safe_call(function()
+        local okReq, Personality = pcall(require, "Personality")
+        if not (okReq and Personality and Personality.ApplyCompanionPreset) then return end
+        local palId = Personality.GetOrInitState and Personality.GetOrInitState(pal)
+        if not palId then return end
+        Personality.ApplyCompanionPreset(palId, pal, ENABLE_COMBAT_ASSIST)
+    end)
 end
 
 function Combat.StopFollowing(pal)
@@ -386,6 +437,28 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
     if not Combat.IsFollowing(pal) then return end
     local controller = safe_call(function() return pal.Controller end)
     if not controller or not controller:IsValid() then return end
+
+    -- Two-hundred-and-seventh pass: cancel whatever the Pal is currently
+    -- doing IMMEDIATELY before issuing the order. This is the same
+    -- AllCancelAction_Logic_HardScript_Reaction that the personality
+    -- interrupt uses and that was confirmed to succeed on 5 of 5 real wild
+    -- Pals — it has simply never been paired with movement before, only
+    -- with preset swaps. Without it, the Pal's in-progress wander/graze
+    -- action keeps running and the move order is effectively queued behind
+    -- something that never yields, which matches the observed "turns toward
+    -- the player, then carries on with what it was doing" behaviour.
+    -- Best-effort: a failure here still lets the order below be issued.
+    safe_call(function()
+        local actionComp = controller:GetAIActionComponent()
+        if actionComp and actionComp:IsValid() then
+            -- Exact call shape copied from Personality.interrupt_and_resense,
+            -- which is the version confirmed working live: it is the
+            -- controller's AI action component (NOT the Pal's own
+            -- ActionComponent), and it takes the actor as an argument.
+            actionComp:AllCancelAction_Logic_HardScript_Reaction(pal)
+        end
+    end)
+
     local ok, resultOrErr = pcall(function()
         return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
     end)
