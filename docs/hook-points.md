@@ -1165,3 +1165,38 @@ The root cause of (1) is the important part: I gated it on `ActionIsEmpty()`, **
 **Also confirmed from this run:** `[HATE-ASSIST]` fired zero times — expected, since no companion was ever actually following long enough for a fight to happen, so combat assist remains completely untested rather than disproven. And `find_targeted_pal` is now 42-47ms (was 48-74ms): the GetFullName-per-Pal removal helped, but the remaining `FindAllOf` + per-Pal `K2_GetActorLocation` cost is still a real hitch and still the largest one left.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-eleventh pass (2026-09-06): four bugs found in the log (two of them mine from last pass), the damage rule removed at Dragón's call, and a continuous move-to-ACTOR follow primitive that answers his SetActiveAI question
+
+**1. The toast — the log gave the exact error, which beat the symptom report.** Dragón reported "no text whatsoever", which sounded like a regression. The log said what actually happened:
+
+```
+[NOTIFY] resolved display name BEFORE capture = FString: 000001EFCCE1BFC8
+[NOTIFY] failed to show join toast: Capture.lua:282: attempt to concatenate a FString value (local 'palName')
+```
+
+So the name lookup WORKS — `GetLocalizedText` returned a real FText and `Conv_TextToString` returned a real value. That value is an **FString userdata wrapper, not a Lua string**, and concatenating it raises an error. Last pass's fix (resolve before the capture) was correct and necessary; this was a second, independent bug hiding behind it, which is exactly why the symptom changed from "generic text" to "no text at all" — the error now happens after the message would have been built. Fixed with a `to_lua_string` helper that handles both wrapper and plain string and deliberately refuses `tostring()`'s "FString: 0x..." rather than showing an address to the player.
+
+**2. `[HATE-ASSIST]` fired ZERO times, and the reason is a bug I introduced, not an absence of fights.** Trust.lua has NO file-level `Combat` local — every other call site uses the lazy `pcall(require, "Combat")` pattern. Last pass I wrote `Combat.OnPlayerCombatTarget(enemy)` in the DamageEvent hook as if the module were in scope, so it indexed a nil GLOBAL, raised an error, and `safe_call` swallowed it every single time. **The wrong conclusion was then reported to Dragón** ("no companion followed long enough for a fight") when the call had simply never run. Fixed with the same lazy-require pattern. Combat assist remains entirely unexercised.
+
+**3. The damage rule is removed for third-party attackers — Dragón's call, and the log backs it exactly.** Line-for-line from his run: a bonded FlowerDoll took 21 damage from a wild PinkRabbit, ate the full `-150` penalty, dropped to zero trust, and was force-tiered to "escape" — so it fled instead of fighting back. His reasoning: *"maybe we will need to remove that rule out, and only make them lose friendship if the player themselves hit them (the betrayal effect), since right now, in order for them to enter combat, first need to be hit by something."* Correct, and the rule had become self-defeating: the entire point of `Damaged_*` = Battle is that a companion gets hit and fights back, but the penalty destroyed the bond at exactly that moment. Third-party damage now costs no trust at all. Player betrayal is untouched and still resets the bond — that is a deliberate player choice, not something the world did to them.
+
+**4. The `[CAGE-VFX]` probe had a self-contradictory bug, and it wasted Dragón's trip.** His log:
+
+```
+[CAGE-VFX] CDO cage NiagaraComponent=nil Asset=nil
+[CAGE-VFX] asset resolved — probe done, will not run again this session
+```
+
+Those two lines cannot both be true. The cause: the log line was written as `tostring(obj and obj:GetFullName() or "nil")`, which prints "nil" both when the object is genuinely nil AND when the object exists but GetFullName fails — so the probe may well have HELD the asset and merely failed to print its name, then declared success on a read that produced nothing. Worse, it marked itself done at startup, so when Dragón went to a second settlement specifically to provide a fresh cage, nothing was still watching. Fixed three ways: presence and name are now reported as separate fields, success requires a real NAME STRING (with `GetPathName` as a second route), and the retry runs for ~30 minutes instead of 2 — because a cage only exists in the world once the player physically reaches one.
+
+**5. Following — answering Dragón's SetActiveAI question with a real function, not a variation.** He asked whether something exists like the old `SetActiveAI(false)` (which stopped wandering but made Pals inert enough to stand there dying — the eighteenth pass's incident) but less total. Searching `APalAIController` in this build's dump turned up something better than a suppression switch:
+
+```
+void SimpleMoveToActorWithLineTraceGround(const class AActor* GoalActor,
+                                          TEnumAsByte<ECollisionChannel> CollisionChannel)
+```
+
+**Every follow attempt this project has ever made has been LOCATION based** — the original nudge, the Otomo composite, and last pass's orbit — a one-shot "walk to this point" that completes, after which the Pal has no goal and its own AI takes over. This one takes an **ACTOR** as the goal, which is inherently continuous: the engine keeps steering toward a target that moves, which is what following actually means. It also fits Dragón's newest observation better than the idle theory did — he said the Pals "still managed to idle away somehow", doubting that reaching the goal is what triggers the wander. If the real problem is that a completed point-order simply leaves no goal at all, a target that is never "reached" removes the whole class of problem rather than patching a symptom. Tried first, behind `USE_MOVE_TO_ACTOR_FOLLOW`, with the location order as automatic fallback so a live test attributes any change cleanly. `ECC_Visibility = 3` read from Engine_enums.hpp, not guessed.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

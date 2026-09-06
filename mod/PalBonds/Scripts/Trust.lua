@@ -805,7 +805,7 @@ local function tick_followers()
                             -- Dragón, replacing the old one-shot call that
                             -- used to fire only from Combat.StartFollowing.
                             if Combat.IssueFollowMoveOrder then
-                                Combat.IssueFollowMoveOrder(st.pal, playerLoc)
+                                Combat.IssueFollowMoveOrder(st.pal, playerLoc, player) -- two-hundred-and-eleventh pass: actor passed for continuous move-to-actor following
                             end
                             if Combat.TickRealOtomoFollow then
                                 Combat.TickRealOtomoFollow(st.pal, key)
@@ -897,7 +897,26 @@ function Trust.Init()
                         enemy = attacker          -- something hit the player
                     end
                     if enemy ~= nil then
-                        safe_call(function() Combat.OnPlayerCombatTarget(enemy) end)
+                        -- Two-hundred-and-eleventh pass (2026-09-06) — REAL
+                        -- BUG FIX, and the reason [HATE-ASSIST] fired ZERO
+                        -- times in Dragón's run. This file has no file-level
+                        -- `Combat` local: every other call site uses the lazy
+                        -- `pcall(require, "Combat")` pattern (see
+                        -- StartFollowing/StopFollowing/tick_followers below).
+                        -- The previous pass wrote `Combat.OnPlayerCombatTarget`
+                        -- here as if the module were in scope, so it indexed a
+                        -- nil GLOBAL, raised an error, and safe_call swallowed
+                        -- it silently — every single time.
+                        --
+                        -- Worth recording because the wrong conclusion was
+                        -- drawn from it: the zero was reported to Dragón as
+                        -- "no companion followed long enough for a fight",
+                        -- when in fact the call never ran at all. Combat
+                        -- assist has still never actually been exercised.
+                        local okCombatReq, CombatMod = pcall(require, "Combat")
+                        if okCombatReq and CombatMod and CombatMod.OnPlayerCombatTarget then
+                            safe_call(function() CombatMod.OnPlayerCombatTarget(enemy) end)
+                        end
                     end
                 end
             end
@@ -918,7 +937,35 @@ function Trust.Init()
                 local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
                 local playerName = player and safe_call(function() return player:GetFullName() end)
                 local attackerIsPlayer = (attackerName ~= nil and playerName ~= nil and attackerName == playerName)
-                Trust.OnFollowerDamaged(State[defenderName].pal, attackerIsPlayer)
+
+                -- Two-hundred-and-eleventh pass (2026-09-06) — Dragón's call,
+                -- and the log backs it up exactly. His run showed a bonded
+                -- FlowerDoll take 21 damage from a wild PinkRabbit, eat the
+                -- full -150 penalty, drop to zero trust and get force-tiered
+                -- to "escape" — so instead of fighting back it fled, which is
+                -- precisely the opposite of the companion behaviour being
+                -- built.
+                --
+                -- His reasoning: "maybe we will need to remove that rule out,
+                -- and only make them lose friendship if the player themselves
+                -- hit them (the betrayal effect), since right now, in order
+                -- for them to enter combat, first need to be hit by
+                -- something." That is exactly right, and the rule is now
+                -- self-defeating: the whole point of Damaged_* = Battle is
+                -- that a companion gets hit and fights back, but the penalty
+                -- destroyed the bond at the very moment that was supposed to
+                -- happen.
+                --
+                -- So third-party damage no longer costs any trust at all.
+                -- Betrayal (the player hitting their own bonding Pal) is
+                -- untouched and still resets the bond outright — that is a
+                -- deliberate player choice, not something the world did to
+                -- them.
+                if attackerIsPlayer then
+                    Trust.OnFollowerDamaged(State[defenderName].pal, true)
+                else
+                    Logger.log("[PalBonds/Trust] following Pal was damaged by something other than the player — no trust penalty (two-hundred-and-eleventh pass: a companion getting hit is expected now that it fights back)")
+                end
             end
         end)
     end)

@@ -170,6 +170,13 @@ local ORBIT_ACCEPTANCE_RADIUS = 60.0
 local ORBIT_STEP_RADIANS = 0.9 -- ~52 degrees per tick, so a full circle takes ~7 ticks (~10s)
 local orbitPhase = 0.0
 
+-- Two-hundred-and-eleventh pass: try the continuous move-to-actor follow
+-- first (see IssueFollowMoveOrder). Set false to go back to pure
+-- location-order following.
+local USE_MOVE_TO_ACTOR_FOLLOW = true
+local ECC_VISIBILITY = 3 -- ECollisionChannel::ECC_Visibility, from Engine_enums.hpp
+local loggedActorMoveOnce = false
+
 -- How much hate to push onto the player's current enemy for each following
 -- companion. Large enough to outrank whatever the companion may already be
 -- tracking, so FindMostHateTarget resolves to the player's target.
@@ -524,7 +531,7 @@ end
 -- Now captured and logged (a plain byte read, no new risk) so the next
 -- real test finally shows whether this call is actually being accepted by
 -- the engine at all.
-function Combat.IssueFollowMoveOrder(pal, playerLoc)
+function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
     if not USE_OLD_MOVE_ORDER_NUDGE then return end
     if not Combat.IsFollowing(pal) then return end
     local controller = safe_call(function() return pal.Controller end)
@@ -551,9 +558,62 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
         end
     end)
 
-    local ok, resultOrErr = pcall(function()
-        return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
-    end)
+    -- Two-hundred-and-eleventh pass (2026-09-06) — a genuinely different
+    -- movement primitive, and it answers Dragón's question directly.
+    --
+    -- He asked whether there is something like the old `SetActiveAI(false)`
+    -- (which stopped Pals wandering but turned them into inert objects that
+    -- would not even defend themselves — the eighteenth pass's incident)
+    -- but less total. Searching APalAIController in this build's header dump
+    -- turned up something better than a suppression switch:
+    --
+    --     void SimpleMoveToActorWithLineTraceGround(const class AActor* GoalActor,
+    --                                               TEnumAsByte<ECollisionChannel> CollisionChannel)
+    --
+    -- Every follow attempt this project has ever made — the original nudge,
+    -- the Otomo composite, and last pass's orbit — has been LOCATION based:
+    -- a one-shot "walk to this point" request that completes, after which the
+    -- Pal has no goal and its own AI takes over. This one takes an ACTOR as
+    -- the goal. A move-to-actor request is inherently continuous: the engine
+    -- keeps steering toward a target that moves, which is what "following"
+    -- actually means, and it is presumably what the game's own systems use
+    -- for anything that trails something else.
+    --
+    -- That also fits Dragón's newest observation better than the idle theory
+    -- did. He said the Pals "still managed to idle away somehow", which makes
+    -- him doubt that reaching the goal is what triggers the wander. If the
+    -- real problem is simply that a completed point-order leaves no goal at
+    -- all, then a target that is never "reached" removes the whole class of
+    -- problem rather than patching its symptom.
+    --
+    -- Kept behind a toggle and tried FIRST, with the location order as the
+    -- fallback if the call fails, so a live test cleanly attributes any
+    -- change. ECC_Visibility = 3, read from Engine_enums.hpp, not guessed.
+    local ok, resultOrErr = nil, nil
+    local usedActorMove = false
+    if USE_MOVE_TO_ACTOR_FOLLOW and playerActor ~= nil then
+        local moveOk, moveErr = pcall(function()
+            controller:SimpleMoveToActorWithLineTraceGround(playerActor, ECC_VISIBILITY)
+        end)
+        if moveOk then
+            usedActorMove = true
+            if not loggedActorMoveOnce then
+                loggedActorMoveOnce = true
+                Logger.log("[PalBonds/Combat] [FOLLOW-ACTOR] SimpleMoveToActorWithLineTraceGround accepted — using continuous move-to-actor following (logged once)")
+            end
+        else
+            if not loggedActorMoveOnce then
+                loggedActorMoveOnce = true
+                Logger.log("[PalBonds/Combat] [FOLLOW-ACTOR] SimpleMoveToActorWithLineTraceGround FAILED (" .. tostring(moveErr) .. ") — falling back to the location order (logged once)")
+            end
+        end
+    end
+
+    if not usedActorMove then
+        ok, resultOrErr = pcall(function()
+            return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
+        end)
+    end
 
     -- Two-hundred-and-tenth pass (2026-09-06) — THE REST ANIMATION IS GONE.
     -- It was the previous pass's fix and it backfired in three separate ways
@@ -589,7 +649,7 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
     --     this never happens, because they never get an idle time enough for
     --     their AI to kick again." This just gives them that same condition
     --     while he stands still.
-    if ok and tonumber(resultOrErr) == MOVE_RESULT_ALREADY_AT_GOAL then
+    if (not usedActorMove) and ok and tonumber(resultOrErr) == MOVE_RESULT_ALREADY_AT_GOAL then
         safe_call(function()
             -- Let a fighting companion fight. FindMostHateTarget is the real
             -- confirmed function on UPalHate, the same system combat assist
@@ -633,7 +693,9 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
     --
     -- So: only log a real FAILURE, or a change in the result value. Steady
     -- successful following is now silent.
-    if ok then
+    if usedActorMove then
+        -- nothing to report: move-to-actor returns no result value
+    elseif ok then
         local resultNum = tonumber(resultOrErr)
         if resultNum == 0 or resultOrErr ~= lastMoveOrderResult then
             lastMoveOrderResult = resultOrErr

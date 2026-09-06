@@ -210,6 +210,32 @@ end
 -- `tone`: 0/1/2 observed in the reference mod (0 used for a plain "used
 -- item" message, 1 for errors, 2 for a positive "registered" confirmation)
 -- — 2 is used below since a Pal joining is good news.
+-- Two-hundred-and-eleventh pass (2026-09-06) — THE ACTUAL TOAST BUG.
+--
+-- Dragón's log gave the exact error, which is far more useful than his
+-- symptom report ("no text at all"):
+--     Capture.lua:282: attempt to concatenate a FString value (local 'palName')
+--
+-- So the name lookup WORKED. `GetLocalizedText` returned a real FText and
+-- `Conv_TextToString` returned a real value — but that value is an FString
+-- USERDATA wrapper, not a Lua string, and concatenating it raises an error.
+-- The previous pass's fix (resolving before the capture) was also correct and
+-- necessary; this was a second, independent bug sitting behind it, which is
+-- why the toast went from "generic text" to "no text at all" — the error now
+-- happens after the message would have been built, so nothing is shown.
+--
+-- UE4SS FString/FName wrappers expose :ToString(); a plain Lua string does
+-- not, so this handles both and never assumes which it got.
+local function to_lua_string(v)
+    if v == nil then return nil end
+    if type(v) == "string" then return v end
+    local s = safe_call(function() return v:ToString() end)
+    if type(s) == "string" then return s end
+    -- Last resort: tostring() gives "FString: 0x..." which is useless as a
+    -- display name, so reject it rather than showing an address to the player.
+    return nil
+end
+
 -- Two-hundred-and-tenth pass (2026-09-06) — split out of NotifyJoined, and
 -- this split IS the bug fix.
 --
@@ -248,14 +274,15 @@ local function resolve_pal_display_name(pal, player)
             local localized = safe_call(function()
                 return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, charId)
             end)
-            local asString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
+            local asFString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
+            local asString = to_lua_string(asFString)
             if asString ~= nil and asString ~= "" then
                 palName = asString
                 return
             end
         end
         -- Fallback: the raw internal id, still better than "A wild Pal".
-        local raw = safe_call(function() return charId:ToString() end)
+        local raw = to_lua_string(safe_call(function() return charId:ToString() end))
         if raw ~= nil and raw ~= "" then palName = raw end
     end)
     Logger.log("[PalBonds/Capture] [NOTIFY] resolved display name BEFORE capture = " .. tostring(palName))
@@ -371,7 +398,7 @@ local PermanentlyFled = {}
 --   2. The class default object — works even with no cage nearby, as long as
 --      the class has been loaded at least once (Dragón's rescue did that).
 local cageProbeDone = false
-local CAGE_PROBE_MAX_ROUNDS = 12
+local CAGE_PROBE_MAX_ROUNDS = 180 -- ~30 minutes at 10s: a cage only appears when the player reaches one
 local CAGE_PROBE_RETRY_MS = 10000
 
 local function probe_cage_vfx(round)
@@ -387,16 +414,19 @@ local function probe_cage_vfx(round)
                 if valid then
                     local comp = safe_call(function() return cage.Niagara end)
                     local compValid = comp ~= nil and safe_call(function() return comp:IsValid() end)
-                    local assetName = nil
+                    local assetName, assetPresent = nil, false
                     if compValid then
                         local asset = safe_call(function() return comp.Asset end)
-                        assetName = asset and safe_call(function() return asset:GetFullName() end)
+                        assetPresent = (asset ~= nil)
+                        if asset ~= nil then
+                            assetName = safe_call(function() return asset:GetFullName() end)
+                                     or safe_call(function() return asset:GetPathName() end)
+                        end
                     end
                     Logger.log(string.format(
-                        "[PalBonds/Capture] [CAGE-VFX] LIVE cage=%s NiagaraComponent=%s Asset=%s",
+                        "[PalBonds/Capture] [CAGE-VFX] LIVE cage=%s | comp present=%s | asset present=%s | asset name=%s",
                         tostring(safe_call(function() return cage:GetFullName() end)),
-                        tostring(compValid and safe_call(function() return comp:GetFullName() end) or "nil"),
-                        tostring(assetName)
+                        tostring(comp ~= nil), tostring(assetPresent), tostring(assetName)
                     ))
                     if assetName then found = true end
                 end
@@ -411,24 +441,42 @@ local function probe_cage_vfx(round)
                 Logger.log("[PalBonds/Capture] [CAGE-VFX] round " .. round .. ": no live cage and the CDO path did not resolve — will retry")
                 return
             end
+            -- Two-hundred-and-eleventh pass FIX: the previous version's log
+            -- line conflated "the object is nil" with "GetFullName failed on
+            -- it", printing "nil" for both — and then declared the probe done
+            -- anyway. Dragón's log shows exactly that: "NiagaraComponent=nil
+            -- Asset=nil" immediately followed by "asset resolved — probe
+            -- done", which is self-contradictory and meant the probe stopped
+            -- without ever having read anything. Presence and name are now
+            -- reported separately, and success requires a real NAME STRING.
             local comp = safe_call(function() return cdo.Niagara end)
             local asset = comp and safe_call(function() return comp.Asset end)
+            local assetName = nil
+            if asset ~= nil then
+                assetName = safe_call(function() return asset:GetFullName() end)
+                         or safe_call(function() return asset:GetPathName() end)
+            end
             Logger.log(string.format(
-                "[PalBonds/Capture] [CAGE-VFX] CDO cage NiagaraComponent=%s Asset=%s",
-                tostring(comp and safe_call(function() return comp:GetFullName() end) or "nil"),
-                tostring(asset and safe_call(function() return asset:GetFullName() end) or "nil")
+                "[PalBonds/Capture] [CAGE-VFX] CDO cage | comp present=%s | asset present=%s | asset name=%s",
+                tostring(comp ~= nil), tostring(asset ~= nil), tostring(assetName)
             ))
-            if asset then found = true end
+            if assetName then found = true end
         end)
     end
 
     if found then
         cageProbeDone = true
-        Logger.log("[PalBonds/Capture] [CAGE-VFX] asset resolved — probe done, will not run again this session")
+        Logger.log("[PalBonds/Capture] [CAGE-VFX] a real asset NAME was read — probe done, will not run again this session")
         return
     end
+    -- Two-hundred-and-eleventh pass: keep polling far longer, and never stop
+    -- on a failed read. The previous version ran once at startup, misread its
+    -- own result as success, and stopped — so when Dragón went out of his way
+    -- to rescue a Pal from a real cage, nothing was still watching for it.
+    -- A cage only exists in the world once the player is near one, so this
+    -- has to stay alive across the whole session, not just the first seconds.
     if round >= CAGE_PROBE_MAX_ROUNDS then
-        Logger.log("[PalBonds/Capture] [CAGE-VFX] giving up after " .. round .. " rounds — no cage loaded this session. Walk near a Pal cage and it will be retried next session.")
+        Logger.log("[PalBonds/Capture] [CAGE-VFX] no cage seen after " .. round .. " rounds — stopping. Nothing was read; this is NOT a result.")
         return
     end
     pcall(function()
