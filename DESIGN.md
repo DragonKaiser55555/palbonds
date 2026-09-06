@@ -226,25 +226,36 @@ Low technical risk; mostly bookkeeping.
 
 **Update (2026-09-03, hundred-and-twenty-first pass):** this project used to keep two parallel copies of everything — a top-level Proyectos mirror and a second, nested `palbonds-mod/` mirror matching the layout originally documented here. The nested one silently went stale for several files over ~120 passes without anyone noticing, since nothing forced the two to stay in sync. Consolidated into one place, at Dragón's request: everything now lives directly under `32-PalBonds/`, flat, no nested `palbonds-mod/` folder. The layout below is otherwise unchanged, just rooted one level up.
 
+**Update (2026-09-06, two-hundred-and-sixth pass):** folder cleanup at Dragón's request — deleted the reference mods whose lessons are already extracted into this project's own code (Pal Analyzer, RemoteAccessEverything, VisiblePalCaptureCounter, QuickConsumableSlots, MultiPals), two that were never referenced at all (Food Expansion, Schema Studio), `research/unpacked/` (the unpacked form of two of those same consumed mods), the finished `docs/phase0-install.md`, a stray `palbonds-mod.zip`, a superseded `_to_delete/` backup, and the empty `palbonds-mod/` shell left behind by the consolidation described above. Project went from ~21 MB to ~6.5 MB. The three reference mods that remain each bear on a still-open question.
+
 ```
 32-PalBonds/
-├── DESIGN.md              <- this file
-├── README.md              <- setup + how to test locally
-├── research/               <- Mappings.usmap, unpacked reference-mod assets
+├── CLAUDE.md              <- START HERE: current status + ordered pending list
+├── CLAUDE-archive.md      <- Continuación 1-154, history only
+├── DESIGN.md              <- this file (§12 is SUPERSEDED, see its warning)
+├── README.md              <- what works today + install
+├── research/               <- Mappings.usmap only (for FModel)
 ├── docs/
-│   ├── hook-points.md      <- running checklist of real names we've confirmed
-│   ├── phase0-install.md
-│   └── phase1-research.md
+│   ├── hook-points.md          <- running record of confirmed real names
+│   ├── hook-points-archive.md  <- passes 9-180, history only
+│   └── phase1-research.md      <- FModel setup (still live: the join-VFX hunt)
+├── Passive Pals .../           <- reference, gitignored: open "friendly swap
+├── PassiveWildPals .../        <-   does nothing" question
+├── PalFollowerTweaks .../      <- reference, gitignored: open follow question
 └── mod/
-    └── PalBonds/            <- drop this folder into <Game>/Mods/ once built
+    └── PalBonds/            <- copy into <Game>/Pal/Binaries/Win64/ue4ss/Mods/
         ├── enabled.txt
         └── Scripts/
             ├── main.lua         <- entry point, wires the modules together
+            ├── Logger.lua       <- crash-resistant flush-per-line log
             ├── Personality.lua  <- 3.1
             ├── Interaction.lua  <- 3.2
             ├── Trust.lua        <- 3.3
             ├── Combat.lua       <- 3.4
-            └── Capture.lua      <- 3.5 / 3.6
+            ├── Capture.lua      <- 3.5 / 3.6
+            ├── Indicator.lua    <- on-screen trust bar + personality label
+            └── Spy.lua, InputSpy.lua, OtomoWatch.lua
+                                  <- research only, none initialized
 ```
 
 ## 6. Phased roadmap

@@ -1,22 +1,33 @@
-# Third-party reference mods (downloaded, not ours to redistribute)
-5055 QuickConsumableSlots 110 5055 1.1.0 2026-08-14T10-58Z 9AXTDKCQb/
-Food Expansion (with Buffs)-3159-2-0-0-1772850247/
-MultiPals/
-Pal Analyzer 0.86 (STEAM)-336-0-86-1772533592/
+# Third-party reference mods (downloaded, not ours to redistribute).
+#
+# Cleaned up 2026-09-06: the reference mods whose lessons were already
+# extracted into this project's own code were deleted from disk, so their
+# entries are gone from this list too. What remains below is the three that
+# still bear on a genuinely OPEN question:
+#   - Passive Pals / PassiveWildPals — two different routes to making wild
+#     Pals non-hostile, directly relevant to the unsolved "a Pal keeps
+#     fleeing/attacking even after its preset is swapped to friendly" bug.
+#   - PalFollowerTweaks — the PalFunnelCharacter/BP_AIAction_FunnelFollow_C
+#     secondary-follower system, the reference for the pre-capture wild
+#     following question, which is the project's #1 open item.
+#
+# Deleted (do not re-add unless a new question needs them): Pal Analyzer,
+# RemoteAccessEverything and VisiblePalCaptureCounter (all three were, in
+# Dragón's own words, provided only to learn HOW widgets are manipulated in
+# this game — that lesson now lives in Indicator.lua), QuickConsumableSlots
+# (its one lesson, how to print on-screen info text, is implemented in
+# Capture.NotifyJoined), MultiPals (its AddOtomoHandleToFreeSlot finding is
+# extracted and capture works), Food Expansion and Schema Studio (never
+# referenced by this project at all).
 PalFollowerTweaks 5343 1.0 2026-08-24T19-56Z YU8ZI94VI/
 Passive Pals 5445 1.0.0 2026-08-29T06-40Z qJmcAdFYa/
 PassiveWildPals (Steam) 5031 1 2026-08-11T20-21Z Len4csvLY/
-RemoteAccessEverything (Steam) 4698 4 2026-08-06T03-06Z nOvzQ7f8n/
-Schema Studio (palschema mod builder) 5095 v3.34.0 2026-08-30T22-42Z x2FA7zZeW/
-VisiblePalCaptureCounter 190 1.0.1 2026-07-12T21-28Z lEU84uZe8/
 
-# Extracted/unpacked third-party mod assets and repak mapping data
+# Repak mapping data for FModel. Kept on disk (see docs/phase1-research.md
+# — still needed for the open join-VFX question), but not tracked: it's a
+# large binary pulled from the community PalworldModding/UsefulFiles repo,
+# not ours.
 research/
-
-# Stray backup and empty leftover folders
-_to_delete/
-palbonds-mod/
-palbonds-mod.zip
 
 # Never track live game logs
 *.log

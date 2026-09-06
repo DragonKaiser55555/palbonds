@@ -81,7 +81,10 @@ multiplayer replication being out of scope for now).
 ## Next step
 
 Read the "⚠️ EMPEZAR ACÁ" section at the top of [`CLAUDE.md`](./CLAUDE.md).
-It is the authoritative ordered list of what's left and is kept current;
-`docs/phase0-install.md` and `docs/phase1-research.md` are finished
-setup guides kept only for reference, and DESIGN.md §8's research
-questions are answered.
+It is the authoritative ordered list of what's left and is kept current.
+DESIGN.md §8's research questions are all answered, and DESIGN.md §12
+carries a staleness warning — trust `CLAUDE.md` over both.
+
+[`docs/phase1-research.md`](./docs/phase1-research.md) is the FModel setup
+guide, still live because FModel is the method for the one remaining
+research question (the join VFX).
