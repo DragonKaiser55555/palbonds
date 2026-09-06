@@ -1112,3 +1112,38 @@ Corrected, and it is the better design anyway: `Discover_*` = Ignore (never star
 Remaining honest limitation: a companion defends ITSELF, not the player. It joins a fight the player started only once the enemy also turns on it. Attacking the player's own target on sight still needs the Hate system, unexplored for this purpose.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-ninth pass (2026-09-06): Dragón's idle-animation fix for the wander-off, real Hate-based combat assist, a named join toast, and a genuinely new VFX lead
+
+**The wander-off cause was diagnosed by Dragón, not by this project's instrumentation.** His words: "when they approach my location they stand there without anything else to do, so their normal AI triggers again and makes them move to a location x in the distance... i confirmed this by not staying still, when constantly moving and running this never happens, because they never get an idle time enough for their AI to kick again." The log corroborates it exactly — the result value sits at 1 (AlreadyAtGoal) precisely when this happens.
+
+**His fix, implemented as given:** "if they're already at goal, instead of idling, make them do an animation, so they're busy with something and dont wander off." When a follow order returns AlreadyAtGoal AND the Pal's ActionComponent reports empty, we play `ACTION_TYPE_PAL_RANDOM_REST` (77) — the same action Play already uses, so it is proven safe on a wild Pal. **This is better than the alternative that was about to be built** (a faster tick that cancels and re-issues the order 2x/second), and for a concrete reason: cancelling the Pal's current action twice a second would also cancel its attacks, breaking the fight-back behaviour fixed one pass earlier. Occupying an idle Pal cannot interrupt anything, because the `ActionIsEmpty()` gate means it only ever runs when the Pal is doing nothing at all — a Pal that is attacking, being attacked or mid-animation is left completely alone.
+
+**Combat assist, now with real targeting via the Hate system.** Dragón's report was that companions defend themselves but "still dont defend me". The missing piece was never disposition (`Damaged_*` = Battle already works) — it was that a companion had no reason to consider the player's enemy its own. Confirmed real in this build's header dump, not guessed:
+
+```
+APalAIController::GetHateSystem() -> UPalHate*
+UPalHate::ChangeHate(AActor* Attacker, float PlusHateValue)
+UPalHate::FindMostHateTarget() -> AActor*
+UPalHate::ForceHateUp_ForActiveAndAttackOtomoPal(AActor* OtomoPal)
+```
+
+Driven from the `PalHate:DamageEvent` hook Trust.lua ALREADY installs: whenever the player deals or takes damage, the other actor in that event is by definition the player's current enemy, so `Combat.OnPlayerCombatTarget(enemy)` pushes hate onto every following companion. No polling, no scan, no guessing what the player is fighting — the game hands us the actor. `Combat.FollowerActors` was added alongside `BondingState` (which only recorded *that* a key was following, not the live actor) and is kept in step in StartFollowing/StopFollowing. `[HATE-ASSIST]` logs only on target change, since a real fight fires damage events many times a second.
+
+**Stated uncertainty, to be settled by the next test rather than assumed:** hate gives the companion a TARGET, but whether its AI then chooses to attack may still depend on the response preset, whose `Discover_*` slots are deliberately Ignore so companions stop starting fights. If hate alone proves insufficient, the next step is allowing Battle on discovery only while a player-target is active, rather than permanently. The `[HATE-ASSIST]` lines plus observed behaviour will distinguish these.
+
+**Join toast now names the Pal**, per Dragón: "something like maybe '(palname) likes you and decided to join your party!'". Resolving the real localized name (so it reads "Petallia", the name he sees, not the internal id "FlowerDoll") uses two confirmed-real pieces from the header dump: `UPalMasterDataTablesUtility::GetLocalizedText(WorldContextObject, EPalLocalizeTextCategory, FName TextId)` with `EPalLocalizeTextCategory::PalMonsterName = 4` and the Pal's own CharacterID as the TextId. Every step is pcall-guarded with a two-level fallback (localized name -> raw CharacterID -> the original generic wording): a cosmetic toast must never break a capture that already succeeded.
+
+**JOIN VFX — a genuinely new candidate, and the first real progress on this since `ABP_ReturnPalEffect_C` was ruled out.** Found this pass by searching the header dump rather than reusing an old guess:
+
+```
+class APalCapturedCage : public AActor
+    void StartCaptureEffect_ServerBP(class APalPlayerCharacter* Player);
+class ABP_PalCapturedCage_C : public APalCapturedCage
+    class UNiagaraComponent* Niagara;   // 0x0308
+    FBP_PalCapturedCage_COnCaptured OnCaptured;
+```
+
+This matches exactly what Dragón described watching during a vanilla cage rescue, and it takes the PLAYER as its argument — consistent with an effect that travels toward the player. **Important structural finding: the effect belongs to the CAGE actor, not to the Pal.** So it cannot simply be called on an arbitrary wild Pal; reproducing it means reading the Niagara *asset* off `ABP_PalCapturedCage_C`'s Niagara component and spawning that asset at the bonded Pal's location. That is a real, concrete next step (and a much better position than the previous dead end), but it needs either a live cage in the world to read the asset from, or an FModel read of that Blueprint to get the asset path — not something to guess at. Deliberately NOT implemented blind this pass.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

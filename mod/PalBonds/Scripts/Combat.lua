@@ -156,6 +156,20 @@ local ENABLE_COMBAT_ASSIST = true
 -- Throttle state for [MOVE-ORDER-RESULT] — see IssueFollowMoveOrder.
 local lastMoveOrderResult = nil
 
+-- EPathFollowingRequestResult, the standard Unreal enum PalMoveToLocation
+-- returns. Confirmed from Dragón's live log: only 1 and 2 ever appear.
+local MOVE_RESULT_ALREADY_AT_GOAL = 1
+
+-- Same EPalActionType value Interaction.lua's Play interaction uses, so it
+-- is already proven safe to play on a wild Pal.
+local ACTION_TYPE_PAL_RANDOM_REST = 77
+
+-- How much hate to push onto the player's current enemy for each following
+-- companion. Large enough to outrank whatever the companion may already be
+-- tracking, so FindMostHateTarget resolves to the player's target.
+local COMBAT_ASSIST_HATE_AMOUNT = 1000.0
+
+
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then return result end
@@ -167,6 +181,14 @@ end
 -- Trust.lua — see that file's header for why FPalInstanceID isn't used
 -- yet.
 local BondingState = {}
+-- Two-hundred-and-ninth pass: BondingState only records THAT a key is
+-- following; combat assist also needs the live actor for each follower, to
+-- reach its AIController's hate system. Kept in step with BondingState in
+-- StartFollowing/StopFollowing below.
+local FollowerActors = {}
+-- Throttles the [HATE-ASSIST] line to one per target change — a real fight
+-- produces a damage event many times a second.
+local lastHateTargetName = nil
 
 -- Hundred-and-ninety-seventh pass (2026-09-05): Dragón asked to reopen the
 -- real-follow question directly, reusing the SDK lead this file already
@@ -242,6 +264,63 @@ local AI_REQUEST_PRIORITY_LOGIC = 3
 -- invalid (Pal despawned, GC'd, etc.) — see get_or_build_otomo_composite.
 local OtomoCompositeCache = {}
 local loggedFollowTickOnce = {}
+
+-- Two-hundred-and-ninth pass (2026-09-06): real combat assist, using the
+-- game's OWN targeting system rather than another disposition trick.
+--
+-- Confirmed real in this build's header dump, not guessed:
+--   APalAIController::GetHateSystem() -> UPalHate*
+--   UPalHate::ChangeHate(AActor* Attacker, float PlusHateValue)
+--   UPalHate::FindMostHateTarget() -> AActor*
+--
+-- Called from Trust.lua's existing PalHate:DamageEvent hook whenever the
+-- player deals or takes damage, so the enemy actor is handed to us by the
+-- game itself — no scanning, no polling, no guessing at what the player is
+-- fighting.
+--
+-- HONEST UNCERTAINTY, to be settled by the next live test rather than
+-- assumed: pushing hate gives the companion a TARGET, but whether its AI
+-- then chooses to attack that target may still depend on its response
+-- preset, whose Discover_* slots this project deliberately sets to Ignore
+-- so companions stop starting fights. If hate alone turns out not to be
+-- enough, the next step is to allow Battle on discovery only while a
+-- player-target is active, rather than permanently. The [HATE-ASSIST] log
+-- lines below are what will tell us which of those is true.
+function Combat.OnPlayerCombatTarget(enemyActor)
+    if enemyActor == nil then return end
+    local enemyValid = safe_call(function() return enemyActor:IsValid() end)
+    if not enemyValid then return end
+
+    local enemyName = safe_call(function() return enemyActor:GetFullName() end)
+
+    for key, isFollowing in pairs(BondingState) do
+        if isFollowing then
+            local entry = FollowerActors[key]
+            local pal = entry
+            local palValid = pal ~= nil and safe_call(function() return pal:IsValid() end)
+            if palValid then
+                -- Never point a companion at itself or at another companion.
+                if key ~= enemyName then
+                    safe_call(function()
+                        local controller = pal.Controller
+                        if not (controller and controller:IsValid()) then return end
+                        local hate = controller:GetHateSystem()
+                        if not (hate and hate:IsValid()) then return end
+                        hate:ChangeHate(enemyActor, COMBAT_ASSIST_HATE_AMOUNT)
+                        if lastHateTargetName ~= enemyName then
+                            Logger.log(string.format(
+                                "[PalBonds/Combat] [HATE-ASSIST] pushed hate toward the player's current enemy %s onto following companions (only logged when the target changes)",
+                                tostring(enemyName)
+                            ))
+                        end
+                    end)
+                end
+            end
+        end
+    end
+    lastHateTargetName = enemyName
+end
+
 
 local function get_or_build_otomo_composite(pal, key)
     local cached = OtomoCompositeCache[key]
@@ -330,7 +409,10 @@ end
 
 function Combat.StartFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
-    if key then BondingState[key] = true end
+    if key then
+        BondingState[key] = true
+        FollowerActors[key] = pal -- two-hundred-and-ninth pass: needed by OnPlayerCombatTarget
+    end
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " marked as following (bonding)")
 
     -- Eighty-sixth pass (2026-09-03) DIAGNOSTIC, read-only. Dragón asked
@@ -404,6 +486,7 @@ function Combat.StopFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
         BondingState[key] = nil
+        FollowerActors[key] = nil
         OtomoCompositeCache[key] = nil -- Two-hundred-and-second pass: drop the cached composite so a later re-follow builds fresh, not a stale reference
         loggedFollowTickOnce[key] = nil
     end
@@ -465,6 +548,41 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
     local ok, resultOrErr = pcall(function()
         return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
     end)
+
+    -- Two-hundred-and-ninth pass (2026-09-06) — THE WANDER-OFF FIX, and it
+    -- is Dragón's own idea, not a variation on the previous approach.
+    --
+    -- His diagnosis, from watching it directly: "when they approach my
+    -- location they stand there without anything else to do, so their normal
+    -- AI triggers again and makes them move to a location x in the distance
+    -- ... i confirmed this by not staying still, when constantly moving and
+    -- running this never happens, because they never get an idle time enough
+    -- for their AI to kick again." The log agrees — the result value sits at
+    -- 1 (AlreadyAtGoal) exactly when this happens.
+    --
+    -- His fix: "if they're already at goal, instead of idling, make them do
+    -- an animation, so they're busy with something and dont wander off."
+    -- That is better than the obvious alternative (cancel and re-issue the
+    -- order far more often), and it avoids a real problem that approach
+    -- would have caused: cancelling the Pal's current action twice a second
+    -- would also cancel its attacks, breaking the fight-back behaviour that
+    -- was only just fixed. Occupying an idle Pal costs nothing and cannot
+    -- interrupt anything, because it only runs when the Pal is doing nothing
+    -- at all.
+    --
+    -- ACTION_TYPE_PAL_RANDOM_REST is the same action Play already triggers,
+    -- so it is proven safe on a wild Pal. The ActionIsEmpty() gate is what
+    -- makes this safe in combat: a Pal that is attacking, being attacked, or
+    -- mid-animation is never empty, so it is left completely alone.
+    if ok and tonumber(resultOrErr) == MOVE_RESULT_ALREADY_AT_GOAL then
+        safe_call(function()
+            local actionComp = pal.ActionComponent
+            if not (actionComp and actionComp:IsValid()) then return end
+            local idle = actionComp:ActionIsEmpty()
+            if idle ~= true then return end -- busy: fighting, reacting, or already resting
+            actionComp:PlayActionByType(pal, ACTION_TYPE_PAL_RANDOM_REST)
+        end)
+    end
     -- Two-hundred-and-eighth pass (2026-09-06): this used to log every
     -- single order — 2-3 lines every 1.5s PER FOLLOWER, each forced to disk
     -- by Logger's flush-per-line design, so the cost scaled directly with

@@ -53,6 +53,10 @@ local Combat = require("Combat")
 -- main.lua's own require order already loads Personality before Capture.
 local Personality = require("Personality")
 
+-- EPalLocalizeTextCategory::PalMonsterName, read from this build's own
+-- Pal_enums.hpp dump (two-hundred-and-ninth pass) — used for the join toast.
+local PAL_LOCALIZE_CATEGORY_MONSTER_NAME = 4
+
 local Capture = {}
 
 local function safe_call(fn, ...)
@@ -216,7 +220,60 @@ function Capture.NotifyJoined(pal, player)
         if widgetClass == nil then return end
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
-        local text = safe_call(function() return textLibrary:Conv_StringToText("A wild Pal has joined your party!") end)
+        -- Two-hundred-and-ninth pass (2026-09-06): Dragón asked for a less
+        -- generic message — "something like maybe '(palname) likes you and
+        -- decided to join your party!'". Resolving the Pal's real, localized,
+        -- in-game display name (so it reads "Petallia", the name he actually
+        -- sees, not the internal id "FlowerDoll") uses two confirmed-real
+        -- pieces from this build's own header dump:
+        --   UPalMasterDataTablesUtility::GetLocalizedText(WorldContextObject,
+        --       EPalLocalizeTextCategory TextCategory, FName TextId)
+        --   EPalLocalizeTextCategory::PalMonsterName = 4
+        -- with the Pal's CharacterID as the TextId — the same id this file
+        -- already reads elsewhere.
+        --
+        -- Every step is pcall-guarded and falls back cleanly: if the
+        -- localized lookup fails we use the raw CharacterID, and if even that
+        -- fails we use the original generic wording. A cosmetic toast must
+        -- never be able to break a capture that already succeeded.
+        local palName = nil
+        safe_call(function()
+            -- Same component chain read_owner_id above already uses — a
+            -- plain field/getter walk, never the by-value GetSaveParameter()
+            -- struct copy that caused this project's early crashes.
+            if pal == nil then return end
+            local comp = pal.CharacterParameterComponent
+            if comp == nil or not comp:IsValid() then return end
+            local param = comp:GetIndividualParameter()
+            if param == nil or not param:IsValid() then return end
+            local charId = param:GetCharacterID()
+            if charId == nil then return end
+
+            local masterData = StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility")
+            if masterData ~= nil then
+                local localized = safe_call(function()
+                    return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, charId)
+                end)
+                local asString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
+                if asString ~= nil and asString ~= "" then
+                    palName = asString
+                    return
+                end
+            end
+            -- Fallback: the raw internal id, still better than "A wild Pal".
+            local raw = safe_call(function() return charId:ToString() end)
+            if raw ~= nil and raw ~= "" then palName = raw end
+        end)
+
+        local message
+        if palName then
+            message = palName .. " likes you and decided to join your party!"
+        else
+            message = "A wild Pal has joined your party!"
+        end
+        Logger.log("[PalBonds/Capture] [NOTIFY] join message: " .. message)
+
+        local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
         if text == nil then return end
         manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 2 })
     end)

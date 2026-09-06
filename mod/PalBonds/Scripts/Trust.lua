@@ -872,6 +872,36 @@ function Trust.Init()
             -- penalty logic below already gates on State[defenderName], so
             -- the log line now uses the exact same cheap table check
             -- before printing anything.
+            -- Two-hundred-and-ninth pass (2026-09-06) — COMBAT ASSIST, real
+            -- targeting. Dragón's report: companions now defend themselves
+            -- but still "dont defend me". The missing piece was never the
+            -- disposition (Damaged_* = Battle already works) — it was that a
+            -- companion had no reason to consider the player's enemy its
+            -- own.
+            --
+            -- This hook is the natural place to solve it: it already fires
+            -- on every real damage event with both actors resolved, so
+            -- whenever the player hits something (or something hits the
+            -- player), that other actor IS the player's current enemy. No
+            -- polling, no new scan — the information is already in hand.
+            -- Combat.OnPlayerCombatTarget then pushes that actor onto every
+            -- following companion's real UPalHate system.
+            do
+                local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                local playerName = player and safe_call(function() return player:GetFullName() end)
+                if playerName then
+                    local enemy = nil
+                    if attackerName == playerName then
+                        enemy = defender          -- the player hit something
+                    elseif defenderName == playerName then
+                        enemy = attacker          -- something hit the player
+                    end
+                    if enemy ~= nil then
+                        safe_call(function() Combat.OnPlayerCombatTarget(enemy) end)
+                    end
+                end
+            end
+
             if defenderName and State[defenderName] and State[defenderName].isFollowing then
                 Logger.log(string.format(
                     "[PalBonds/Trust] [DAMAGE-WATCH] real DamageEvent fired — defender=%s attacker=%s damage=%s",
