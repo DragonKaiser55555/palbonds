@@ -486,8 +486,78 @@ local function probe_cage_vfx(round)
     end)
 end
 
+-- Two-hundred-and-twelfth pass (2026-09-06) — hook the rescue MOMENT itself.
+--
+-- Dragón asked whether he still needs to rescue a Pal for the next run. He
+-- does, and this is what makes that trip actually pay off instead of being
+-- wasted a third time. Reasoning, stated plainly:
+--
+--   * The class-default-object route is unlikely to work. A Blueprint CDO
+--     usually does not carry live component references, which matches what
+--     his log showed. It is kept as a free fallback, not relied on.
+--   * The live route needs a real cage actor, and a cage only exists in the
+--     world while the player is physically near one. There is no way around
+--     that: the asset reference lives on the instance.
+--
+-- The polling probe alone only catches a cage if a poll tick happens to land
+-- while he is near it. This hook removes that luck entirely: it fires exactly
+-- when the rescue effect starts, with the live cage handed to us as Context —
+-- the single best possible moment to read the Niagara asset.
+--
+-- Strictly read-only. It is a POST hook that observes and never calls
+-- StartCaptureEffect_ServerBP itself, so it cannot trigger or alter the
+-- vanilla rescue in any way.
+local function install_cage_effect_hook()
+    local ok, err = pcall(function()
+        RegisterHook("/Script/Pal.PalCapturedCage:StartCaptureEffect_ServerBP", function(Context, PlayerParam)
+            safe_call(function()
+                local cage = Context and Context:get()
+                if cage == nil then
+                    Logger.log("[PalBonds/Capture] [CAGE-VFX] StartCaptureEffect_ServerBP fired but the cage Context could not be read")
+                    return
+                end
+                Logger.log("[PalBonds/Capture] [CAGE-VFX] *** RESCUE MOMENT *** StartCaptureEffect_ServerBP fired on cage=" ..
+                    tostring(safe_call(function() return cage:GetFullName() end)))
+
+                local comp = safe_call(function() return cage.Niagara end)
+                Logger.log("[PalBonds/Capture] [CAGE-VFX] rescue: Niagara component present=" .. tostring(comp ~= nil) ..
+                    " name=" .. tostring(comp and safe_call(function() return comp:GetFullName() end)))
+
+                if comp ~= nil then
+                    local asset = safe_call(function() return comp.Asset end)
+                    Logger.log("[PalBonds/Capture] [CAGE-VFX] rescue: Niagara ASSET present=" .. tostring(asset ~= nil) ..
+                        " fullname=" .. tostring(asset and safe_call(function() return asset:GetFullName() end)) ..
+                        " pathname=" .. tostring(asset and safe_call(function() return asset:GetPathName() end)))
+                end
+
+                -- Also enumerate every component on the cage: if the effect
+                -- turns out NOT to be the field named "Niagara", this is what
+                -- will say which component it actually is, without needing
+                -- another trip.
+                local comps = safe_call(function() return cage:K2_GetComponentsByClass(StaticFindObject("/Script/Niagara.NiagaraComponent")) end)
+                if comps then
+                    for i, c in ipairs(comps) do
+                        local a = safe_call(function() return c.Asset end)
+                        Logger.log(string.format(
+                            "[PalBonds/Capture] [CAGE-VFX] rescue: NiagaraComponent[%d]=%s asset=%s",
+                            i, tostring(safe_call(function() return c:GetFullName() end)),
+                            tostring(a and (safe_call(function() return a:GetPathName() end) or safe_call(function() return a:GetFullName() end)))
+                        ))
+                    end
+                end
+            end)
+        end)
+    end)
+    if ok then
+        Logger.log("[PalBonds/Capture] [CAGE-VFX] rescue-moment hook installed on PalCapturedCage:StartCaptureEffect_ServerBP (read-only)")
+    else
+        Logger.log("[PalBonds/Capture] [CAGE-VFX] could NOT install the rescue-moment hook: " .. tostring(err))
+    end
+end
+
 function Capture.Init()
     safe_call(function() probe_cage_vfx(1) end)
+    safe_call(install_cage_effect_hook)
     Logger.log("[PalBonds/Capture] real trigger points wired (via Trust.lua) — sphere-less capture is now REAL (thirty-ninth pass), calls Capture.TryDirectCapture for real on OnTrustMaxed")
 end
 

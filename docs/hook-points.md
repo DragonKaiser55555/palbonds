@@ -1200,3 +1200,23 @@ void SimpleMoveToActorWithLineTraceGround(const class AActor* GoalActor,
 **Every follow attempt this project has ever made has been LOCATION based** — the original nudge, the Otomo composite, and last pass's orbit — a one-shot "walk to this point" that completes, after which the Pal has no goal and its own AI takes over. This one takes an **ACTOR** as the goal, which is inherently continuous: the engine keeps steering toward a target that moves, which is what following actually means. It also fits Dragón's newest observation better than the idle theory did — he said the Pals "still managed to idle away somehow", doubting that reaching the goal is what triggers the wander. If the real problem is that a completed point-order simply leaves no goal at all, a target that is never "reached" removes the whole class of problem rather than patching a symptom. Tried first, behind `USE_MOVE_TO_ACTOR_FOLLOW`, with the location order as automatic fallback so a live test attributes any change cleanly. `ECC_Visibility = 3` read from Engine_enums.hpp, not guessed.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-twelfth pass (2026-09-06): hooking the cage rescue MOMENT, so the trip Dragón is about to make actually produces data
+
+Dragón asked directly whether he still needs to rescue a Pal for the next run. **He does**, and this pass exists to make sure that trip is not wasted a third time.
+
+The honest reasoning, since two previous trips produced nothing:
+- **The class-default-object route is unlikely to work.** A Blueprint CDO generally does not carry live component references, which matches exactly what his log showed (`comp present=false`). It stays as a free fallback but should not be relied on.
+- **The live route genuinely requires a cage actor in the world**, and a cage only exists while the player is physically near one. There is no way around that — the Niagara asset reference lives on the instance, not on the class.
+- **The polling probe alone depends on luck**: it only catches a cage if a 10-second poll tick happens to land while he is standing near it.
+
+So the probe is no longer the primary mechanism. A read-only hook is now installed on `/Script/Pal.PalCapturedCage:StartCaptureEffect_ServerBP` — the function that starts the rescue effect itself. It fires at exactly the moment the effect plays, with the live cage handed over as Context, which is the single best possible instant to read the asset. It observes only; it never calls `StartCaptureEffect_ServerBP`, so it cannot trigger or alter the vanilla rescue.
+
+It logs three things, deliberately redundant so one trip answers the question even if an assumption is wrong:
+1. The cage actor itself at the rescue moment.
+2. The `Niagara` field's component, and its `Asset` by both `GetFullName` and `GetPathName` (presence and name reported separately — the two-hundred-and-eleventh pass's bug was exactly this conflation).
+3. **Every** `UNiagaraComponent` on the cage via `K2_GetComponentsByClass`, so that if the effect is NOT the component named `Niagara`, the log still says which one it actually is — without needing yet another trip.
+
+**Also cleaned up this pass:** eight hung background shell tasks on the developer machine, which Dragón spotted. Root cause: `npx --no-install luaparse <file>` with no stdout redirect hangs waiting on stdin. Every one of them had already completed its file edit before hanging, so no work was lost, and each edit had been independently verified afterwards. The working form is `out=$(npx --no-install luaparse "$f" 2>&1 >/dev/null)`, which is what every check in this session's later passes used.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
