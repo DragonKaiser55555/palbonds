@@ -16,33 +16,26 @@
 
 Recalcular esta tabla cada vez que una categoría avance — no es una sensación, sale de esta cuenta.
 
-## 🔴 ESTADO ACTUAL: MODS DESACTIVADOS (2026-09-06)
+## ✅ ESTADO ACTUAL: MODS ACTIVOS (2026-09-06)
 
-**El mod NO va a cargar ahora mismo, y es a propósito.** Dragón pidió desactivar todo para entrar a un servidor de la comunidad sin riesgo de ban. Si una sesión futura ve que PalBonds "no hace nada", ES ESTO — no es un bug, no hay que depurarlo.
+El mod está cargando normalmente. Se reactivó tras la sesión de Dragón en un servidor de la comunidad.
 
-### Cómo volver a activar (un solo paso)
+### Procedimiento de activar/desactivar mods (documentado, repetible)
 
-Renombrar de vuelta el cargador de UE4SS:
+Dragón entra a servidores de la comunidad cada tanto, y ahí **cualquier mod activo es riesgo de ban**, así que esto va a volver a pasar. El procedimiento completo, verificado el 2026-09-06:
 
-Carpeta:
-`C:\Program Files (x86)\Steam\steamapps\common\Palworld\Pal\Binaries\Win64\`
+**Desactivar** — renombrar, en `C:\Program Files (x86)\Steam\steamapps\common\Palworld\Pal\Binaries\Win64\`:
+`dwmapi.dll` → `dwmapi.dll.MODS-DISABLED`
 
-Renombrar dentro de esa carpeta:
-`dwmapi.dll.MODS-DISABLED`  →  `dwmapi.dll`
+**Reactivar** — el renombre inverso.
 
-Eso es todo. Nada más se tocó: los archivos del mod, `enabled.txt`, la carpeta `ue4ss/` y toda su configuración quedaron intactos.
+Por qué alcanza con ese único archivo: `dwmapi.dll` es el DLL proxy que carga UE4SS dentro del proceso del juego. Sin él UE4SS no se carga en absoluto, así que **ningún mod de Lua puede ejecutarse** — no hace falta desactivarlos uno por uno, ni tocar `enabled.txt`, ni la carpeta `ue4ss/`. Verificado que ese archivo NO figura en los manifiestos del propio juego (`Manifest_NonUFSFiles_Win64.txt`, `Manifest_DebugFiles_Win64.txt`), o sea que no es de Palworld: es de UE4SS.
 
-### Cómo desactivar (procedimiento, para la próxima vez)
+**Lo que hay que revisar aparte cada vez**, porque NO depende de UE4SS y sobreviviría a ese renombre:
+- Mods empaquetados en `Pal/Content/Paks/LogicMods/` y `Pal/Content/Paks/~mods/`. Al 2026-09-06: la primera vacía, la segunda no existe.
+- Otros DLL proxy en `Pal/Binaries/Win64/` (`xinput1_3`, `d3d11`, `d3d12`, `version`, `winmm`, `dsound`, `dinput8`, `bink2w64`). Al 2026-09-06: ninguno.
 
-Dragón mencionó que esto ya se había hecho antes, pero no estaba documentado en ningún lado — se buscó en `CLAUDE.md`, `CLAUDE-archive.md` y los dos `hook-points`, sin resultado. Queda escrito acá para que sea repetible:
-
-1. **`dwmapi.dll` es el único interruptor que importa.** Es el DLL proxy que carga UE4SS dentro del proceso del juego. Sin él, UE4SS no se carga en absoluto, y por lo tanto **ningún mod de Lua puede ejecutarse** — no hace falta desactivar los mods uno por uno. Verificado que NO figura en los manifiestos del propio juego (`Manifest_NonUFSFiles_Win64.txt`, `Manifest_DebugFiles_Win64.txt`), o sea que no es un archivo de Palworld: es de UE4SS.
-2. **Revisar mods empaquetados (.pak) por separado** — viven en `Pal/Content/Paks/LogicMods/` o `Pal/Content/Paks/~mods/` y NO dependen de UE4SS, así que seguirían activos aunque se saque `dwmapi.dll`. Al 2026-09-06: `LogicMods/` está vacía y `~mods/` no existe.
-3. **Revisar otros DLL proxy** (`xinput1_3`, `d3d11`, `d3d12`, `version`, `winmm`, `dsound`, `dinput8`, `bink2w64`) en `Pal/Binaries/Win64/`. Al 2026-09-06: ninguno presente.
-
-### Advertencia honesta
-
-Que el cliente quede sin mods es verificable y está verificado. Lo que **no** se puede garantizar desde acá es la política de un servidor de terceros: si ese servidor guarda historial, o si detectó algo en sesiones anteriores, eso escapa por completo a lo que este proyecto puede ver o controlar. La decisión de entrar es de Dragón.
+**Salvedad honesta:** que el cliente quede sin mods es verificable y se verifica. La política de un servidor de terceros no — si guarda historial o detectó algo antes, eso escapa a lo que este proyecto puede ver. La decisión de entrar es de Dragón.
 
 ## ⚠️ EMPEZAR ACÁ — Lista de pendientes en orden (2026-09-03)
 
@@ -85,6 +78,14 @@ Detalle técnico completo, con las citas exactas de Dragón y el razonamiento co
 4. Arreglar la lectura del sensor de IA — **MUY PROBABLEMENTE ARREGLADO (2026-09-04), falta confirmar con `[ENFORCE] SUCCESS` real en el próximo test.** En vez de seguir buscando el sensor proactivamente (roto), se agregó un hook REACTIVO sobre `SelectResponseBySenses` (la función que el juego llama solo cuando un Pal decide algo) que recibe el sensor directo del propio hook, sin buscar nada. Ver Continuación 121 / hook-points.md ("Hundred-and-forty-eighth pass").
 5. Seguimiento real durante el vínculo (ANTES de la captura — no confundir con seguir ya siendo Otomo real, eso ya funciona confirmado por Dragón). Primer paso, costo cero: revisar el diagnóstico `[FOLLOW-DIAG]` que ya existe desde hace varias pasadas y nunca se leyó
 6. Que los Pals en vínculo ayuden en combate (depende de que el punto 5 tenga resultado primero)
+
+**Objetivo declarado por Dragón (2026-09-06): publicar el mod para otros jugadores.** Sus palabras al volver del servidor: "lets continue working to soon share this cool mod with other players, so they can tame pals too". Esto convierte varias cosas que hasta ahora eran "lindo tenerlo" en requisitos reales de lanzamiento, y conviene tenerlas anotadas desde ya aunque no se toquen todavía:
+- Sacar/apagar el modo de verificación de balance y volver a los números reales (`BALANCE_VERIFICATION_MODE`, `LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST`) — hoy Pet/Feed/Play están en 100 para pruebas, no son valores de lanzamiento.
+- Sacar las teclas y diagnósticos experimentales que quedan (CTRL+K, CTRL+H, `[BALANCE-TEST]`, `[NAME-DIAG]`, `[CAGE-VFX]`, `[FOLLOW-ACTOR]`) — un jugador no debería ver nada de eso.
+- Bajar el volumen del log de forma seria: `Logger.lua` fuerza escritura a disco por línea, que es correcto para depurar un crash pero no para un mod publicado.
+- README de instalación para usuarios finales (hoy el README asume que el lector es quien lo desarrolla).
+- Decidir qué es configurable y cómo (se ata al punto 10 de abajo, la pantalla de configuración).
+- Probar en una instalación limpia, no solo en la de Dragón.
 
 **Fase 3 — engavetado, NO reabrir sin evidencia nueva:**
 7. Comida real para Pals salvajes — **EN INVESTIGACIÓN ACTIVA, prueba en vivo pendiente (2026-09-05).** El camino del menú "4"/apuntado (BaseCampId, WorkAssignId, la esfera de interacción) sigue bloqueado — prueba base confirmó 9/9 sin enganche nativo sobre Pals salvajes (Continuación 138), y copiar/falsificar propiedad real (`OwnerPlayerUId`) para disambiguar quedó descartado por Dragón por riesgo de corromper datos reales de otro Pal. **Pero se encontró un camino nuevo que evita "4" por completo**: Ghidra (register-level, no solo pseudocódigo) confirmó que `OnSelectedOrderWorkerRadialMenu(resultType=Feed)` llama a `SelectedFeedingItem` con UN SOLO argumento (el Pal mismo, sin ítem todavía) — el Crash #5 fue casi seguro por saltar directo al segundo paso (confirmar con ítem) sin haber pasado por el primero. Implementado y desplegado: CTRL+H ahora llama `pal:OnSelectedOrderWorkerRadialMenu(parameter)` directo (parámetro reutilizado de uno ya vivo en memoria, `resultType=1`), pasando por el despacho reflejado real de Unreal, sin construir nada a mano. Sin confirmar en vivo todavía — pendiente que Dragón pruebe. Detalle completo en `hook-points.md` ("Hundred-and-sixty-fifth pass").
