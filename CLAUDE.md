@@ -16,6 +16,34 @@
 
 Recalcular esta tabla cada vez que una categoría avance — no es una sensación, sale de esta cuenta.
 
+## 🔴 ESTADO ACTUAL: MODS DESACTIVADOS (2026-09-06)
+
+**El mod NO va a cargar ahora mismo, y es a propósito.** Dragón pidió desactivar todo para entrar a un servidor de la comunidad sin riesgo de ban. Si una sesión futura ve que PalBonds "no hace nada", ES ESTO — no es un bug, no hay que depurarlo.
+
+### Cómo volver a activar (un solo paso)
+
+Renombrar de vuelta el cargador de UE4SS:
+
+Carpeta:
+`C:\Program Files (x86)\Steam\steamapps\common\Palworld\Pal\Binaries\Win64\`
+
+Renombrar dentro de esa carpeta:
+`dwmapi.dll.MODS-DISABLED`  →  `dwmapi.dll`
+
+Eso es todo. Nada más se tocó: los archivos del mod, `enabled.txt`, la carpeta `ue4ss/` y toda su configuración quedaron intactos.
+
+### Cómo desactivar (procedimiento, para la próxima vez)
+
+Dragón mencionó que esto ya se había hecho antes, pero no estaba documentado en ningún lado — se buscó en `CLAUDE.md`, `CLAUDE-archive.md` y los dos `hook-points`, sin resultado. Queda escrito acá para que sea repetible:
+
+1. **`dwmapi.dll` es el único interruptor que importa.** Es el DLL proxy que carga UE4SS dentro del proceso del juego. Sin él, UE4SS no se carga en absoluto, y por lo tanto **ningún mod de Lua puede ejecutarse** — no hace falta desactivar los mods uno por uno. Verificado que NO figura en los manifiestos del propio juego (`Manifest_NonUFSFiles_Win64.txt`, `Manifest_DebugFiles_Win64.txt`), o sea que no es un archivo de Palworld: es de UE4SS.
+2. **Revisar mods empaquetados (.pak) por separado** — viven en `Pal/Content/Paks/LogicMods/` o `Pal/Content/Paks/~mods/` y NO dependen de UE4SS, así que seguirían activos aunque se saque `dwmapi.dll`. Al 2026-09-06: `LogicMods/` está vacía y `~mods/` no existe.
+3. **Revisar otros DLL proxy** (`xinput1_3`, `d3d11`, `d3d12`, `version`, `winmm`, `dsound`, `dinput8`, `bink2w64`) en `Pal/Binaries/Win64/`. Al 2026-09-06: ninguno presente.
+
+### Advertencia honesta
+
+Que el cliente quede sin mods es verificable y está verificado. Lo que **no** se puede garantizar desde acá es la política de un servidor de terceros: si ese servidor guarda historial, o si detectó algo en sesiones anteriores, eso escapa por completo a lo que este proyecto puede ver o controlar. La decisión de entrar es de Dragón.
+
 ## ⚠️ EMPEZAR ACÁ — Lista de pendientes en orden (2026-09-03)
 
 **Antes de leer cualquier otra cosa en este archivo o inventar una nueva línea de investigación: esta es la lista real y ordenada de lo que falta, decidida junto con Dragón después de una sesión entera de pegar contra paredes.** El detalle completo de cada punto (por qué, qué se probó, qué evidencia hay) vive en `DESIGN.md` §12 ("Priority TODO list") — leer ESO antes de tocar código, no re-derivar esta lista desde cero ni generar una pregunta de investigación nueva sin haberla revisado primero.
