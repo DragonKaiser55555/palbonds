@@ -369,17 +369,27 @@ end
 -- for the rest of the session. Cheap: FindAllOf on a specific concrete
 -- class name typically matches zero or a handful of real objects, not a
 -- scan of the whole game's Blueprint class list.
+-- Hundred-and-ninety-third pass (2026-09-05): a real test session (sphere
+-- capture, sphere-less capture, AND a cage release, all in one log)
+-- closed three of these four for good:
+--   - ABP_ReturnPalEffect_C fires exactly on InactivateCurrentOtomo (an
+--     Otomo SWAP), not on either capture or the cage release — the
+--     months-old "capture beam" theory was wrong; an early test just
+--     happened to have a swap land close to a capture. Question answered,
+--     just not the answer anyone expected. Removed.
+--   - ABP_PalCaptureJudgeObject_C never fired across any of the three
+--     real events this session, consistent with every session before it
+--     — confirmed Arena/challenge-only, never hit by normal field
+--     capture. Removed.
+--   - ABP_CaptureWire_C never fired either, across the same three events.
+--     Its purpose was never even confirmed; confirmed dead for the normal
+--     capture flow. Removed.
+-- UBP_ActionUnlockCagePalLock_C is real and fires exactly as expected
+-- (confirmed again this session, right at the cage door) — kept, since
+-- it's the one poll here that's actually telling us something true, even
+-- if there's no further use planned for it right now.
 local function poll_prismspy_once()
-    poll_class_existence("ABP_ReturnPalEffect_C", "BP_ReturnPalEffect_C", function(inst)
-        local playerOk, player = pcall(function() return inst.ForPlayer end)
-        return "ForPlayer=" .. ((playerOk and player ~= nil and describe(player)) or "nil")
-    end)
-    poll_class_existence("ABP_PalCaptureJudgeObject_C", "BP_PalCaptureJudgeObject_C", nil)
     poll_class_existence("UBP_ActionUnlockCagePalLock_C", "BP_ActionUnlockCagePalLock_C", nil)
-    poll_class_existence("ABP_CaptureWire_C", "BP_CaptureWire_C", function(inst)
-        local targetOk, target = pcall(function() return inst.TargetMonster end)
-        return "TargetMonster=" .. ((targetOk and target ~= nil and describe(target)) or "nil")
-    end)
 end
 
 local function schedule_prismspy_poll()
@@ -525,16 +535,23 @@ function OtomoWatch.Init()
         end)
     end)
 
-    pcall(function()
-        RegisterHook("/Script/Pal.PalCaptureJudgeObject:OnCaptureSuccess", function(Context, Character, Result)
-            local self = hook_get(Context)
-            local character = hook_get(Character)
-            Logger.log(string.format(
-                "[PalBonds/OtomoWatch] [CAPTURE-JUDGE] APalCaptureJudgeObject.OnCaptureSuccess called — judge=%s character=%s",
-                describe(self), describe(character)
-            ))
-        end)
-    end)
+    -- Hundred-and-ninety-third pass (2026-09-05): removed the
+    -- PalCaptureJudgeObject.OnCaptureSuccess hook — confirmed dead across
+    -- every real capture tested this project has ever run (sphere,
+    -- sphere-less, and cage release all in the same session this time),
+    -- consistent with the twenty-eighth pass's original finding that this
+    -- class belongs to the Arena/challenge capture flow, not normal field
+    -- capture.
+    -- pcall(function()
+    --     RegisterHook("/Script/Pal.PalCaptureJudgeObject:OnCaptureSuccess", function(Context, Character, Result)
+    --         local self = hook_get(Context)
+    --         local character = hook_get(Character)
+    --         Logger.log(string.format(
+    --             "[PalBonds/OtomoWatch] [CAPTURE-JUDGE] APalCaptureJudgeObject.OnCaptureSuccess called — judge=%s character=%s",
+    --             describe(self), describe(character)
+    --         ))
+    --     end)
+    -- end)
 
     -- Thirtieth pass: the real captured-Pal cage class (settlements/enemy
     -- camps that hold a Pal captive — open the door, Pal goes straight to

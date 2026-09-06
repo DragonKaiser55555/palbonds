@@ -1314,7 +1314,18 @@ local function get_friendship_ratio(actor)
         return nil, "GetFriendshipPoint() failed"
     end
 
-    local cap = Trust.CAPTURE_AT_FRIENDSHIP_POINT or 55
+    -- Hundred-and-eighty-ninth pass (2026-09-05): Trust.GetBondingThreshold
+    -- now returns nil on purpose for a Pal with no real interaction on
+    -- record — Dragón's explicit ask, "dont use a fallback, just dont
+    -- compute it at all." A nil here means literally nothing to show
+    -- yet, so this returns 0 directly WITHOUT dividing by any default —
+    -- no per-Pal level lookup, no fallback constant, nothing computed
+    -- for the vast majority of Pals that are never actually interacted
+    -- with.
+    local capOk, cap = pcall(function() return Trust.GetBondingThreshold(actor) end)
+    if not (capOk and cap ~= nil and cap > 0) then
+        return 0, nil
+    end
     local ratio = point / cap
     if ratio > 1 then ratio = 1 end
     if ratio < 0 then ratio = 0 end
@@ -1374,9 +1385,31 @@ end
 -- widget between different parent panels in this project — wrapped in
 -- the same per-step pcall discipline as every other untested operation
 -- here, with a full-construction fallback if any step fails.
+-- Hundred-and-ninety-fourth pass (2026-09-05): an entry may now be
+-- label-only (no bar built yet — see install_trust_bar, which builds the
+-- personality label for every spawned Pal but the real trust bar only
+-- once a real interaction exists). This used to require `entry.bar` to
+-- already be valid just to reparent the LABEL, so a label-only entry
+-- could never be reused across a gauge recycle — it would silently fall
+-- through to full re-construction every time, building a duplicate label.
+-- Now handles bar/label independently: moves whichever of the two
+-- actually exists, and only fails outright if NEITHER does.
 local function reparent_existing_bar(entry, newGaugeWidget)
-    local barOk, barValid = pcall(function() return entry.bar:IsValid() end)
-    if not (barOk and barValid) then return false end
+    local hasBar = entry.bar ~= nil
+    local barOk, barValid = true, true
+    if hasBar then
+        barOk, barValid = pcall(function() return entry.bar:IsValid() end)
+    end
+    if hasBar and not (barOk and barValid) then hasBar = false end
+
+    local hasLabel = entry.label ~= nil
+    local labelOk, labelValid = true, true
+    if hasLabel then
+        labelOk, labelValid = pcall(function() return entry.label:IsValid() end)
+    end
+    if hasLabel and not (labelOk and labelValid) then hasLabel = false end
+
+    if not hasBar and not hasLabel then return false end
 
     local refOk, realParent, refX, refY, refW, refH = pcall(function()
         local hpSlot = newGaugeWidget.WBP_EnemyGauge.ProgressBar_HP.Slot
@@ -1397,33 +1430,32 @@ local function reparent_existing_bar(entry, newGaugeWidget)
         end
     end
 
-    pcall(function()
-        local oldParent = entry.bar.Slot and entry.bar.Slot.Parent
-        if oldParent ~= nil and oldParent:IsValid() then
-            oldParent:RemoveChild(entry.bar)
-        end
-    end)
-    local addOk, newSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.bar) end)
-    if not (addOk and newSlot ~= nil and newSlot:IsValid()) then return false end
-
-    local newY = (refY or 0) + (refH or 6) + 2
-    pcall(function() newSlot:SetPosition({X = refX or 0, Y = newY}) end)
-    pcall(function() newSlot:SetSize({X = refW or 80, Y = 6}) end)
-
-    if entry.label ~= nil then
-        local labelOk, labelValid = pcall(function() return entry.label:IsValid() end)
-        if labelOk and labelValid then
-            pcall(function()
-                local oldLabelParent = entry.label.Slot and entry.label.Slot.Parent
-                if oldLabelParent ~= nil and oldLabelParent:IsValid() then
-                    oldLabelParent:RemoveChild(entry.label)
-                end
-            end)
-            local labelAddOk, labelSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.label) end)
-            if labelAddOk and labelSlot ~= nil and labelSlot:IsValid() then
-                pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + 12}) end)
-                pcall(function() labelSlot:SetSize({X = refW or 80, Y = 14}) end)
+    if hasBar then
+        pcall(function()
+            local oldParent = entry.bar.Slot and entry.bar.Slot.Parent
+            if oldParent ~= nil and oldParent:IsValid() then
+                oldParent:RemoveChild(entry.bar)
             end
+        end)
+        local addOk, newSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.bar) end)
+        if addOk and newSlot ~= nil and newSlot:IsValid() then
+            local newY = (refY or 0) + (refH or 6) + 2
+            pcall(function() newSlot:SetPosition({X = refX or 0, Y = newY}) end)
+            pcall(function() newSlot:SetSize({X = refW or 80, Y = 6}) end)
+        end
+    end
+
+    if hasLabel then
+        pcall(function()
+            local oldLabelParent = entry.label.Slot and entry.label.Slot.Parent
+            if oldLabelParent ~= nil and oldLabelParent:IsValid() then
+                oldLabelParent:RemoveChild(entry.label)
+            end
+        end)
+        local labelAddOk, labelSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.label) end)
+        if labelAddOk and labelSlot ~= nil and labelSlot:IsValid() then
+            pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + 12}) end)
+            pcall(function() labelSlot:SetSize({X = refW or 80, Y = 14}) end)
         end
     end
 
@@ -1432,32 +1464,134 @@ local function reparent_existing_bar(entry, newGaugeWidget)
     return true
 end
 
+-- Hundred-and-ninety-fourth pass: upgrades an existing label-only entry
+-- (a Pal that was seen and given its personality label, but had no real
+-- interaction yet when it was first tracked) with a real trust/friendship
+-- bar, the moment a real interaction actually happens. Mirrors
+-- install_trust_bar's own bar-construction steps exactly, just callable
+-- on an entry that already exists — used both right after a successful
+-- reuse/reparent and from update_trust_bars's own per-tick loop, so the
+-- bar appears the moment bonding starts, not only on the next gauge
+-- recycle.
+local function try_upgrade_entry_with_bar(entry)
+    if entry.bar ~= nil then return end
+    if entry.actor == nil or not Trust.HasBondingState(entry.actor) then return end
+
+    local gaugeOk, gaugeValid = pcall(function() return entry.gaugeWidget:IsValid() end)
+    if not (gaugeOk and gaugeValid) then return end
+
+    local refOk, realParent, refX, refY, refW, refH = pcall(function()
+        local hpSlot = entry.gaugeWidget.WBP_EnemyGauge.ProgressBar_HP.Slot
+        local pos = hpSlot:GetPosition()
+        local size = hpSlot:GetSize()
+        return hpSlot.Parent, pos.X, pos.Y, size.X, size.Y
+    end)
+
+    local targetPanel
+    if refOk and realParent ~= nil and realParent:IsValid() then
+        targetPanel = realParent
+    else
+        local innerOk, innerCanvas = pcall(function() return entry.gaugeWidget.Canvas_Innner end)
+        if innerOk and innerCanvas ~= nil and innerCanvas:IsValid() then
+            targetPanel = innerCanvas
+        else
+            return
+        end
+    end
+
+    local classOk, progressBarClass = pcall(function() return StaticFindObject("/Script/UMG.ProgressBar") end)
+    if not (classOk and progressBarClass ~= nil and progressBarClass:IsValid()) then return end
+
+    local constructOk, newBar = pcall(function()
+        return StaticConstructObject(progressBarClass, targetPanel, 0, 0, 0x0E000000, false, false, nil, nil, nil)
+    end)
+    if not (constructOk and newBar ~= nil and newBar:IsValid()) then return end
+
+    pcall(function() newBar:SetPercent(0.0) end)
+    pcall(function() newBar:SetFillColorAndOpacity(compute_trust_bar_color(0)) end)
+    pcall(function() newBar:SetVisibility(0) end)
+
+    local addOk, slot = pcall(function() return targetPanel:AddChildToCanvas(newBar) end)
+    if not (addOk and slot ~= nil and slot:IsValid()) then return end
+
+    if refOk then
+        local newY = (refY or 0) + (refH or 6) + 2
+        pcall(function() slot:SetPosition({X = refX or 0, Y = newY}) end)
+        pcall(function() slot:SetSize({X = refW or 80, Y = 6}) end)
+    else
+        pcall(function() slot:SetPosition({X = 0, Y = 25}) end)
+        pcall(function() slot:SetSize({X = 80, Y = 6}) end)
+    end
+
+    local ratio = get_friendship_ratio(entry.actor)
+    if ratio then
+        pcall(function() newBar:SetPercent(ratio) end)
+        pcall(function() newBar:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
+    end
+
+    entry.bar = newBar
+    Logger.log("[PalBonds/Indicator] [DIAG-CREATE] upgraded a label-only entry with a real trust bar (first interaction) for " .. describe_pal(entry.actor))
+end
+
 local function install_trust_bar(gaugeWidget)
     local key = describe_widget(gaugeWidget)
     if barInstalledForGauge[key] then return end
+
+    -- Hundred-and-ninetieth pass (2026-09-05): Dragón's follow-up to the
+    -- threshold-caching fixes — don't build a bar AT ALL for a Pal with
+    -- no real interaction on record, not just skip the expensive
+    -- level-multiplier part of it. Most Pals the game shows a native
+    -- gauge for are never actually approached, so building (or even
+    -- reusing) custom widgets for every one of them, refreshed every
+    -- scan tick, is wasted work for the vast majority. `resolve_pal_actor_
+    -- from_gauge` was ALREADY being called unconditionally here every
+    -- scan tick before this pass (needed for the reuse-check below), so
+    -- checking `Trust.HasBondingState` (a plain table lookup, no actor/
+    -- component resolution of its own) on top of that adds no new real
+    -- cost. Deliberately does NOT mark `barInstalledForGauge[key]` when
+    -- skipping this way — the actor may not have resolved yet (a real,
+    -- separate race, see below) or may simply not be interacted with
+    -- YET — either way, this needs to keep re-checking on later scan
+    -- ticks (cheap) rather than permanently giving up on this exact
+    -- gauge widget.
+    local earlyActor = resolve_pal_actor_from_gauge(gaugeWidget)
+    if earlyActor == nil then
+        return -- actor not resolved yet (BindFromHandle race) — retry next scan tick
+    end
+
     barInstalledForGauge[key] = true
 
-    -- Hundred-and-eightieth pass: try resolving this gauge's real Pal
-    -- BEFORE building anything. If this exact Pal already has a live
-    -- tracked bar (from a different, now-stale gauge widget the game
-    -- already recycled away from), reuse it via reparent_existing_bar
-    -- instead of paying full construction cost again. Falls through to
-    -- the normal build path below if resolution fails (typical
-    -- BindFromHandle race — the same retry mechanism in update_trust_bars
-    -- covers that, unchanged) or if reparenting itself fails for any
-    -- reason.
-    local earlyActor = resolve_pal_actor_from_gauge(gaugeWidget)
-    local earlyPalId = earlyActor and safe_call(Personality.GetStableId, earlyActor)
+    -- Hundred-and-ninety-fourth pass (2026-09-05): Dragón asked for the
+    -- personality label back for EVERY spawned Pal — it's the one thing
+    -- he wants visible from a distance without interacting at all — while
+    -- keeping the hundred-and-ninetieth pass's lag fix intact for the
+    -- real trust/friendship bar itself (that one still only makes sense,
+    -- and only costs anything, once a Pal is actually being bonded with).
+    -- `hasBonding` splits the rest of this function: the label always
+    -- gets built below; the bar only when this is true.
+    local hasBonding = Trust.HasBondingState(earlyActor)
+
+    -- Hundred-and-eightieth pass: this exact Pal might already have a
+    -- live tracked entry (label and/or bar, from a different, now-stale
+    -- gauge widget the game already recycled away from) — reuse it via
+    -- reparent_existing_bar instead of paying full construction cost
+    -- again. Falls through to the normal build path below if reparenting
+    -- itself fails for any reason.
+    local earlyPalId = safe_call(Personality.GetStableId, earlyActor)
     if earlyPalId and trackedBars[earlyPalId] then
-        local reused = reparent_existing_bar(trackedBars[earlyPalId], gaugeWidget)
+        local entry = trackedBars[earlyPalId]
+        local reused = reparent_existing_bar(entry, gaugeWidget)
         if reused then
-            Logger.log("[PalBonds/Indicator] [DIAG-CREATE] REUSED existing bar for already-tracked Pal " .. describe_pal(earlyActor) .. " on recycled gauge " .. key .. " (no new widgets built)")
+            Logger.log("[PalBonds/Indicator] [DIAG-CREATE] REUSED existing widget(s) for already-tracked Pal " .. describe_pal(earlyActor) .. " on recycled gauge " .. key .. " (no new widgets built)")
+            if hasBonding then
+                try_upgrade_entry_with_bar(entry)
+            end
             return
         end
         Logger.log("[PalBonds/Indicator] [DIAG-CREATE] reparent attempt failed for already-tracked Pal " .. describe_pal(earlyActor) .. " — falling back to full construction")
     end
 
-    Logger.log("[PalBonds/Indicator] [DIAG-CREATE] attempting to construct a brand-new UProgressBar widget for gauge: " .. key)
+    Logger.log("[PalBonds/Indicator] [DIAG-CREATE] attempting to construct widget(s) for gauge: " .. key)
 
     -- Fifty-sixth pass: the fifty-fifth pass's numbers came back IDENTICAL
     -- across every single Pal (pos=64,26 size=120,4, every time) — that's
@@ -1508,88 +1642,17 @@ local function install_trust_bar(gaugeWidget)
         Logger.log("[PalBonds/Indicator] [DIAG-CREATE] could not read ProgressBar_HP's real parent (caught, non-fatal) — falling back to Canvas_Innner as a guess: " .. tostring(refX))
     end
 
-    local classOk, progressBarClass = pcall(function() return StaticFindObject("/Script/UMG.ProgressBar") end)
-    if not (classOk and progressBarClass ~= nil and progressBarClass:IsValid()) then
-        Logger.log("[PalBonds/Indicator] [DIAG-CREATE] StaticFindObject('/Script/UMG.ProgressBar') failed: " .. tostring(progressBarClass))
-        return
-    end
-
-    local constructOk, newBar = pcall(function()
-        return StaticConstructObject(progressBarClass, targetPanel, 0, 0, 0x0E000000, false, false, nil, nil, nil)
-    end)
-    if not (constructOk and newBar ~= nil and newBar:IsValid()) then
-        Logger.log("[PalBonds/Indicator] [DIAG-CREATE] StaticConstructObject FAILED (caught, non-fatal): " .. tostring(newBar))
-        return
-    end
-
-    pcall(function() newBar:SetPercent(0.0) end) -- sixty-sixth pass: starts empty now that the real value resolves almost immediately below/on the next tick, instead of the old 50% guess
-    pcall(function() newBar:SetFillColorAndOpacity(compute_trust_bar_color(0)) end) -- sixty-sixth pass: real white-pink "empty" color instead of the placeholder magenta
-    pcall(function() newBar:SetVisibility(0) end)
-
-    local addOk, slot = pcall(function() return targetPanel:AddChildToCanvas(newBar) end)
-    if not (addOk and slot ~= nil and slot:IsValid()) then
-        Logger.log("[PalBonds/Indicator] [DIAG-CREATE] AddChildToCanvas FAILED (caught, non-fatal) — bar exists but is not in the widget tree, so it cannot render: " .. tostring(slot))
-        return
-    end
-    Logger.log("[PalBonds/Indicator] [DIAG-CREATE] AddChildToCanvas SUCCEEDED — new bar is now a real child of the same panel ProgressBar_HP lives in")
-
-    if refOk then
-        -- Same coordinate space now, so the real bar's own numbers apply
-        -- directly — just offset Y down by its own height plus a small
-        -- gap, same idea Dragón suggested (copy position, push down).
-        local newY = (refY or 0) + (refH or 6) + 2
-        local posOk = pcall(function() slot:SetPosition({X = refX or 0, Y = newY}) end)
-        local sizeOk = pcall(function() slot:SetSize({X = refW or 80, Y = 6}) end)
-        Logger.log(string.format(
-            "[PalBonds/Indicator] [DIAG-CREATE] SetPosition(%s,%s)=%s SetSize(%s,6)=%s",
-            tostring(refX or 0), tostring(newY), posOk and "OK" or "FAILED",
-            tostring(refW or 80), sizeOk and "OK" or "FAILED"
-        ))
-    else
-        pcall(function() slot:SetPosition({X = 0, Y = 25}) end)
-        pcall(function() slot:SetSize({X = 80, Y = 6}) end)
-        Logger.log("[PalBonds/Indicator] [DIAG-CREATE] using blind fallback position/size (0,25)/(80,6) since real geometry wasn't readable")
-    end
-
-    -- Fifty-seventh pass: try to wire the REAL FriendshipPoint right away.
-    -- Fifty-ninth pass: `BindFromHandle` (captured via the hook above)
-    -- may not have fired for THIS gauge yet at the exact moment its bar
-    -- is created — binding and gauge-discovery aren't guaranteed to
-    -- happen in a fixed order relative to each other. So every installed
-    -- bar (resolved or not) is remembered in `trackedBars`, along with
-    -- its own `gaugeWidget`, and `update_trust_bars()` below RETRIES
-    -- resolution each tick for any entry that hasn't resolved yet —
-    -- instead of the fifty-seventh pass's one-shot-at-creation-only
-    -- attempt, which could never recover from an early miss.
-    -- Hundred-and-eightieth pass: reuse earlyActor (resolved at the top
-    -- of this function for the reparent-reuse check) instead of calling
-    -- resolve_pal_actor_from_gauge a second time for the same gauge.
-    local actor, actorErr = earlyActor, nil
-    if actor == nil then
-        actor, actorErr = resolve_pal_actor_from_gauge(gaugeWidget)
-    end
-    if actor then
-        local ratio, ratioErr = get_friendship_ratio(actor)
-        if ratio then
-            pcall(function() newBar:SetPercent(ratio) end)
-            pcall(function() newBar:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
-        end
-        Logger.log(string.format(
-            "[PalBonds/Indicator] [DIAG-TRUST] resolved real Pal actor for this gauge on first try — initial ratio=%s (%s)",
-            ratio and string.format("%.2f", ratio) or "unreadable", describe_pal(actor)
-        ))
-    else
-        Logger.log("[PalBonds/Indicator] [DIAG-TRUST] no real Pal actor yet (caught, non-fatal), will keep retrying each tick: " .. tostring(actorErr))
-    end
-
     -- ---------------------------------------------------------------------
-    -- TEMPORARY DEBUG FEATURE (hundred-and-fiftieth pass, 2026-09-04) —
-    -- Dragón's request, to compare a wild Pal's rolled personality tier
-    -- against its real observed in-game behavior while testing/balancing
-    -- the weighted roll. Explicitly meant to be removed later once the
-    -- rolls are confirmed working and the good/evil ratio is tuned — this
-    -- whole block (here and its counterpart in update_trust_bars below)
-    -- is self-contained and safe to delete as a unit when that day comes.
+    -- PERSONALITY LABEL (hundred-and-fiftieth pass, 2026-09-04; promoted
+    -- from temporary debug text to a permanent, always-visible feature in
+    -- the hundred-and-ninety-fourth pass, 2026-09-05, at Dragón's explicit
+    -- request — this is the one thing he wants visible on every spawned
+    -- Pal from a distance, without interacting at all, and he's floated
+    -- eventually exposing it as a real user-facing on/off setting once
+    -- the wording/styling gets a real polish pass). Built for EVERY
+    -- spawned Pal now, unconditionally — NOT gated on `hasBonding` the way
+    -- the real trust bar below is, since personality is rolled once per
+    -- individual regardless of interaction history anyway.
     -- Reuses the exact same widget-construction technique already proven
     -- above for the trust bar itself (StaticFindObject the native UMG
     -- class, StaticConstructObject into the same real parent panel,
@@ -1651,18 +1714,66 @@ local function install_trust_bar(gaugeWidget)
         Logger.log("[PalBonds/Indicator] [DIAG-LABEL] could not read Text_WorkName's real class FAILED: " .. tostring(labelClass))
     end
 
+    -- Real trust/friendship bar — still gated on `hasBonding` (a real
+    -- interaction on record), per the hundred-and-ninetieth pass's lag
+    -- fix, which stays fully intact. Only built when that's true; a
+    -- non-interacted Pal gets its label above and nothing else.
+    local newBar = nil
+    if hasBonding then
+        local classOk, progressBarClass = pcall(function() return StaticFindObject("/Script/UMG.ProgressBar") end)
+        if not (classOk and progressBarClass ~= nil and progressBarClass:IsValid()) then
+            Logger.log("[PalBonds/Indicator] [DIAG-CREATE] StaticFindObject('/Script/UMG.ProgressBar') failed: " .. tostring(progressBarClass))
+        else
+            local constructOk, barObj = pcall(function()
+                return StaticConstructObject(progressBarClass, targetPanel, 0, 0, 0x0E000000, false, false, nil, nil, nil)
+            end)
+            if not (constructOk and barObj ~= nil and barObj:IsValid()) then
+                Logger.log("[PalBonds/Indicator] [DIAG-CREATE] StaticConstructObject FAILED (caught, non-fatal): " .. tostring(barObj))
+            else
+                pcall(function() barObj:SetPercent(0.0) end)
+                pcall(function() barObj:SetFillColorAndOpacity(compute_trust_bar_color(0)) end)
+                pcall(function() barObj:SetVisibility(0) end)
+
+                local addOk, slot = pcall(function() return targetPanel:AddChildToCanvas(barObj) end)
+                if not (addOk and slot ~= nil and slot:IsValid()) then
+                    Logger.log("[PalBonds/Indicator] [DIAG-CREATE] AddChildToCanvas FAILED (caught, non-fatal) — bar exists but is not in the widget tree, so it cannot render: " .. tostring(slot))
+                else
+                    Logger.log("[PalBonds/Indicator] [DIAG-CREATE] AddChildToCanvas SUCCEEDED — new bar is now a real child of the same panel ProgressBar_HP lives in")
+
+                    if refOk then
+                        local newY = (refY or 0) + (refH or 6) + 2
+                        pcall(function() slot:SetPosition({X = refX or 0, Y = newY}) end)
+                        pcall(function() slot:SetSize({X = refW or 80, Y = 6}) end)
+                    else
+                        pcall(function() slot:SetPosition({X = 0, Y = 25}) end)
+                        pcall(function() slot:SetSize({X = 80, Y = 6}) end)
+                    end
+
+                    local ratio = get_friendship_ratio(earlyActor)
+                    if ratio then
+                        pcall(function() barObj:SetPercent(ratio) end)
+                        pcall(function() barObj:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
+                    end
+                    Logger.log(string.format(
+                        "[PalBonds/Indicator] [DIAG-TRUST] built real trust bar for %s — initial ratio=%s",
+                        describe_pal(earlyActor), ratio and string.format("%.2f", ratio) or "unreadable"
+                    ))
+                    newBar = barObj
+                end
+            end
+        end
+    end
+
     -- Hundred-and-eightieth pass: store under the real Pal ID when
-    -- already known at this point (either from earlyPalId above, or
-    -- resolved fresh in `actor`/get_friendship_ratio just above) rather
-    -- than the gauge's own temporary identity — that's what lets a LATER
-    -- gauge recycle for this same Pal find and reuse this entry via
-    -- reparent_existing_bar instead of building yet another one. Falls
-    -- back to the gauge-widget key (old behavior) when the Pal still
-    -- isn't resolvable yet; update_trust_bars promotes it to the real
-    -- key once resolution succeeds on a later retry.
-    local resolvedPalId = earlyPalId or (actor and safe_call(Personality.GetStableId, actor))
-    local trackKey = resolvedPalId or key
-    trackedBars[trackKey] = { bar = newBar, gaugeWidget = gaugeWidget, actor = actor, label = newLabel, palId = resolvedPalId }
+    -- already known at this point rather than the gauge's own temporary
+    -- identity — that's what lets a LATER gauge recycle for this same
+    -- Pal find and reuse this entry via reparent_existing_bar instead of
+    -- building yet another one. Falls back to the gauge-widget key (old
+    -- behavior) when the Pal still isn't resolvable yet; update_trust_bars
+    -- promotes it to the real key once resolution succeeds on a later
+    -- retry.
+    local trackKey = earlyPalId or key
+    trackedBars[trackKey] = { bar = newBar, gaugeWidget = gaugeWidget, actor = earlyActor, label = newLabel, palId = earlyPalId }
 end
 
 -- Fifty-seventh pass: periodic refresh for every installed bar — re-reads
@@ -1689,9 +1800,19 @@ local function update_trust_bars()
     local promotions = {}
 
     for key, entry in pairs(trackedBars) do
-        local barOk, barValid = pcall(function() return entry.bar:IsValid() end)
+        -- Hundred-and-ninety-fourth pass: `entry.bar` can legitimately be
+        -- nil now (a label-only entry for a Pal with no interaction yet)
+        -- — that used to unconditionally fail this check and drop the
+        -- WHOLE entry (including its personality label) every single
+        -- tick, which would have made the "always show the label" feature
+        -- impossible. Only require the bar to be valid when one exists.
+        local hasBar = entry.bar ~= nil
+        local barOk, barValid = true, true
+        if hasBar then
+            barOk, barValid = pcall(function() return entry.bar:IsValid() end)
+        end
         local gaugeOk, gaugeValid = pcall(function() return entry.gaugeWidget:IsValid() end)
-        if not (barOk and barValid and gaugeOk and gaugeValid) then
+        if not gaugeValid or (hasBar and not (barOk and barValid)) then
             trackedBars[key] = nil
         else
             if entry.actor == nil then
@@ -1723,10 +1844,24 @@ local function update_trust_bars()
                 if not (actorOk and actorValid) then
                     entry.actor = nil -- Pal actor itself went away; keep the bar/gauge entry, it may get re-resolved or the whole entry will drop next time the gauge goes invalid
                 else
-                    local ratio = get_friendship_ratio(entry.actor)
-                    if ratio then
-                        pcall(function() entry.bar:SetPercent(ratio) end)
-                        pcall(function() entry.bar:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
+                    -- Hundred-and-ninety-fourth pass: a label-only entry
+                    -- (no bar yet) gets checked here every tick — a cheap
+                    -- Trust.HasBondingState table lookup inside
+                    -- try_upgrade_entry_with_bar — for whether its Pal has
+                    -- just had its first real interaction. If so, the real
+                    -- trust bar gets built right then, next to the
+                    -- personality label that was already showing, instead
+                    -- of waiting for this exact gauge widget to recycle.
+                    if entry.bar == nil then
+                        try_upgrade_entry_with_bar(entry)
+                    end
+
+                    if entry.bar ~= nil then
+                        local ratio = get_friendship_ratio(entry.actor)
+                        if ratio then
+                            pcall(function() entry.bar:SetPercent(ratio) end)
+                            pcall(function() entry.bar:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
+                        end
                     end
 
                     -- TEMPORARY DEBUG FEATURE (hundred-and-fiftieth pass,
@@ -1798,9 +1933,15 @@ local function check_panel_children(fieldName)
         return
     end
 
+    -- Hundred-and-ninety-second pass (2026-09-05): this used to log every
+    -- time the native gauge pool's child count changed — useful while this
+    -- project was still figuring out that pool's structure (pass 28-30),
+    -- meaningless now that the structure is fully documented. In a busy
+    -- area this count changes almost every scan tick, so it was pure log
+    -- volume for a question closed long ago. Just track the count now,
+    -- don't log it.
     if count ~= state.lastCount then
         state.lastCount = count
-        panel_scan_log("[PalBonds/Indicator] [DIAG-PANEL] " .. fieldName .. " child count changed -> " .. tostring(count))
     end
 
     -- Fifty-eighth pass fix: Dragón reported that Pals seen after walking
@@ -1819,10 +1960,7 @@ local function check_panel_children(fieldName)
     -- still gated (via a `seenChildren` set keyed by full name) so this
     -- doesn't spam the log every 2s once a bunch of Pals are on screen.
     if count > 0 then
-        if state.listedAtCount ~= count then
-            state.listedAtCount = count
-            Logger.log("[PalBonds/Indicator] [DIAG-PANEL] " .. fieldName .. " now has " .. tostring(count) .. " live child widget(s)")
-        end
+        state.listedAtCount = count
 
         for i = 0, count - 1 do
             local childOk, child = pcall(function() return panel:GetChildAt(i) end)
@@ -1833,10 +1971,15 @@ local function check_panel_children(fieldName)
 
                 if not state.seenChildren[fullName] then
                     state.seenChildren[fullName] = true
-                    Logger.log(string.format(
-                        "[PalBonds/Indicator] [DIAG-PANEL]   %s child[%d] class=%s full=%s",
-                        fieldName, i, className, fullName
-                    ))
+                    -- Hundred-and-ninety-second pass: this used to log an
+                    -- identify line for every distinct gauge widget object
+                    -- ever seen this session (fullName includes the
+                    -- object's own address suffix, so a busy session sees
+                    -- hundreds of these as the game's gauge pool churns).
+                    -- The widget structure this was mapping out has been
+                    -- fully documented since the fifty-first pass — kept
+                    -- only the still-useful part below (dumping a
+                    -- genuinely NEW, never-seen class).
 
                     -- Dump the first NEW, non-structural class we see. A
                     -- container class we already know about (WrapBox etc.)
@@ -2179,10 +2322,29 @@ local function scan_for_gauge_widgets()
     -- retrying each tick until one exists, then runs once.
     probe_screen_projection()
 
-    -- Sixty-seventh pass: try to register the prism spy hooks each tick
-    -- until they succeed or the attempt cap is hit (see its own comment
-    -- above) — the classes may not be loaded yet this early in a session.
-    poll_prism_state()
+    -- Two-hundred-and-sixth pass (2026-09-06) — poll_prism_state() REMOVED
+    -- from this tick. It ran TWO full-world FindAllOf scans
+    -- (BP_CapturePrism_C and BP_CapturePrismBullet_C) plus a GetFullName()
+    -- reflection call per instance found, every 2 seconds, for the entire
+    -- session — and BP_CapturePrism_C is the player's own held Palsphere
+    -- weapon, so it reliably finds instances rather than usually returning
+    -- nothing.
+    --
+    -- Its throttles only ever suppressed the log LINES (seenPrismInstances
+    -- and prism_log's cap); the two world scans themselves ran every tick
+    -- regardless, which is the part that actually costs anything. Same
+    -- invisible-cost shape as the SetHPPercent hook removed at the bottom
+    -- of this file.
+    --
+    -- The research it fed is closed: it was watching the sphere projectile
+    -- to chase the capture light-beam VFX, and the hundred-and-ninety-third
+    -- pass's dedicated test run settled that whole thread (the
+    -- ABP_ReturnPalEffect_C candidate was ruled out against three real
+    -- capture/rescue events). The VFX question itself is still open, but it
+    -- needs a fresh candidate found via repak/FModel — not this poll, which
+    -- never had a live consumer and produced nothing any code reads.
+    -- poll_prism_class/poll_prism_bullet_state are left defined but
+    -- uncalled, in case a future pass wants to run one on demand.
 end
 
 -- Same scheduling approach already proven in Trust.lua.
@@ -2222,36 +2384,35 @@ function Indicator.Init()
     Logger.log("[PalBonds/Indicator] sixty-seventh pass: 'prism spy' -- grepped CXXHeaderDump for 'Prism', found BP_CapturePrism_C (the Palsphere throw weapon) and BP_CapturePrismBullet_C (its thrown projectile) are real classes; a third hit (Engine.hpp's ConstraintLimitMaterialPrismatic) is unrelated.")
     Logger.log("[PalBonds/Indicator] seventy-first pass: RegisterHook for BP_CapturePrism_C/BP_CapturePrismBullet_C is abandoned -- three separate Lua-reflection techniques for getting a Blueprint class's real asset path all failed (see file header), and the prior attempt's unthrottled failure log was itself spamming the console every ~2s. Switched to polling live instances' own fields directly (no path/hook needed) -- logs new instances once and BP_CapturePrismBullet_C's CaptureTarget/isBound only on change. See poll_prism_state.")
 
-    local okTarget = pcall(function()
-        RegisterHook("/Script/Pal.PalUICharacterHPGaugeBase:SetTargetCharacter", function(Context, TargetCharacter)
-            local widget = hook_get(Context)
-            local pal = hook_get(TargetCharacter)
-            diagnostic_log(string.format(
-                "[PalBonds/Indicator] [DIAG] SetTargetCharacter fired — widget class/instance=%s target=%s",
-                describe_widget(widget), describe_pal(pal)
-            ))
-        end)
-    end)
-    if okTarget then
-        Logger.log("[PalBonds/Indicator] hooked PalUICharacterHPGaugeBase:SetTargetCharacter (read-only diagnostic)")
-    else
-        Logger.log("[PalBonds/Indicator] could not hook PalUICharacterHPGaugeBase:SetTargetCharacter — class/function name may not resolve in this build")
-    end
-
-    local okPercent = pcall(function()
-        RegisterHook("/Script/Pal.PalUICharacterHPGaugeBase:SetHPPercent", function(Context, Percent)
-            local widget = hook_get(Context)
-            diagnostic_log(string.format(
-                "[PalBonds/Indicator] [DIAG] SetHPPercent fired — widget=%s percent=%s",
-                describe_widget(widget), tostring(Percent)
-            ))
-        end)
-    end)
-    if okPercent then
-        Logger.log("[PalBonds/Indicator] hooked PalUICharacterHPGaugeBase:SetHPPercent (read-only diagnostic)")
-    else
-        Logger.log("[PalBonds/Indicator] could not hook PalUICharacterHPGaugeBase:SetHPPercent — class/function name may not resolve in this build")
-    end
+    -- Two-hundred-and-sixth pass (2026-09-06) — REMOVED, REAL LAG SOURCE.
+    -- Two read-only diagnostic hooks used to live here, on
+    -- PalUICharacterHPGaugeBase's SetTargetCharacter and SetHPPercent.
+    -- They existed only to learn the native gauge widget's structure — a
+    -- question closed back in the fifty-first pass — but were never taken
+    -- back out.
+    --
+    -- Why they were a genuine, invisible performance cost rather than just
+    -- log noise: SetHPPercent is called by the game every time ANY visible
+    -- Pal's HP gauge updates its fill, continuously, for every gauge on
+    -- screen at once. Every one of those calls crossed into Lua and ran
+    -- `describe_widget(widget)` — a real GetFullName() reflection
+    -- round-trip — plus a string.format, BEFORE `diagnostic_log` ever got
+    -- the chance to discard the result. `diagnostic_log`'s
+    -- MAX_DIAGNOSTIC_LOGS cap only silenced the OUTPUT: because Lua
+    -- evaluates call arguments before the call, the reflection and string
+    -- work still happened on every single call for the entire session,
+    -- long after the log itself went quiet. That made this cost invisible
+    -- in the log (only 20 lines ever appear) while scaling directly with
+    -- how many Pals are on screen — matching the "worse when entering a
+    -- new area" shape of the lag Dragón has been reporting.
+    -- SetTargetCharacter had the identical shape, with two describes per
+    -- call instead of one.
+    --
+    -- Nothing reads these lines any more and no live feature depends on
+    -- them, so they are removed outright rather than throttled. The real
+    -- gauge work this module actually needs (finding gauges to attach the
+    -- trust bar/personality label to) runs from scheduleScan() below and
+    -- the BindFromHandle hook above, both untouched.
 
     scheduleScan()
 end

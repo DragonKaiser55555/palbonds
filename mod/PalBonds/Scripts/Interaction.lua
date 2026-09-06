@@ -342,11 +342,74 @@ local TEST_CAPTURE_MODIFIERS = {ModifierKey.CONTROL}
 -- Dragón's own standing rule ("if you need to add a new one, remove or
 -- swap for one already used in the project"), this physical key is
 -- reused for the new Play interaction instead of adding a fifth bind.
-local PLAY_KEY = Key.J
-local PLAY_MODIFIERS = {ModifierKey.CONTROL}
+-- Two-hundred-and-first pass (2026-09-06): moved off CTRL+J entirely, per
+-- Dragon's direct ask (a two-key-press combo was too annoying for
+-- something used this often). He confirmed F9/F10 (Pet/Feed) can stay as
+-- they are — he uses the real radial menu day to day, which internally
+-- calls these same do_pet/do_feed functions anyway (see do_interaction) —
+-- so this claims F8 instead, a single plain key, same shape as F9/F10.
+local PLAY_KEY = "F8"
 local PET_RANGE = 500.0       -- Unreal units (cm). ~5 meters.
 local PET_MAX_ANGLE_DEG = 25  -- how far off-center the camera can be and still count as "looking at" a Pal.
-local INTERACTION_FRIENDSHIP_GAIN = 10 -- matches the real Pet/Feed grant observed via Spy.lua/the AddFriendShip watch hook (documentation only, see note near the Happy call below).
+-- Two-hundred-and-first pass: Play-specific now (Pet has its own
+-- PET_FRIENDSHIP_GAIN/top-up mechanism below) — bumped 10 -> 25 per
+-- Dragon's balance ask.
+local INTERACTION_FRIENDSHIP_GAIN = 25
+
+-- Hundred-and-eighty-fifth pass (2026-09-05): Dragón's simplified real
+-- balance spec — Pet/Play/Feed all use small, real vanilla-scale
+-- amounts during wild bonding (not the mod's own big custom numbers),
+-- and the level-gap multiplier scales the BONDING THRESHOLD (how much
+-- of these small amounts is needed) instead of each individual gain.
+-- This means Pet/Play need NO override at all — vanilla's own real
+-- Happy-triggered grant (≈30, confirmed via [BALANCE-DIAG]'s
+-- FriendshipPoint_Petting) just applies untouched, same as it always
+-- has. Feed still needs an explicit grant (it currently gives zero real
+-- credit at all — nothing to conflict with), sized at 2x Pet's real
+-- amount per Dragón's original ratio ("feed requires an item"), just
+-- applied at vanilla scale instead of the earlier 1000/2000 draft.
+-- Kinship Peach amounts are the REAL numbers already found via
+-- [BALANCE-DIAG] (FloatValue1 on each item's static data) — genuinely
+-- vanilla, no scaling needed.
+-- Two-hundred-and-first pass (2026-09-06): 60 -> 50, Dragon's balance ask.
+local FEED_FRIENDSHIP_BASE = 50
+
+-- Two-hundred-and-first pass (2026-09-06): the comment three passes above
+-- (this same block) assumed Pet's real vanilla Happy-triggered grant just
+-- applies untouched at ~30 and needs no override — but that number was
+-- NEVER actually isolated from a real, clean, wild-Pal-Pet-specific
+-- observation. Every "AddFriendShip fired" line this project has ever
+-- read comes from ONE global, unconditional watch hook
+-- (RegisterHook("...PalIndividualCharacterParameter:AddFriendShip"...))
+-- that logs literally every real grant in the whole game, on any Pal, for
+-- any reason — including totally unrelated ambient events like a
+-- real Otomo party member's own passive gain (vanilla's real
+-- FriendshipPoint_AutoIncrementOtomo, confirmed = 10 via [BALANCE-DIAG]).
+-- Dragon caught this directly: recent test logs were full of
+-- "value=10 applyPassiveSkill=true" lines that were misread as Pet's own
+-- grant, when they almost certainly were exactly that ambient Otomo
+-- auto-increment firing in the background, unrelated to any wild-Pal Pet
+-- interaction. Pet's real, isolated amount has genuinely never been
+-- confirmed. Rather than guess again, do_interaction below now measures
+-- it directly (before/after FriendshipPoint around one real Pet
+-- interaction) and adjusts the real total to land on this exact target —
+-- positive OR negative (AddFriendShip with a negative value is already
+-- proven-safe elsewhere in this project, e.g. Trust.lua's damage/distance
+-- penalties), so the outcome is exactly 25 regardless of whatever
+-- vanilla's real amount turns out to be. This first live use also finally
+-- gives a clean, isolated read of that real number, closing the question
+-- either way.
+local PET_FRIENDSHIP_GAIN = 25
+local PET_GRANT_CHECK_DELAY_MS = 3000
+-- Hundred-and-eighty-sixth pass (2026-09-05): Dragón moved off the raw
+-- real vanilla FloatValue1 numbers (2000/20000) to clean values sized
+-- directly against his own BONDING_TRIGGER_THRESHOLD_BASE=500 (Trust.lua)
+-- instead — the full peach now grants exactly the base bar's worth in
+-- one use (a clean one-shot at equal level, matching Dragón's "it is
+-- indeed a one shot killer for friendship"), self-limiting against abuse
+-- since a much-higher-level Pal's own bonding threshold scales up too.
+local KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = 250   -- AffectionFruit_02
+local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     -- AffectionFruit_01
 
 -- EPalActionType values, from Pal_enums.hpp.
 -- HumanPetting/HumanFeeding: the PLAYER's own "reach out" gesture,
@@ -1293,6 +1356,46 @@ local function do_interaction(playerActionType, actionLabel, keyName)
         local controller = safe_call(function() return pal.Controller end)
         if controller then
             dump_interesting_properties(controller, tostring(actorName) .. ".Controller")
+        end
+    end
+
+    -- Two-hundred-and-first pass (2026-09-06): see PET_FRIENDSHIP_GAIN's
+    -- own comment above for the full reasoning. Scoped to Pet specifically
+    -- (this function is shared with Feed's old raw-key path, which already
+    -- has its own separate, real, working grant elsewhere and needs no
+    -- touching) and to a confirmed WILD Pal only — an owned real Otomo's
+    -- Pet interaction is left completely alone, same boundary this whole
+    -- project has kept since the eighty-second pass.
+    if actionOk and actionLabel == "HumanPetting" then
+        local isOwned = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
+        if isOwned == false then
+            local scheduleOk = pcall(function()
+                ExecuteInGameThreadWithDelay(PET_GRANT_CHECK_DELAY_MS, function()
+                    local stillValid = safe_call(function() return pal:IsValid() end)
+                    local paramStillValid = stillValid and safe_call(function() return param:IsValid() end)
+                    if not paramStillValid then
+                        Logger.log("[PalBonds/Interaction] [PET-FRIENDSHIP] target no longer valid — skipping the top-up check")
+                        return
+                    end
+                    local afterPoint = safe_call(function() return param:GetFriendshipPoint() end)
+                    if before == nil or afterPoint == nil then
+                        Logger.log("[PalBonds/Interaction] [PET-FRIENDSHIP] could not read before/after friendship point — skipping the top-up check")
+                        return
+                    end
+                    local realDelta = afterPoint - before
+                    local adjustment = PET_FRIENDSHIP_GAIN - realDelta
+                    if adjustment ~= 0 then
+                        safe_call(function() param:AddFriendShip(adjustment, false) end)
+                    end
+                    Logger.log(string.format(
+                        "[PalBonds/Interaction] [PET-FRIENDSHIP] real vanilla Pet grant observed = %d (first clean isolated read of this) — adjusted by %d to land on the target %d",
+                        realDelta, adjustment, PET_FRIENDSHIP_GAIN
+                    ))
+                end)
+            end)
+            if not scheduleOk then
+                Logger.log("[PalBonds/Interaction] [PET-FRIENDSHIP] could not schedule the top-up check")
+            end
         end
     end
 
@@ -2664,36 +2767,46 @@ function Interaction.Init()
     -- only ever actually found by logging immediately before AND after
     -- every single new native call, never by guessing), bracketing every
     -- new addition from this pass with its own before/after log line.
-    Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBindAsync(PLAY_KEY=%s) NOW", tostring(PLAY_KEY)))
-    RegisterKeyBindAsync(PLAY_KEY, PLAY_MODIFIERS, function()
+    -- Two-hundred-and-first pass (2026-09-06): moved off CTRL+J to plain F8
+    -- (see PLAY_KEY's own comment) — switched from RegisterKeyBindAsync
+    -- (needed for the old CTRL-modifier bind) to the same plain
+    -- RegisterKeyBind(Key[...]) F9/F10 already use successfully for a
+    -- single unmodified key, for consistency.
+    Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBind(PLAY_KEY=%s) NOW", tostring(PLAY_KEY)))
+    RegisterKeyBind(Key[PLAY_KEY], function()
         safe_call(do_play)
     end)
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBindAsync(PLAY_KEY) returned — still alive")
+    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(PLAY_KEY) returned — still alive")
 
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to run log_emote_index_mapping (static EMOTE-DIAG scan) NOW")
     safe_call(log_emote_index_mapping)
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] log_emote_index_mapping round 1 returned — still alive")
 
-    -- Permanent, read-only watcher on the REAL AddFriendShip function —
-    -- fires for every actual grant in the game, ours included, regardless
-    -- of who calls it. Only watches ONE function (a real grant is a much
-    -- rarer event than every PlayActionByType call across every Pal in
-    -- the world), so it should NOT reintroduce the log-spam/framerate
-    -- issue from the eighth pass — safe to leave running permanently.
-    local okWatch = pcall(function()
-        RegisterHook("/Script/Pal.PalIndividualCharacterParameter:AddFriendShip", function(Context, Value, ApplyPassiveSkill)
-            local self_ = hook_get(Context)
-            local value = hook_get(Value)
-            local applyPassive = hook_get(ApplyPassiveSkill)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [WATCH] real AddFriendShip fired — param=%s value=%s applyPassiveSkill=%s",
-                hook_describe(self_), tostring(value), tostring(applyPassive)
-            ))
-        end)
-    end)
-    if not okWatch then
-        Logger.log("[PalBonds/Interaction] could not install AddFriendShip watch hook (name may need adjusting)")
-    end
+    -- Two-hundred-and-sixth pass (2026-09-06) — REMOVED. This used to be a
+    -- permanent read-only watcher on the REAL AddFriendShip function,
+    -- logging every friendship grant anywhere in the game with a
+    -- hook_describe() reflection call per hit.
+    --
+    -- Two reasons it's gone, not just throttled:
+    -- (1) Cost. The original comment above it argued a real grant is "much
+    --     rarer" than a per-frame call, and that's true of PLAYER grants —
+    --     but it ignored the game's own ambient passive friendship, which
+    --     ticks for every owned Otomo, every active Otomo and every base
+    --     worker continuously. On a real save that is a steady stream of
+    --     hits, each paying a reflection round-trip plus a flushed disk
+    --     write, for the entire session.
+    -- (2) It was actively misleading. The Two-hundred-and-first pass
+    --     established that the `value=10 applyPassiveSkill=true` lines
+    --     being read here as "Pet's grant" were almost certainly the
+    --     vanilla FriendshipPoint_AutoIncrementOtomo (also exactly 10) of
+    --     Dragón's own party Pals — a global watch cannot tell whose grant
+    --     it is, and reading it as ours produced a wrong conclusion that
+    --     had to be corrected later.
+    --
+    -- The real, targeted measurement that replaced it lives in
+    -- do_interaction: a before/after FriendshipPoint read on the specific
+    -- wild Pal being interacted with, which is unambiguous about whose
+    -- grant it is and costs nothing when no interaction is happening.
 
     -- Hundred-and-third pass: permanent, read-only watcher on the REAL
     -- SelectedFeedingItem function (APalMonsterCharacter) — see the
@@ -2836,6 +2949,40 @@ function Interaction.Init()
                 "[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] wild target confirmed — real decrement never applies for a wild Pal, applying it ourselves: %d -> %d (write %s)",
                 beforeCount, newCount, writeOk and "ok" or ("FAILED: " .. tostring(writeErr))
             ))
+
+            -- Hundred-and-eighty-fifth pass (2026-09-05): real Feed for
+            -- wild Pals grants ZERO trust today (this exact function is
+            -- the confirmed reason why — the real consumption itself
+            -- never reaches any friendship-granting code for a wild
+            -- target, same as it never reached the real decrement).
+            -- Nothing to conflict with, so this grants directly: the
+            -- Kinship Peach's REAL discovered bonus if that's the item
+            -- consumed (AffectionFruit_02/01), else the plain Feed base
+            -- amount. Not scaled by the level-gap multiplier (that only
+            -- affects the bonding threshold's SIZE now, not individual
+            -- gains — see Trust.lua's BONDING_TRIGGER_THRESHOLD_BASE).
+            local itemId = safe_call(function() return slot.ItemId and readable(slot.ItemId.StaticId) end)
+            local grantAmount = FEED_FRIENDSHIP_BASE
+            if itemId == "AffectionFruit_02" then
+                grantAmount = KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE
+            elseif itemId == "AffectionFruit_01" then
+                grantAmount = KINSHIP_PEACH_FULL_FRIENDSHIP_BASE
+            end
+
+            local param = get_individual_parameter(wildTarget)
+            if param and param:IsValid() then
+                local grantOk, grantErr = pcall(function() param:AddFriendShip(grantAmount, false) end)
+                Logger.log(string.format(
+                    "[PalBonds/Interaction] [FEED-FRIENDSHIP] real wild Feed granting %d friendship (item=%s) — result=%s",
+                    grantAmount, tostring(itemId), grantOk and "ok" or tostring(grantErr)
+                ))
+            else
+                Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] could not resolve wild target's IndividualParameter — no friendship granted")
+            end
+
+            if Interaction.OnWildPalPetted then
+                Interaction.OnWildPalPetted(wildTarget)
+            end
         end)
     end)
     if not okWatchUseSlot then
@@ -3794,20 +3941,36 @@ function Interaction.Init()
     -- the blast radius is contained: no Trust/Capture code is touched by
     -- this substitution at all, and the window auto-closes within 1.5s
     -- either way.
-    local lastLoggedOtomo = nil
     local okOtomoGetter = pcall(function()
         RegisterHook("/Script/Pal.PalOtomoHolderComponentBase:TryGetSpawnedOtomo", function(Context) end, function(Context, ReturnValue)
-            local returned = hook_get(ReturnValue)
-            local desc = hook_describe(returned)
-            if desc ~= lastLoggedOtomo then
-                lastLoggedOtomo = desc
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] [OTOMO-GETTER-WATCH] TryGetSpawnedOtomo now returning %s (only logged on change — see eighty-fourth pass)",
-                    desc
-                ))
-            end
+            -- Two-hundred-and-sixth pass (2026-09-06) — IDLE PATH MADE FREE.
+            -- This hook is LOAD-BEARING and must stay: the substitution
+            -- below is what lets the real vanilla Pet action land on a wild
+            -- Pal at all (the hundred-and-fifty-ninth pass's root-cause
+            -- finding for why Pet works and Feed/Play don't). What did NOT
+            -- need to stay is the ambient [OTOMO-GETTER-WATCH] logging that
+            -- used to sit above this line.
+            --
+            -- The problem: this getter fires ~4x/second even with no menu
+            -- open, and the watch ran `hook_get` + `hook_describe` — a real
+            -- GetFullName() reflection round-trip, with a tostring()
+            -- fallback — on EVERY one of those calls, before any throttle
+            -- could decide whether to log. The Two-hundred-and-fourth pass
+            -- fixed the throttle so the LINES stopped repeating, but left
+            -- the per-call reflection work in place, which was always the
+            -- larger cost. Dragón confirmed the lag survived that fix.
+            --
+            -- Now the idle path is a single boolean test and an immediate
+            -- return: no hook_get, no describe, no string work, no disk
+            -- write unless the radial-menu window is genuinely open. The
+            -- watch line itself is dropped entirely — the question it was
+            -- built for (what this getter returns, and when) was answered
+            -- back in the eighty-fourth pass.
+            if not radialMenuActionWindowOpen then return end
 
-            if radialMenuActionWindowOpen then
+            local returned = hook_get(ReturnValue)
+
+            do
                 local ok, err = pcall(function()
                     local player = FindFirstOf("PalPlayerCharacter")
                     if not player or not player:IsValid() then return end
@@ -3911,13 +4074,18 @@ function Interaction.Init()
                             "[PalBonds/Interaction] [RADIAL-REDIRECT] EXPERIMENTAL: substituting wild %s in place of the Otomo for this menu action (every qualifying call now, not just the first — see ninety-sixth pass) — watch closely",
                             hook_describe(wildPal)
                         ))
-                        -- Hundred-and-twenty-first pass: one-shot per newly-
-                        -- aimed wild Pal (same dedup gate as the log line
-                        -- above, never per-tick) — tests the corrected
-                        -- party-membership candidate (UPalPlayerPartyPalHolder,
-                        -- see diagnose_party_membership's own comment) against
-                        -- THIS specific substitution, read-only.
-                        diagnose_party_membership(wildPal, get_individual_handle(wildPal))
+                        -- Hundred-and-ninety-third pass (2026-09-05):
+                        -- diagnose_party_membership's own probe
+                        -- (PawnOtmoIsPartyOtomo) was checked 17 times in one
+                        -- real session — including real wild-Pal
+                        -- substitutions like this one — and
+                        -- FindAllOf(PalPlayerPartyPalHolder) found 0
+                        -- instances every single time. Confirmed dead for
+                        -- this project's actual scope (singleplayer, no
+                        -- Arena — that class structurally doesn't exist
+                        -- outside it). Call removed; function kept below,
+                        -- commented, in case Arena support is ever revisited.
+                        -- diagnose_party_membership(wildPal, get_individual_handle(wildPal))
                     end
                     -- Hundredth pass (2026-09-03) FIX: this is now the ONLY
                     -- place `radialMenuRedirectedThisWindow` is set true —
@@ -4308,11 +4476,14 @@ function Interaction.OnWildPalPetted(palActor)
             tostring(state and state.presetClassName)
         ))
 
-        -- Hundred-and-twenty-fifth pass (2026-09-03): Dragón's "skittish
-        -- Pal warms up to you" idea. A real, successful interaction (this
-        -- event) is exactly the trigger — see Personality.lua's own
-        -- comment on OnSuccessfulInteraction for the full reasoning.
-        Personality.OnSuccessfulInteraction(palId, palActor)
+        -- Hundred-and-ninety-fifth pass (2026-09-05): the old one-shot
+        -- "escape -> friendly on first interaction" call that used to sit
+        -- here has been removed — Dragón replaced it with a bar-relevant
+        -- trigger (Personality.MaybeBecomeFriendlyByBar, 20% of the
+        -- bonding bar). That new trigger needs the real point/threshold
+        -- ratio, which only Trust.lua has — it's called from
+        -- Trust.OnInteractionSucceeded instead, right after this same
+        -- event, not from here.
     else
         Logger.log("[PalBonds/Personality] could not resolve a stable ID for this Pal (handle/ID lookup failed) — see Personality.lua")
     end

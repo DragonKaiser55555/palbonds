@@ -1205,7 +1205,34 @@ Sent as a full list after the hundred-and-third pass, with the pick of what to w
 
 **Hundred-and-twentieth pass (2026-09-03): Dragón corrected the whole approach, and a real test confirmed the fix needed is deeper than expected — PAUSED pending his decision.** Dragón rejected the hundred-and-eighteenth/nineteenth passes' "auto-pick the biggest food stack and silently consume it" design outright, correctly pointing out real vanilla Feed opens the actual inventory/item-picker (showing nothing if you're out of food, never auto-selecting or blocking) and that this project's own established method is to find and activate the real system, never approximate one — his words: "dont try to trick the game into doing something, just find how it does and activate it for our feed interaction." That raised a real question: does the existing wild-Pal `TryGetSpawnedOtomo` substitution (already used since roughly the eighty-fifth pass to make wild-Pal Pet/Feed work via the real "4" menu) already unlock the real food-picker system too, since that system also keys off "the current Otomo"? Tested directly — Dragón picked Feed via the real radial menu on wild Pals six times — and the log showed only this project's own gesture approximation firing every time, with zero trace of the real `SelectItemInventory`/`ActionPairStandby/Behavior/Call_FeedItem` machinery that fires reliably for a real Otomo feed. Since hooks in this project are non-blocking, that's clean evidence the game itself won't continue into the real flow for a Pal only substituted at that one getter — there's a deeper eligibility check further in, possibly reading the player's actual authoritative owned-Pal list (`OtomoIndividualIdList`) rather than the substituted getter, which would mean satisfying it means touching a real ownership record — a bigger risk category than anything modified so far. No code changed this pass; work is paused here pending Dragón's call on whether to keep researching that deeper gate or reconsider scope. See `docs/hook-points.md`'s hundred-and-twentieth pass for the full detail.
 
-## 12. Priority TODO list (2026-09-03) — THE real starting point for the next session
+## 12. Priority TODO list (2026-09-03) — SUPERSEDED, read CLAUDE.md's "EMPEZAR ACÁ" instead
+
+> **⚠️ STALENESS WARNING added 2026-09-06.** This list is from 2026-09-03 and several
+> of its entries are now wrong. It is kept for its reasoning and evidence, not for its
+> status claims. **The authoritative, current ordered list lives at the top of
+> `CLAUDE.md` ("⚠️ EMPEZAR ACÁ").**
+>
+> This warning exists because a fresh session on 2026-09-06 produced a technical audit
+> that reported kinship peaches as "fully blocked" — copied straight from item 8 below —
+> when they had in fact been implemented, balanced and live-tested days earlier. Dragón
+> caught it immediately. Corrections to the specific items:
+>
+> - **Item 3 (Join VFX):** the named candidate `ABP_ReturnPalEffect_C` is **ruled out**,
+>   not "already found." A dedicated test run (Continuación 163) showed it fires only on
+>   Otomo switching, never on any real capture or cage rescue. A fresh candidate is needed.
+> - **Item 4 (Personality sensor resolution):** **solved.** A reactive hook on
+>   `SelectResponseBySenses` (Continuación 121/167) gets a valid sensor handed to it by
+>   the game itself, and caches it per Pal. The proactive scan described below is now
+>   only a fallback.
+> - **Item 5 (bonding-phase following):** still open, but both leads below have since
+>   been **tried and confirmed not to work** — `SetOtomoFollowAction`, the repeated Otomo
+>   composite, and the Funnel path all require real ownership. Do not re-try them as if
+>   they were untested.
+> - **Item 8 (Kinship peaches): DONE, not blocked.** `Interaction.lua`'s
+>   `RequestUseToCharacter` post-hook reads the consumed item id and grants 250
+>   (`AffectionFruit_02`) or 500 (`AffectionFruit_01`) against the 500-point bonding bar.
+>   Live-tested on a Petallia. Item 7 (real food-item feeding) remains shelved, but
+>   peaches were never actually blocked on it.
 
 This is the authoritative, ordered pending list, written after a full session of hitting real walls on personality and real-food-item feeding, and after Dragón explicitly asked to stop inventing new research questions and instead work through what's actually left, in order. **Start here next time — don't re-derive this from scratch, and don't reopen anything marked "shelved" below without new information that specifically changes its assessment.**
 

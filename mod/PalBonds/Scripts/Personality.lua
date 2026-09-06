@@ -579,6 +579,16 @@ local SENSOR_INDEX_REFRESH_SECONDS = 5
 local sensorIndexByOwnerKey = {}
 local sensorIndexBuiltAt = nil
 
+-- Forward declaration for find_cached_sensor, which is defined further down
+-- this file (next to the reactive SelectResponseBySenses hook that fills the
+-- cache) but is needed by try_enforce_personality above it. Lua locals are
+-- not hoisted, so without this the earlier function would silently see a
+-- global nil instead. Assigned immediately after find_cached_sensor's real
+-- definition; every read site guards on it being non-nil anyway, so even if
+-- that assignment were ever removed the behaviour degrades to the old
+-- fallback path rather than erroring.
+local find_cached_sensor_fwd = nil
+
 -- Hundred-and-thirty-sixth pass (2026-09-03): Dragón's retest showed the
 -- FindAllOf fallback ALSO failed for every Pal (still 0 real species
 -- presets read, 98/98 fell back to "curious"). Logged once ever, so the
@@ -1119,11 +1129,37 @@ end
 -- `true, nil` on success or `false, reason` on failure — the caller
 -- decides how to log/retry, this function never touches PersonalityState
 -- itself so it stays reusable from either call site.
+-- Two-hundred-and-second pass (2026-09-06): Dragón's real, still-open
+-- question from the agreed plan — the copied preset's `Damaged_*` fields
+-- (as opposed to `Discover_*`, the only ones ever glanced at before) have
+-- never actually been read/verified. If a Pal is already engaged in
+-- combat when its preset swaps to "friendly," its next decision may be
+-- driven by the Damaged_* branch instead of Discover_* — if THAT branch
+-- of the source CDO isn't actually peaceful, no amount of repeating
+-- interrupt_and_resense would fix the interrupt bug. Logs the real 8
+-- field values read off the SOURCE cdo (identical to what ends up on the
+-- fresh per-Pal copy, since this is a straight field-for-field copy)
+-- exactly once per desiredBaseName — the CDO is a shared, static,
+-- never-changing reference regardless of which Pal receives it, so
+-- logging it once ever is enough to answer the question, not per-Pal.
+local loggedPresetSlotsOnce = {}
+local function log_preset_slots_once(desiredBaseName, cdo)
+    if loggedPresetSlotsOnce[desiredBaseName] then return end
+    loggedPresetSlotsOnce[desiredBaseName] = true
+    local parts = {}
+    for _, prop in ipairs(PRESET_SLOTS) do
+        local value = safe_call(function() return cdo[prop] end)
+        parts[#parts + 1] = prop .. "=" .. tostring(value)
+    end
+    Logger.log("[PalBonds/Personality] [PRESET-SLOTS] " .. desiredBaseName .. " real field values: " .. table.concat(parts, ", "))
+end
+
 local function apply_forced_preset(sensor, desiredBaseName)
     local cdo = find_preset_cdo(desiredBaseName)
     if not cdo then
         return false, "could not resolve the default preset object for " .. tostring(desiredBaseName)
     end
+    log_preset_slots_once(desiredBaseName, cdo)
 
     local nativeClass = get_native_preset_class()
     if not nativeClass then
@@ -1151,6 +1187,85 @@ local function apply_forced_preset(sensor, desiredBaseName)
     end
 
     return true, nil
+end
+
+-- Hundred-and-ninety-seventh pass (2026-09-05): Dragón's real question —
+-- even when a preset swap succeeds, a Pal already mid-fleeing/mid-fighting
+-- keeps executing that ALREADY-DECIDED action, since swapping
+-- AIResponsePreset only changes what a FUTURE decision reads, not
+-- whatever's already running. He separately pointed at the game's own
+-- real "notice" mechanic (the "!" over a Pal's head, which visibly
+-- interrupts whatever it was doing to turn and face the player) as
+-- evidence this game DOES have a real mechanism for exactly this. Found
+-- two concrete, real, simple functions in Pal.hpp (never called by this
+-- project before) that mirror that natural behavior:
+--   - `UPalAIActionComponent:AllCancelAction_Logic_HardScript_Reaction
+--     (Instigator)` — cancels whatever's running at the AI-decision
+--     priority tiers (Logic/HardScript/Reaction, i.e. ordinary wild-AI
+--     flee/fight decisions, as opposed to lower-priority SoftScript
+--     background behavior). A single-pointer-argument call, same safety
+--     shape as everything else already proven in this project.
+--   - `UPalAISensorComponent:RequestSightCheckAsync(bIncludePlayer,
+--     bIncludeAliveNPC, bIncludeEdibleDeadNPC, RangeRate, bIgnoreOtomo)` —
+--     the real function declared right next to SelectResponseBySenses,
+--     almost certainly what actually produces the real "notice" trigger
+--     Dragón described. Also a plain-args call.
+-- Calling the cancel FIRST (stop the current action) then requesting a
+-- fresh sight check (force a new decision using the just-swapped preset)
+-- mirrors that natural notice-and-turn sequence. Neither constructs or
+-- attaches a new AI object (the bigger, still-untried risk category
+-- Combat.lua's own notes flag) — both are simple calls on components this
+-- file already resolves safely elsewhere (the Controller/AIActionComponent
+-- chain is the exact same one Combat.lua's FOLLOW-DIAG already reads).
+-- First live use of either function in this project — bracketed with
+-- before/after logging per this project's standing crash-diagnosis
+-- discipline (the only method that's ever actually found a real crash's
+-- cause here). Best-effort only: any failure here still leaves the
+-- tracked disposition/preset swap intact, just without the interrupt.
+local function interrupt_and_resense(palActor, sensor, palId)
+    local controller = safe_call(function() return palActor.Controller end)
+    local controllerValid = controller ~= nil and safe_call(function() return controller:IsValid() end)
+    if controllerValid then
+        local actionComp = safe_call(function() return controller:GetAIActionComponent() end)
+        local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
+        if actionCompValid then
+            Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call AllCancelAction_Logic_HardScript_Reaction NOW")
+            local ok, err = pcall(function() actionComp:AllCancelAction_Logic_HardScript_Reaction(palActor) end)
+            Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — AllCancelAction_Logic_HardScript_Reaction returned: " .. (ok and "ok" or ("FAILED: " .. tostring(err))))
+        else
+            Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — no usable AIActionComponent, skipping the action-cancel step (tracked disposition/preset swap still applied)")
+        end
+    else
+        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — no usable Controller, skipping the action-cancel step (tracked disposition/preset swap still applied)")
+    end
+
+    if sensor then
+        -- Hundred-and-ninety-ninth pass (2026-09-06): the swap+cancel+resense
+        -- combo above is now confirmed running clean 5/5 times, but Dragón
+        -- still saw zero visible behavior change — a Pal that turned
+        -- "friendly" kept fleeing/attacking exactly as before. Since nothing
+        -- here errors, the real blocker is some OTHER persistent state,
+        -- separate from the preset, that keeps a Pal committed to a
+        -- decision it already made. Real, concrete candidate found right on
+        -- this same sensor class: `ResponsedMaxBiologicalGrade` (a plain
+        -- int32 field) plus its own reset function,
+        -- `ResetResponsedMaxBiologicalGrade()` — the name and shape strongly
+        -- suggest a hysteresis/dedup value ("the strongest threat grade
+        -- I've already reacted to") meant to stop a Pal from re-reacting to
+        -- something weaker than whatever it already committed to — exactly
+        -- the kind of lock that would survive a preset swap untouched.
+        -- Dragón's own framing ("reset their behavior") matches this
+        -- function almost literally. Calling it right alongside the
+        -- existing cancel+resense, before the fresh sight check runs, so
+        -- the next real decision isn't silently discarded by this guard.
+        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call ResetResponsedMaxBiologicalGrade NOW")
+        local ok3, err3 = pcall(function() sensor:ResetResponsedMaxBiologicalGrade() end)
+        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — ResetResponsedMaxBiologicalGrade returned: " .. (ok3 and "ok" or ("FAILED: " .. tostring(err3))))
+
+        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call RequestSightCheckAsync NOW")
+        local ok2, err2 = pcall(function() sensor:RequestSightCheckAsync(true, true, false, 1.0, false) end)
+        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — RequestSightCheckAsync returned: " .. (ok2 and "ok" or ("FAILED: " .. tostring(err2))))
+    end
 end
 
 -- Hundred-and-forty-eighth pass (2026-09-04) REFACTOR: split the old
@@ -1218,6 +1333,39 @@ local function try_enforce_personality_with_sensor(palActor, palId, sensor)
             "[PalBonds/Personality] [ENFORCE] SUCCESS — %s (rolled tier=%s) now has its own private preset copied from %s's real defaults",
             tostring(palId), tostring(state.rolledTier), tostring(desiredBaseName)
         ))
+        -- Two-hundred-and-sixth pass (2026-09-06) — interrupt_and_resense
+        -- REMOVED from this path deliberately. It stays on the two paths
+        -- that actually need it (MaybeBecomeFriendlyByBar and ForceTier).
+        --
+        -- Why it was wrong here: interrupt_and_resense exists to make a Pal
+        -- that is ALREADY mid-behavior (fleeing from you, or attacking you)
+        -- drop that behavior and re-decide, because its disposition changed
+        -- underneath it. That is a real need when the player has just won a
+        -- Pal over, or when a Pal is being forced to flee on trust loss.
+        --
+        -- This call site is different: it is the routine spawn-time
+        -- enforcement that gives a freshly-seen wild Pal the preset matching
+        -- its rolled tier. That Pal has not changed its mind about anything
+        -- — it is simply being set up — so there is nothing to interrupt.
+        -- Firing it here meant every single wild Pal that rolled a non-normal
+        -- tier got AllCancelAction_Logic_HardScript_Reaction (cancelling
+        -- whatever it was doing) plus ResetResponsedMaxBiologicalGrade plus
+        -- RequestSightCheckAsync (an async sight trace) as it came into
+        -- range. The live log from 2026-09-06 shows this hitting 43 distinct
+        -- Pals in a single 10-minute session — work that scales directly
+        -- with how many Pals stream in around the player, which matches the
+        -- "worse when entering a new area" shape of the lag being reported.
+        --
+        -- Both of these calls were added on 2026-09-06 (the hundred-and-
+        -- ninety-seventh and two-hundredth passes), which also matches
+        -- Dragón's own timing report: "lag still feels a lot laggier than
+        -- yesterday, im sure it was something last added."
+        --
+        -- Behavioural note, so this isn't mistaken for a regression: the
+        -- preset swap itself is untouched and still applies exactly as
+        -- before. The only thing removed is the forced action-cancel and
+        -- re-sense on a Pal that was never in a stale behaviour to begin
+        -- with.
     else
         Logger.log("[PalBonds/Personality] [ENFORCE] " .. tostring(palId) .. " — " .. tostring(err) .. ", will retry")
     end
@@ -1232,7 +1380,29 @@ local function try_enforce_personality(palActor, palId)
     local state = PersonalityState[palId]
     if not state or state.enforcementApplied then return end
 
-    local sensor = find_sensor_component(palActor)
+    -- Two-hundred-and-sixth pass (2026-09-06): try the reactive hook's
+    -- sensor cache BEFORE falling back to find_sensor_component.
+    --
+    -- This is a real cost fix, not just tidiness. find_sensor_component's
+    -- own fallback (find_sensor_component_via_index) rebuilds a world-wide
+    -- index every 5 seconds: a FindAllOf("PalAISensorComponent") across the
+    -- whole loaded world, plus GetOwner() + GetFullName() — two reflection
+    -- round-trips — for EVERY sensor component it returns. Because this
+    -- scan runs every 8s and the index goes stale every 5s, essentially
+    -- every scan that still has an unenforced Pal in range paid for a full
+    -- rebuild.
+    --
+    -- Meanwhile the reactive SelectResponseBySenses hook (hundred-and-
+    -- ninety-seventh pass) already caches a valid, live sensor for
+    -- practically every wild Pal near the player, for free, as a side
+    -- effect of the game's own AI calls. Reading that table first turns the
+    -- common case into a single table lookup and skips the rebuild
+    -- entirely; the old path stays as the fallback for any Pal the reactive
+    -- hook hasn't seen yet, so nothing that worked before stops working.
+    local sensor = find_cached_sensor_fwd and find_cached_sensor_fwd(palId)
+    if not sensor then
+        sensor = find_sensor_component(palActor)
+    end
     if not sensor then
         -- Hundred-and-thirty-second pass (2026-09-03) FIX, REAL LAG
         -- REGRESSION FOUND: unlike the old donor-search failure (which was
@@ -1281,21 +1451,70 @@ end
 -- FAILED attempt (rather than retrying every single fire) is a
 -- deliberate tradeoff: a Pal that fails here can still be caught later by
 -- the proactive scan above instead of this hook hammering it forever.
+-- Hundred-and-ninety-eighth pass (2026-09-06): Dragón's real test found
+-- MaybeBecomeFriendlyByBar's own one-shot sensor lookup (find_sensor_component,
+-- called fresh, no retry, right at the WON-OVER moment) failing live for
+-- the actual bonding-target Pal — the exact "layer 1" root cause the
+-- hundred-and-ninety-sixth pass already flagged, just confirmed with real
+-- log evidence this time: "[WON-OVER] ... has no readable
+-- AISensorComponent — cannot swap its real AI" fired immediately after
+-- "[WON-OVER] ... crossed the friendly-trigger fraction," with zero retry
+-- opportunity. Meanwhile this reactive hook — proven far more reliable,
+-- since it gets its sensor handed directly from the game's own call rather
+-- than searching for one — sees a huge number of real sensors fire, for
+-- every wild Pal in range, all the time (that's the whole reason
+-- handledSensorKeys exists to dedupe it). Caching every sensor this hook
+-- ever sees, keyed by the owning Pal's stable ID, gives
+-- MaybeBecomeFriendlyByBar/ForceTier a real, already-proven-reliable
+-- source to check FIRST, before ever falling back to the search-based
+-- find_sensor_component. Cached regardless of rolled tier (normal-tier
+-- Pals were never cached before, since the old code returned before
+-- reaching this point for them) and regardless of the dedup state below —
+-- this is a passive, read-only cache update, no new native call, no
+-- extra work beyond a table write.
+local cachedSensorByPalId = {}
+local function cache_sensor_for_pal(sensor, pawn)
+    local palId = Personality.GetOrInitState(pawn)
+    if palId then cachedSensorByPalId[palId] = sensor end
+    return palId
+end
+
+-- Read-only accessor other functions in this file use INSTEAD of calling
+-- find_sensor_component first — a real, already-live sensor reference,
+-- validated fresh each time (a Pal's sensor component doesn't change once
+-- created, but the Pal itself could have despawned since the hook last saw it).
+local function find_cached_sensor(palId)
+    if not palId then return nil end
+    local sensor = cachedSensorByPalId[palId]
+    if not sensor then return nil end
+    local validOk, isValid = pcall(function() return sensor:IsValid() end)
+    if validOk and isValid then return sensor end
+    cachedSensorByPalId[palId] = nil
+    return nil
+end
+
+-- Two-hundred-and-sixth pass: publish it to the forward declaration near the
+-- top of this file so try_enforce_personality (defined above) can use this
+-- cache instead of rebuilding the world-wide sensor index every scan.
+find_cached_sensor_fwd = find_cached_sensor
+
 local handledSensorKeys = {}
 local function on_sensor_select_response(Context)
     local sensor = safe_call(function() return Context:get() end)
     if not sensor then return end
     local sensorKey = safe_call(function() return sensor:GetFullName() end)
-    if not sensorKey or handledSensorKeys[sensorKey] then return end
-    handledSensorKeys[sensorKey] = true
+    if not sensorKey then return end
 
     local owner = safe_call(function() return sensor:GetOuter() end)
     local pawn = owner and safe_call(function() return owner.Pawn end)
     local validOk, isValid = pcall(function() return pawn ~= nil and pawn:IsValid() end)
     if not (validOk and isValid) then return end
 
-    local palId = Personality.GetOrInitState(pawn)
+    local palId = cache_sensor_for_pal(sensor, pawn)
     if not palId then return end
+
+    if handledSensorKeys[sensorKey] then return end
+    handledSensorKeys[sensorKey] = true
 
     try_enforce_personality_with_sensor(pawn, palId, sensor)
 end
@@ -1331,40 +1550,33 @@ end
 -- Hundred-and-twenty-fifth pass (2026-09-03) — Dragón's original personality
 -- idea, from before the tier-rolling system even existed: "if the player
 -- chases a skittish pal to pet it, and once it manages, the pal is like
--- 'hey, this hoomin is not so bad' then changes to curious." Deliberately
--- self-contained from the still-unconfirmed ENFORCEMENT scan above and the
--- still-stalled food-picker research — this triggers off
--- Interaction.OnWildPalPetted, an event already confirmed reliable across
--- many real sessions, not a per-tick scan or anything touching the food/
--- Otomo systems.
+-- 'hey, this hoomin is not so bad' then changes to curious."
 --
--- Only affects a Pal whose CURRENT effective disposition is "skittish" —
--- whether that's because it rolled the skittish tier, or because it's
--- "normal" tier on a naturally-skittish species; either way, a real
--- successful interaction (petting/feeding it despite it being flighty) wins
--- it over, once, permanently. Updates the tracked disposition immediately
--- (cheap, always happens). Then, best-effort, tries to ALSO make this show
--- up in real AI behavior by re-pointing this one Pal's own AIResponsePreset
--- at an already-live "curious" donor — the exact same safe, ownership-
--- gated, never-touch-the-shared-object pattern try_enforce_personality
--- already uses above, just triggered by this one specific event instead of
--- the periodic scan. If no live curious donor happens to be loaded nearby
--- yet, the disposition STATE still updates (visible via GetDisposition/
--- GetState) even though the real-behavior swap can't happen this time —
--- same "state-only progress is still real progress" approach already used
--- for the tier roll itself before enforcement existed.
-function Personality.OnSuccessfulInteraction(palId, palActor)
+-- Hundred-and-ninety-fifth pass (2026-09-05): REPLACED the original
+-- one-shot version of this idea (fired once, only for a Pal whose
+-- disposition was "escape", only on its first ever successful
+-- interaction) with a bar-relevant version, per Dragón's explicit
+-- instruction to remove the old mechanic entirely in favor of this one.
+-- Now triggers off crossing a real fraction of the Pal's OWN bonding bar
+-- (FRIENDLY_TRIGGER_RATIO in Trust.lua, currently 20%) — called from
+-- Trust.OnInteractionSucceeded, which already has the real point/
+-- threshold numbers needed to compute that ratio. Applies from ANY
+-- starting disposition, not just "escape" — generalizes the same "you've
+-- clearly made real progress taming this Pal" idea to every tier, not
+-- only the shy one.
+function Personality.MaybeBecomeFriendlyByBar(palId, palActor)
     if palId == nil then return end
     local state = PersonalityState[palId]
     if not state then return end
-    if state.disposition ~= "escape" then return end
-    if state.becameFriendlyAfterInteraction then return end -- already won over once, no-op forever after
+    if state.disposition == "friendly" then return end -- already friendly, nothing to change
+    if state.becameFriendlyByBar then return end -- already won over once, no-op forever after
 
-    state.becameFriendlyAfterInteraction = true
+    local fromDisposition = state.disposition
+    state.becameFriendlyByBar = true
     state.disposition = "friendly"
     Logger.log(string.format(
-        "[PalBonds/Personality] [WON-OVER] %s was escape, but a successful interaction won it over — tracked disposition now 'friendly' (rolled tier stays recorded as '%s' for history/debugging)",
-        tostring(palId), tostring(state.rolledTier)
+        "[PalBonds/Personality] [WON-OVER] %s crossed the friendly-trigger fraction of its bonding bar (was '%s') — tracked disposition now 'friendly' (rolled tier stays recorded as '%s' for history/debugging)",
+        tostring(palId), tostring(fromDisposition), tostring(state.rolledTier)
     ))
 
     if not palActor then return end
@@ -1387,9 +1599,13 @@ function Personality.OnSuccessfulInteraction(palId, palActor)
         return -- this species already naturally uses the friendly preset, nothing to swap
     end
 
-    local sensor = find_sensor_component(palActor)
+    -- Hundred-and-ninety-eighth pass: check the reactive hook's cached
+    -- sensor FIRST — confirmed live to be the reliable source, see
+    -- cache_sensor_for_pal's own comment for why the plain
+    -- find_sensor_component fallback below just failed for a real Pal.
+    local sensor = find_cached_sensor(palId) or find_sensor_component(palActor)
     if not sensor then
-        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " has no readable AISensorComponent — cannot swap its real AI, tracked disposition still updated")
+        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " has no readable AISensorComponent (neither cached nor found via scan) — cannot swap its real AI, tracked disposition still updated")
         return
     end
 
@@ -1400,6 +1616,7 @@ function Personality.OnSuccessfulInteraction(palId, palActor)
             "[PalBonds/Personality] [WON-OVER] %s real AIResponsePreset ALSO swapped to friendly (private preset, no live donor Pal needed — hundred-and-twenty-ninth pass)",
             tostring(palId)
         ))
+        interrupt_and_resense(palActor, sensor, palId)
     else
         Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " — " .. tostring(err) .. " (tracked disposition still updated)")
     end
@@ -1461,9 +1678,9 @@ function Personality.ForceTier(palId, palActor, tier)
         return -- this species already naturally uses the desired preset, nothing to swap
     end
 
-    local sensor = find_sensor_component(palActor)
+    local sensor = find_cached_sensor(palId) or find_sensor_component(palActor)
     if not sensor then
-        Logger.log("[PalBonds/Personality] [FORCE-TIER] " .. tostring(palId) .. " has no readable AISensorComponent right now — cannot swap its real AI immediately, tracked state still updated (the periodic scan will keep retrying)")
+        Logger.log("[PalBonds/Personality] [FORCE-TIER] " .. tostring(palId) .. " has no readable AISensorComponent right now (neither cached nor found via scan) — cannot swap its real AI immediately, tracked state still updated (the periodic scan will keep retrying)")
         return
     end
 
@@ -1474,6 +1691,7 @@ function Personality.ForceTier(palId, palActor, tier)
             "[PalBonds/Personality] [FORCE-TIER] %s real AIResponsePreset ALSO swapped to '%s' (private preset)",
             tostring(palId), tostring(tier)
         ))
+        interrupt_and_resense(palActor, sensor, palId)
     else
         Logger.log("[PalBonds/Personality] [FORCE-TIER] " .. tostring(palId) .. " — " .. tostring(err) .. " (tracked state still updated, periodic scan will retry)")
     end

@@ -24,8 +24,14 @@
         the real hook point named (see bottom of this file).
 
     This mod's OWN rules layered on top (Dragón's spec, 2026-09-01):
-      1. INTERACTIONS_TO_START_FOLLOWING successful pets/feeds on the
-         same wild Pal -> it starts following the player (Combat.lua).
+      1. Hundred-and-ninety-fifth pass (2026-09-05): the raw
+         "N successful interactions" following-trigger has been replaced
+         with FOLLOW_TRIGGER_RATIO — the Pal starts following once its
+         real FriendshipPoint crosses that fraction of its own bonding
+         threshold (see BONDING_TRIGGER_THRESHOLD_BASE), matching Dragón's
+         explicit request to make every trigger relative to the bar
+         itself rather than a raw action count that stopped incrementing
+         reliably once Pet/Feed mostly ran through real vanilla actions.
       2. While following: passive trust gain over time (our own timer —
          see tick_followers below — approximating the real Otomo
          auto-increment mentioned above).
@@ -82,22 +88,37 @@ local Trust = {}
 
 -- Hundred-and-eighty-first pass (2026-09-05): Dragón asked for confirmation
 -- that testing-friendly and real-balanced configurations can coexist as a
--- toggle, ahead of the actual balance pass. This flag is the single place
--- that decides which set of numbers below applies — flip it here, nothing
--- else needs to change. EASY_TEST_MODE (default, unchanged from every
--- prior pass) keeps today's fast, convenient-to-iterate-on numbers.
--- BALANCED_MODE's numbers are deliberately identical placeholders for now
--- (structure only) — real values are pending Dragón's balance pass itself
--- (per-Pal scaling by level/rarity, the real friendship-rank curve just
--- retrieved via repak, and the still-pending live read of vanilla's real
--- Petting/Kinship-Peach values — see [BALANCE-DIAG] in Interaction.lua).
-local EASY_TEST_MODE = true
+-- toggle. This flag is the single place that decides which multiplier
+-- applies (Trust.ComputeLevelMultiplier) — flip it here, nothing else
+-- needs to change.
+-- Hundred-and-eighty-seventh pass (2026-09-05): flipped OFF — Dragón
+-- wants to test the real level-gap-based numbers first, and will ask
+-- explicitly to flip this back on only when testing something that
+-- needs fast, repeated bonding (following, combat assist, etc.), where
+-- waiting through the real per-level bar every time would be impractical.
+local EASY_TEST_MODE = false
 
--- Tunable. Structured as EASY_/BALANCED_ pairs so EASY_TEST_MODE above
--- picks between them in one place — see that flag's own comment.
-local EASY_INTERACTIONS_TO_START_FOLLOWING = 5
-local BALANCED_INTERACTIONS_TO_START_FOLLOWING = 5 -- placeholder, pending balance pass
-local INTERACTIONS_TO_START_FOLLOWING = EASY_TEST_MODE and EASY_INTERACTIONS_TO_START_FOLLOWING or BALANCED_INTERACTIONS_TO_START_FOLLOWING
+-- Hundred-and-eighty-fourth pass (2026-09-05): Dragón's real balance
+-- design, replacing the old easy-only placeholder numbers now that the
+-- balance-research data (real friendship-rank curve, vanilla Petting/
+-- AutoIncrement/penalty constants, both Kinship Peach tiers) is in hand.
+-- EASY_TEST_MODE now controls the level-gap MULTIPLIER specifically
+-- (flat 10x for fast testing vs. the real tiered multiplier below) —
+-- the base point amounts themselves are the same in both modes, since
+-- these ARE the target numbers now, not a separate slow "real" set.
+-- Hundred-and-ninety-fifth pass (2026-09-05): the old raw
+-- INTERACTIONS_TO_START_FOLLOWING = 5 counter is retired — Dragón's
+-- explicit instruction was to replace it, not keep it as a fallback,
+-- since the real problem (Pet/Feed mostly routing through real vanilla
+-- actions that never incremented this counter reliably) was a root
+-- cause, not a tuning issue. Both new triggers are fractions of the same
+-- bonding bar used everywhere else (get_bonding_threshold) — a Pal
+-- starts following once its real FriendshipPoint crosses 50% of its own
+-- bar, and separately (see Personality.MaybeBecomeFriendlyByBar) its
+-- tracked disposition shifts to "friendly" once it crosses 20% —
+-- regardless of which starting tier it rolled. Both numbers are Dragón's.
+local FOLLOW_TRIGGER_RATIO = 0.5
+local FRIENDLY_TRIGGER_RATIO = 0.2
 -- Seventeenth pass (2026-09-01): was 5000ms. Dragón's own test report
 -- ("started following but irregularly", a Pal "ran away from its normal
 -- skittish behavior" mid-follow) matches a real gap in the old design:
@@ -107,32 +128,55 @@ local INTERACTIONS_TO_START_FOLLOWING = EASY_TEST_MODE and EASY_INTERACTIONS_TO_
 -- often; paired with Combat.lua's new SetActiveAI(false) suppression
 -- while bonding (see that file's seventeenth-pass note).
 local TICK_INTERVAL_MS = 1500          -- how often the follower tick runs (move order + distance check)
-local PASSIVE_GAIN_EVERY_N_TICKS = 10  -- passive friendship applied every Nth tick (~15s at the new 1.5s interval, same real-world cadence as before)
-local EASY_PASSIVE_FRIENDSHIP_PER_GAIN = 2  -- our own approximation of the real Otomo auto-increment
-local BALANCED_PASSIVE_FRIENDSHIP_PER_GAIN = 2 -- placeholder, pending balance pass (real value now retrievable — UPalGameSetting.FriendshipPoint_AutoIncrementOtomo, see [BALANCE-DIAG])
-local PASSIVE_FRIENDSHIP_PER_GAIN = EASY_TEST_MODE and EASY_PASSIVE_FRIENDSHIP_PER_GAIN or BALANCED_PASSIVE_FRIENDSHIP_PER_GAIN
--- Eighteenth pass (2026-09-01): Dragón gave real numbers relative to the
--- +10 per pet/feed (INTERACTION_FRIENDSHIP_GAIN in Interaction.lua):
--- "receiving a hit either by the player or by other pals should take
--- away 25 friendship." Was -50 ("huge chunks", a rough guess before real
--- numbers were given) — now the exact value Dragón specified.
-local EASY_DAMAGE_FRIENDSHIP_PENALTY = -25
-local BALANCED_DAMAGE_FRIENDSHIP_PENALTY = -25 -- placeholder, pending balance pass
-local DAMAGE_FRIENDSHIP_PENALTY = EASY_TEST_MODE and EASY_DAMAGE_FRIENDSHIP_PENALTY or BALANCED_DAMAGE_FRIENDSHIP_PENALTY
+-- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
+-- 10/tick "seems too high," dropped to 5 per tick (~1.5s) for now.
+-- Hundred-and-ninety-ninth pass (2026-09-06): dropped again, 5 -> 2 —
+-- Dragón's explicit ask, still too fast, not leaving enough of a real
+-- window between the follow trigger and the capture trigger to actually
+-- test/observe following and combat-assist behavior before the Pal gets
+-- captured (confirmed by this same session's log: every Pal that started
+-- following also got captured within the same short session). Still his
+-- to retune live. NOT scaled by the level-gap multiplier (multiplier now
+-- only affects the bonding threshold size, not individual gains — see
+-- BONDING_TRIGGER_THRESHOLD_BASE).
+local PASSIVE_FRIENDSHIP_PER_TICK = 2
+-- Hundred-and-eighty-fifth pass (2026-09-05): rescaled after Dragón's
+-- simplification (small vanilla-scale bonding numbers, one lump bonus
+-- at actual capture — see BONDING_TRIGGER_THRESHOLD_BASE and
+-- CAPTURE_BONUS_TARGET_POINT below). Roughly 5x the real vanilla
+-- Petting amount (30), keeping Dragón's original "damage ≈ 5x pet"
+-- ratio, just at the new vanilla scale instead of the old 1000-point
+-- draft's. Damage from the PLAYER specifically is handled separately as
+-- a full reset to 0 ("betrayal") — see OnFollowerDamaged below — not
+-- scaled by this constant at all.
+local DAMAGE_FRIENDSHIP_PENALTY = -150
 local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following Pal loses all trust
--- FORTY-FIRST PASS (2026-09-02): Dragón, fairly, called out the previous
--- plan (find the real game's own point-per-rank curve before testing the
--- automatic trigger) as backwards — we're the ones implementing this, so
--- just pick our own round number, confirm the automatic path fires
--- end-to-end, then tune it later. Replaces the old rank-based trigger
--- (`param:GetFriendshipRank() >= 1`, which depended on a real curve we'd
--- never actually read) with a plain point threshold we fully control:
--- 5 pets (50) + roughly one round of passive gain (+2 per ~15s) lands
--- right around Dragón's own "5 pets then about a minute of following"
--- expectation.
-local EASY_CAPTURE_AT_FRIENDSHIP_POINT = 55
-local BALANCED_CAPTURE_AT_FRIENDSHIP_POINT = 55 -- placeholder, pending balance pass (real vanilla curve for comparison: rank1=6000...rank10=200000, see CLAUDE.md this pass — nowhere near this scale, a real design decision Dragón still needs to make)
-local CAPTURE_AT_FRIENDSHIP_POINT = EASY_TEST_MODE and EASY_CAPTURE_AT_FRIENDSHIP_POINT or BALANCED_CAPTURE_AT_FRIENDSHIP_POINT
+
+-- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
+-- 500 (was 100 in the previous pass, before his exact multiplier tiers
+-- were pinned down). The level-gap multiplier scales THIS threshold
+-- (bigger bar for a much-higher-level Pal, smaller for a much-lower-level
+-- one) rather than each individual gain — so Pet/Play/Feed/Peach amounts
+-- stay untouched, real, and vanilla-scale regardless of level; only how
+-- MUCH of them is needed changes.
+local BONDING_TRIGGER_THRESHOLD_BASE = 500
+
+-- Once the bonding threshold above is reached, the Pal is captured for
+-- real (Capture.OnTrustMaxed) AND — Dragón's own words — "just then we
+-- give enough xp to push past the friendship levels to 3 or higher if
+-- we want": a one-time lump bonus so the newly-captured Pal's REAL
+-- FriendshipPoint total lands at this real vanilla milestone (Rank 3,
+-- from the friendship-rank curve retrieved this session) instead of
+-- whatever the small bonding total happened to be. Never reduces the
+-- total — a Pal that already exceeded this via peach use keeps its
+-- higher real total.
+local CAPTURE_BONUS_TARGET_POINT = 21000
+
+-- Kept for anything that still wants the plain post-capture rank-3
+-- target as a named constant (e.g. Indicator.lua's bar ratio, which
+-- shows progress toward the BONDING threshold today — see its own
+-- pass-185 note on why it still uses the small number, not this one).
+local CAPTURE_AT_FRIENDSHIP_POINT = BONDING_TRIGGER_THRESHOLD_BASE
 
 -- Fifty-seventh pass (2026-09-03, Indicator.lua): exposed so the on-screen
 -- trust bar can compute the same ratio (FriendshipPoint / this) this file
@@ -173,10 +217,126 @@ local function get_state(pal)
     return st, key
 end
 
+-- Hundred-and-ninetieth pass (2026-09-05): Dragón's follow-up to the
+-- threshold-caching fixes — the trust BAR ITSELF shouldn't be built at
+-- all for a Pal that's never been interacted with, not just skip the
+-- expensive level-multiplier part. This is the cheap, read-only check
+-- Indicator.lua needs to gate bar CONSTRUCTION on: a plain table lookup
+-- (no actor/component resolution of its own), safe to call every scan
+-- tick for every visible gauge without reintroducing any real cost.
+function Trust.HasBondingState(palActor)
+    local key = get_key(palActor)
+    return key ~= nil and State[key] ~= nil
+end
+
 local function get_individual_parameter(pal)
     local comp = safe_call(function() return pal.CharacterParameterComponent end)
     if not comp or not comp:IsValid() then return nil end
     return safe_call(function() return comp:GetIndividualParameter() end)
+end
+
+-- Hundred-and-eighty-fourth pass (2026-09-05): Dragón's real per-level
+-- balance spec — "if pal level is higher than player level by 20+,
+-- values gained = x0.2 ... by 10+ = x0.5 ... roughly equal = x1 ...
+-- lower by 10+ = bar x0.5 ... lower by 20+ = bar x0.25." Note the
+-- direction: this is now a BAR-SIZE multiplier (bigger number = a
+-- bigger/harder bonding threshold), the mirror image of the original
+-- "scale each gain" idea from the first draft — a higher-level Pal
+-- needs a BIGGER bar filled with the same small real gains, instead of
+-- smaller gains against the same bar. Applies ONLY to the bonding
+-- threshold (get_bonding_threshold below) — never to individual
+-- Pet/Play/Feed/Peach amounts, the damage penalty, or the
+-- player-betrayal reset, all of which stay flat regardless of level.
+--
+-- Dragón's five named breakpoints leave small gaps undefined (e.g. a
+-- level gap of exactly 6, or -7) — filled here by defaulting to the
+-- "roughly equal" x1 tier for anything that doesn't clear a more
+-- extreme threshold, rather than interpolating between tiers. Flagged
+-- directly since this is an interpretation, not something Dragón
+-- specified exactly — easy to sharpen the cutoffs later if he wants a
+-- stricter boundary than "closest named tier wins."
+--
+-- Mid-testing override, Dragón's own explicit ask ("for easy mode
+-- switch and while we do tests, put me a 10x despite level difference
+-- with pals"): note this INVERTS to 1/10 here, not 10 — since this
+-- function now returns a BAR-SIZE multiplier (bigger = harder), making
+-- testing "10x easier/faster" means shrinking the bar to a tenth of its
+-- base size, not growing it tenfold. The intent (10x easier while
+-- testing) is the same as Dragón asked for; the literal number changed
+-- because what this function represents changed under it.
+local EASY_TEST_SPEEDUP = 10
+
+-- Hundred-and-eighty-eighth pass (2026-09-05): Dragón caught a real,
+-- serious lag bug — this function was being called fresh every single
+-- tick for EVERY Pal with a visible trust bar (Indicator.lua's
+-- get_friendship_ratio, called from update_trust_bars, itself called
+-- every scan tick for every tracked bar), not just Pals actually being
+-- bonded with. Each call did a real component lookup + field read on
+-- the Pal AND a fresh FindFirstOf("PalPlayerCharacter") + another
+-- component lookup on the PLAYER, every time — cost that scales
+-- directly with how many Pals are on screen, exactly the kind of
+-- per-frame/per-tick-real-work-instead-of-a-cached-read mistake this
+-- project has hit and fixed several times before (SelectResponseBySenses,
+-- UpdateInteractTargetName, the old per-tick trust-bar full rebuild).
+-- Dragón's own diagnosis and fix: "it should be calculated on the
+-- interactions... maybe saved in the cache." A Pal's level never
+-- changes mid-session, so once computed for a given Pal it's cached
+-- PERMANENTLY here, keyed by the same GetFullName() identity already
+-- used throughout this file — any later call (whether from a real
+-- interaction or the bar just wanting to display something) is then a
+-- cheap table lookup, not a fresh computation. Only real staleness risk:
+-- if the PLAYER levels up mid-session, already-cached Pals keep the
+-- multiplier computed against the player's old level. Accepted
+-- trade-off — a rare, minor imprecision against a real, definite,
+-- scales-with-Pal-count lag source.
+local LevelMultiplierCache = {}
+
+function Trust.ComputeLevelMultiplier(palActor)
+    if EASY_TEST_MODE then
+        return 1 / EASY_TEST_SPEEDUP
+    end
+
+    local cacheKey = safe_call(function() return palActor:GetFullName() end)
+    if cacheKey and LevelMultiplierCache[cacheKey] ~= nil then
+        return LevelMultiplierCache[cacheKey]
+    end
+
+    local palParam = get_individual_parameter(palActor)
+    local palLevel = palParam and safe_call(function() return palParam.SaveParameter.Level end)
+
+    local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+    local playerParam = player and get_individual_parameter(player)
+    local playerLevel = playerParam and safe_call(function() return playerParam.SaveParameter.Level end)
+
+    if palLevel == nil or playerLevel == nil then
+        Logger.log(string.format(
+            "[PalBonds/Trust] [LEVEL-MULT] could not read pal/player level (pal=%s player=%s) — defaulting to x1 (not cached, will retry next call)",
+            tostring(palLevel), tostring(playerLevel)
+        ))
+        return 1.0
+    end
+
+    local gap = palLevel - playerLevel
+    local multiplier
+    if gap >= 20 then
+        multiplier = 4.0
+    elseif gap >= 10 then
+        multiplier = 2.0
+    elseif gap <= -20 then
+        multiplier = 0.25
+    elseif gap <= -10 then
+        multiplier = 0.5
+    else
+        multiplier = 1.0
+    end
+
+    if cacheKey then LevelMultiplierCache[cacheKey] = multiplier end
+
+    Logger.log(string.format(
+        "[PalBonds/Trust] [LEVEL-MULT] pal level=%d player level=%d gap=%d -> multiplier=%.1fx",
+        palLevel, playerLevel, gap, multiplier
+    ))
+    return multiplier
 end
 
 -- Shared by OnInteractionSucceeded (right after a pet/feed) and
@@ -185,9 +345,150 @@ end
 -- guards against firing more than once for the same Pal (a following
 -- Pal that's already past 55 would otherwise re-trigger on every
 -- subsequent pet or every passive-gain tick).
+-- Hundred-and-eighty-sixth pass (2026-09-05): the trigger threshold is
+-- now PER-PAL (BONDING_TRIGGER_THRESHOLD_BASE × that Pal's own
+-- level-gap multiplier — a MULTIPLY now that ComputeLevelMultiplier
+-- returns a direct bar-size multiplier, not a divide against a
+-- gain-style multiplier as in the previous pass) rather than the flat
+-- constant this used to compare against directly — exposed so
+-- GetFollowingSnapshot below can show the bar against the SAME number
+-- this function actually checks, not a global average.
+local function get_bonding_threshold(pal)
+    local multiplier = Trust.ComputeLevelMultiplier(pal)
+    if multiplier == nil or multiplier <= 0 then multiplier = 1.0 end
+    return BONDING_TRIGGER_THRESHOLD_BASE * multiplier
+end
+
+-- Hundred-and-ninety-fifth pass (2026-09-05): Dragón's report — feeding a
+-- Kinship Peach via the real inventory-based Feed path filled the WHOLE
+-- bar in one lump grant, and the real capture fired instantly, before
+-- the vanilla eat/feed/happy animation had any chance to play — the Pal
+-- just vanished mid-menu-close, with none of the real animations
+-- (player feeding gesture, Pal eating, Pal happy reaction) ever showing.
+-- Root cause: this used to call Capture.OnTrustMaxed synchronously, the
+-- instant the threshold was crossed, with zero regard for whatever real
+-- animation might still be playing on the Pal. Not peach-specific — any
+-- threshold crossing could in principle cut an animation short — the
+-- peach's single large grant just made it happen every time instead of
+-- occasionally.
+--
+-- Dragón's own preference, in order: (1) wait for the real animation to
+-- actually FINISH rather than a fixed delay — handles Pals with
+-- different animation lengths, and feels more natural in the taming
+-- flow — falling back to (2) a flat 5-second delay only if (1) isn't
+-- achievable.
+--
+-- Hundred-and-ninety-sixth pass (2026-09-05) FIX ATTEMPT #1: the first
+-- attempt at (1), `ActionComponent:ActionIsEmpty()`, is CONFIRMED
+-- UNRELIABLE for this specific purpose — Dragón's live test showed it
+-- reporting idle within 0.5ms of starting to wait, while Combat.lua's own
+-- [FOLLOW-DIAG] (reading the SAME Pal at almost the same instant) showed a
+-- real, still-running AI action (`BP_AIActionPairCall_FeedItem_C`) via a
+-- DIFFERENT component. Switched to `GetCurrentAction_BP()` becoming nil.
+--
+-- Hundred-and-ninety-eighth pass (2026-09-06) FIX ATTEMPT #2: attempt #1
+-- over-corrected the OTHER way — 3/3 real captures hit the 20s safety cap,
+-- because `GetCurrentAction_BP()` never once returned nil (a wild Pal's
+-- AIActionComponent always has SOME baseline action — wander/graze —
+-- occupying it). Switched to detecting a CHANGE in the action's identity
+-- instead of waiting for nil.
+--
+-- Hundred-and-ninety-ninth pass (2026-09-06) FIX ATTEMPT #3, ABANDONING
+-- the AIActionComponent signal entirely. Dragón's next real test (5
+-- captures logged) showed attempt #2 is unreliable in THREE different new
+-- ways, not just one: (a) one capture fired the instant the action
+-- identity changed from the real Feed pair-call to a plain
+-- `BP_AIAction_WildLife_C` — plausible, but with no way to confirm the
+-- separate Happy reaction (which plays on `pal.ActionComponent`, a
+-- DIFFERENT component this signal never looks at) had actually finished;
+-- Dragón's own follow-up question was exactly this — does capturing the
+-- instant the Feed AI-action ends risk cutting off the Happy reaction,
+-- which is a real, un-checked risk with this whole approach; (b) one
+-- capture fired the instant the identity changed from
+-- `BP_AIAction_CombatPal_C` to a CHILD sub-action of that SAME parent
+-- (`...CombatPal_C_2147406593.BP_AIAction_AnimationSideStep_C_...`) — the
+-- Pal was still mid-combat, just transitioning to a combat sub-state, and
+-- this signal wrongly read that as "the blocking action finished"; (c) one
+-- capture never saw ANY change in 20 real seconds and just hit the safety
+-- cap anyway, the exact failure mode attempt #2 was meant to fix. Three
+-- different real failure shapes in one session is conclusive: this
+-- component's "current action" value is simply too noisy/unpredictable a
+-- signal for "did the Feed+Happy sequence finish," in either direction.
+--
+-- Real fix, honoring Dragón's own stated fallback order from the start of
+-- this section ("(1) wait for the real animation... falling back to (2) a
+-- flat delay only if (1) isn't achievable") — (1) has now been tried
+-- three distinct ways (ActionIsEmpty, nil-check, identity-change) and
+-- failed live each time, on the SAME two components already probed
+-- everywhere else in this project. No available signal actually tracks
+-- the Happy reaction specifically (it plays on a third, one-shot-action
+-- system this project has never found a duration/completion readback for
+-- either — the exact same wall already hit and accepted for Play's own
+-- Happy follow-up, hook-points.md's "Hundred-and-forty-third pass",
+-- solved there with a flat delay). Falling back to (2): a single flat
+-- delay after the interaction that crossed the capture threshold, same
+-- honest, already-proven-acceptable pattern as Play's own
+-- `PLAY_HAPPY_FOLLOWUP_DELAY_MS`. Set slightly more generous than Play's
+-- 3000ms since Feed's real sequence stacks eating THEN Happy (Play's delay
+-- only ever needed to cover Happy alone, after an idle animation that had
+-- already played) — Dragón's to retune live once he's actually watched a
+-- few real captures against this number.
+-- Two-hundredth pass (2026-09-06): Dragón's ask after the first real look
+-- at this — bump 4000 -> 5000, tune further from there.
+local CAPTURE_DELAY_FIXED_MS = 5000
+
+local function finish_capture_now(pal, key, point)
+    -- Hundred-and-eighty-fifth pass: Dragón's lump-sum capture bonus —
+    -- "just then we give enough xp to push past the friendship levels to
+    -- 3 or higher if we want." Applied right before the real capture call
+    -- so the Pal's real FriendshipPoint already reflects it the moment it
+    -- joins the party. Never reduces the total (a Pal that already
+    -- exceeded CAPTURE_BONUS_TARGET_POINT via a Kinship Peach keeps its
+    -- higher real value).
+    local param = get_individual_parameter(pal)
+    if param and param:IsValid() then
+        local currentPoint = safe_call(function() return param:GetFriendshipPoint() end) or point
+        local bonus = CAPTURE_BONUS_TARGET_POINT - currentPoint
+        if bonus > 0 then
+            safe_call(function() param:AddFriendShip(bonus, false) end)
+            Logger.log(string.format(
+                "[PalBonds/Trust] capture bonus applied — %d -> %d real FriendshipPoint (target %d)",
+                currentPoint, currentPoint + bonus, CAPTURE_BONUS_TARGET_POINT
+            ))
+        end
+    end
+
+    local okReq, Capture = pcall(require, "Capture")
+    if okReq and Capture.OnTrustMaxed then
+        Capture.OnTrustMaxed(pal)
+    end
+end
+
+local function wait_for_animation_then_capture(pal, key, point)
+    Logger.log(string.format(
+        "[PalBonds/Trust] %s — waiting a flat %.1fs for the real Feed/Happy animation sequence before capturing (see hundred-and-ninety-ninth pass for why this is a fixed delay, not a detected signal)",
+        tostring(key), CAPTURE_DELAY_FIXED_MS / 1000
+    ))
+    local ok = pcall(function()
+        ExecuteInGameThreadWithDelay(CAPTURE_DELAY_FIXED_MS, function()
+            local stillValid = safe_call(function() return pal:IsValid() end)
+            if not stillValid then
+                Logger.log("[PalBonds/Trust] " .. tostring(key) .. " went invalid while waiting for its animation to finish before capture — aborting the delayed capture entirely")
+                return
+            end
+            finish_capture_now(pal, key, point)
+        end)
+    end)
+    if not ok then
+        Logger.log("[PalBonds/Trust] ExecuteInGameThreadWithDelay failed while waiting to capture " .. tostring(key) .. " — capturing immediately instead")
+        finish_capture_now(pal, key, point)
+    end
+end
+
 local function maybe_trigger_capture(pal, st, key, point)
     if st.captureTriggered then return end
-    if point == nil or point < CAPTURE_AT_FRIENDSHIP_POINT then return end
+    local threshold = get_bonding_threshold(pal)
+    if point == nil or point < threshold then return end
 
     -- Eighty-second pass (2026-09-03) CRITICAL FIX, second layer: even
     -- though OnInteractionSucceeded below now bails out for an
@@ -210,13 +511,11 @@ local function maybe_trigger_capture(pal, st, key, point)
     st.captureTriggered = true
     st.isFollowing = false -- it's about to be a real party member, not our approximated bonding-follow state
     Logger.log(string.format(
-        "[PalBonds/Trust] %s reached %d friendship (threshold %d) — trust threshold for sphere-less capture met",
-        tostring(key), point, CAPTURE_AT_FRIENDSHIP_POINT
+        "[PalBonds/Trust] %s reached %s friendship (bonding threshold %.1f) — trust threshold for sphere-less capture met, waiting for its current animation to finish before capturing",
+        tostring(key), tostring(point), threshold
     ))
-    local okReq, Capture = pcall(require, "Capture")
-    if okReq and Capture.OnTrustMaxed then
-        Capture.OnTrustMaxed(pal)
-    end
+
+    wait_for_animation_then_capture(pal, key, point)
 end
 
 -- Called by Interaction.lua (and, since the eighty-first pass, the real
@@ -274,8 +573,26 @@ function Trust.OnInteractionSucceeded(pal)
         key, st.interactionCount, tostring(rank), tostring(point)
     ))
 
-    if not st.isFollowing and st.interactionCount >= INTERACTIONS_TO_START_FOLLOWING then
-        Trust.StartFollowing(pal, st)
+    -- Hundred-and-ninety-fifth pass (2026-09-05): both triggers below are
+    -- now fractions of the Pal's own bonding bar (get_bonding_threshold),
+    -- replacing the old raw-interaction-count follow trigger and the old
+    -- escape-only, first-interaction-only "won over" mechanic. Both need
+    -- a real point value to evaluate against a real threshold — bail
+    -- cleanly if either is unreadable this tick (next interaction/passive
+    -- tick will just try again).
+    local threshold = point ~= nil and get_bonding_threshold(pal)
+    local ratio = (point ~= nil and threshold and threshold > 0) and (point / threshold) or nil
+
+    if not st.isFollowing and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
+        Trust.StartFollowing(pal, st, ratio)
+    end
+
+    if ratio ~= nil and ratio >= FRIENDLY_TRIGGER_RATIO then
+        local okPersonality, Personality = pcall(require, "Personality")
+        if okPersonality and Personality.MaybeBecomeFriendlyByBar then
+            local palId = safe_call(Personality.GetStableId, pal)
+            Personality.MaybeBecomeFriendlyByBar(palId, pal)
+        end
     end
 
     maybe_trigger_capture(pal, st, key, point)
@@ -294,27 +611,59 @@ function Trust.GetFollowingSnapshot()
     for _, st in pairs(State) do
         if st.isFollowing and st.pal then
             local point = st.lastPoint or 0
-            local ratio = point / CAPTURE_AT_FRIENDSHIP_POINT
+            -- Hundred-and-eighty-fifth pass: per-Pal threshold, not the
+            -- flat base — a higher-level Pal's bar should show progress
+            -- toward ITS OWN (bigger) bonding threshold.
+            local threshold = get_bonding_threshold(st.pal)
+            local ratio = point / threshold
             if ratio < 0 then ratio = 0 end
             if ratio > 1 then ratio = 1 end
             snapshot[#snapshot + 1] = {
                 pal = st.pal,
                 ratio = ratio,
                 point = point,
-                threshold = CAPTURE_AT_FRIENDSHIP_POINT,
+                threshold = threshold,
             }
         end
     end
     return snapshot
 end
 
-function Trust.StartFollowing(pal, st)
+-- Hundred-and-eighty-ninth pass (2026-09-05): Dragón's sharper follow-up
+-- to the previous pass's caching fix — even a ONE-TIME computation (and
+-- cache write) per Pal is still wasted work for the vast majority of
+-- Pals, which spawn and despawn in the background and are never
+-- actually approached at all. "Only save the data of pals that are
+-- being interacted — no interaction = no data needed besides the
+-- rolled personality." So this now checks for a REAL Trust.State entry
+-- (created only by an actual interaction, via get_state in
+-- OnInteractionSucceeded/tick_followers) BEFORE ever touching
+-- ComputeLevelMultiplier — a Pal nobody has interacted with yet just
+-- shows progress against the flat, un-multiplied base (correct anyway,
+-- since it has zero real progress to show), with zero per-Pal level
+-- lookups and zero cache entries created for it. Only once a real
+-- interaction creates a State entry does the real per-level threshold
+-- (and its cache) ever get computed for that specific Pal.
+-- Returns nil (not a fallback number) when this Pal has no real
+-- interaction on record — Dragón, directly: "dont use a fallback, just
+-- dont compute it at all - compute it only when you get the
+-- interaction." Callers (Indicator.lua) must treat nil as "nothing to
+-- show yet", not substitute a default and divide anyway.
+function Trust.GetBondingThreshold(palActor)
+    local key = safe_call(function() return palActor:GetFullName() end)
+    if key == nil or State[key] == nil then
+        return nil
+    end
+    return get_bonding_threshold(palActor)
+end
+
+function Trust.StartFollowing(pal, st, ratio)
     st = st or (select(1, get_state(pal)))
     if not st or st.isFollowing then return end
     st.isFollowing = true
     Logger.log(string.format(
-        "[PalBonds/Trust] %d successful interactions reached — this Pal should now start following the player",
-        INTERACTIONS_TO_START_FOLLOWING
+        "[PalBonds/Trust] bonding bar crossed %.0f%% (ratio=%s) — this Pal should now start following the player",
+        FOLLOW_TRIGGER_RATIO * 100, ratio and string.format("%.2f", ratio) or "unknown"
     ))
     local okReq, Combat = pcall(require, "Combat")
     if okReq and Combat.StartFollowing then
@@ -350,12 +699,31 @@ end
 
 -- Called (see Init's DamageEvent hook) whenever the real game reports
 -- damage to a Pal we're tracking as following.
-function Trust.OnFollowerDamaged(pal)
+--
+-- Hundred-and-eighty-fourth pass: `attackerIsPlayer` distinguishes
+-- Dragón's two damage cases — a hit from another Pal/the environment
+-- applies the normal DAMAGE_FRIENDSHIP_PENALTY chunk, but a hit dealt
+-- BY THE PLAYER directly is treated as betrayal: an immediate, full
+-- reset to 0 regardless of however much trust had built up, then the
+-- same permanent-flee path as hitting rank 0 normally. Neither branch
+-- is scaled by the level-gap multiplier — Dragón described this
+-- penalty flat, only "values gained" get multiplied.
+function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
     local st = select(1, get_state(pal))
     if not st or not st.isFollowing then return end
 
     local param = get_individual_parameter(pal)
     if not param or not param:IsValid() then return end
+
+    if attackerIsPlayer then
+        local point = safe_call(function() return param:GetFriendshipPoint() end)
+        Logger.log(string.format("[PalBonds/Trust] BETRAYAL — the player directly hit this bonding Pal (had %s points) — resetting trust to 0", tostring(point)))
+        if point and point > 0 then
+            safe_call(function() param:AddFriendShip(-point, false) end)
+        end
+        on_follower_lost_all_trust(pal, "hit by the player directly (betrayal)")
+        return
+    end
 
     Logger.log(string.format("[PalBonds/Trust] following Pal took damage — applying trust penalty (%d)", DAMAGE_FRIENDSHIP_PENALTY))
     safe_call(function() param:AddFriendShip(DAMAGE_FRIENDSHIP_PENALTY, false) end)
@@ -399,18 +767,36 @@ local function tick_followers()
                                 end
                             end
                             lostAllTrust = true
-                        elseif okReq and Combat.IssueFollowMoveOrder then
-                            Combat.IssueFollowMoveOrder(st.pal, playerLoc)
+                        elseif okReq then
+                            -- Two-hundred-and-second pass (2026-09-06): both
+                            -- mechanisms are called from here every tick —
+                            -- IssueFollowMoveOrder itself now no-ops when
+                            -- USE_OLD_MOVE_ORDER_NUDGE is off (Combat.lua),
+                            -- and TickRealOtomoFollow is the repeated push
+                            -- for the composite mechanism agreed with
+                            -- Dragón, replacing the old one-shot call that
+                            -- used to fire only from Combat.StartFollowing.
+                            if Combat.IssueFollowMoveOrder then
+                                Combat.IssueFollowMoveOrder(st.pal, playerLoc)
+                            end
+                            if Combat.TickRealOtomoFollow then
+                                Combat.TickRealOtomoFollow(st.pal, key)
+                            end
                         end
                     end
                 end
 
                 if lostAllTrust then
                     on_follower_lost_all_trust(st.pal, "too far from player")
-                elseif st.tickCount % PASSIVE_GAIN_EVERY_N_TICKS == 0 then
+                else
+                    -- Hundred-and-eighty-fifth pass: applied every tick
+                    -- (not every Nth), a flat real vanilla-scale amount —
+                    -- NOT scaled by the level-gap multiplier (that now
+                    -- only affects the bonding threshold's size, not
+                    -- individual gains, per Dragón's simplification).
                     local param = get_individual_parameter(st.pal)
                     if param and param:IsValid() then
-                        safe_call(function() param:AddFriendShip(PASSIVE_FRIENDSHIP_PER_GAIN, false) end)
+                        safe_call(function() param:AddFriendShip(PASSIVE_FRIENDSHIP_PER_TICK, false) end)
                         -- FORTY-FIRST PASS: passive gain alone can now
                         -- cross CAPTURE_AT_FRIENDSHIP_POINT without
                         -- another pet/feed — check here too, not just in
@@ -447,21 +833,34 @@ function Trust.Init()
             local defenderName = safe_call(function() return defender and defender:GetFullName() end)
             local attackerName = safe_call(function() return attacker and attacker:GetFullName() end)
 
-            -- Eighteenth pass: log EVERY real DamageEvent unconditionally
-            -- (not just ones that matter to a following Pal). This is
-            -- the direct answer to "does this hook even fire for a
-            -- player punching their own following Pal, vs. a wild Pal
-            -- hitting it" — previous sessions could only infer this
-            -- indirectly (once from a lucky hit, once from a log that
-            -- cut off before any fight happened). Same [WATCH]-style
-            -- unconditional logging already used for AddFriendShip.
-            Logger.log(string.format(
-                "[PalBonds/Trust] [DAMAGE-WATCH] real DamageEvent fired — defender=%s attacker=%s damage=%s",
-                tostring(defenderName), tostring(attackerName), tostring(damage)
-            ))
-
+            -- Hundred-and-ninety-first pass (2026-09-05): this used to log
+            -- EVERY real DamageEvent unconditionally (the Eighteenth pass's
+            -- original purpose was just proving the hook fires at all —
+            -- that question has been closed for a very long time). Left
+            -- unconditional, it logged every hit landed anywhere in the
+            -- game world — wild Pals fighting each other, NPCs, anything —
+            -- not just hits relevant to a Pal we're actually tracking.
+            -- Dragón caught this as real log-volume waste. The real
+            -- penalty logic below already gates on State[defenderName], so
+            -- the log line now uses the exact same cheap table check
+            -- before printing anything.
             if defenderName and State[defenderName] and State[defenderName].isFollowing then
-                Trust.OnFollowerDamaged(State[defenderName].pal)
+                Logger.log(string.format(
+                    "[PalBonds/Trust] [DAMAGE-WATCH] real DamageEvent fired — defender=%s attacker=%s damage=%s",
+                    tostring(defenderName), tostring(attackerName), tostring(damage)
+                ))
+
+                -- Hundred-and-eighty-fourth pass: identify whether the
+                -- PLAYER specifically dealt this hit (betrayal, see
+                -- OnFollowerDamaged) vs. any other attacker (another Pal,
+                -- environment) — same FullName-comparison technique
+                -- already used throughout this project wherever reference
+                -- equality on actors wasn't trusted (e.g. find_targeted_pal
+                -- excluding the player by name, not by reference).
+                local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                local playerName = player and safe_call(function() return player:GetFullName() end)
+                local attackerIsPlayer = (attackerName ~= nil and playerName ~= nil and attackerName == playerName)
+                Trust.OnFollowerDamaged(State[defenderName].pal, attackerIsPlayer)
             end
         end)
     end)
@@ -480,10 +879,26 @@ function Trust.Init()
     -- that's the signal to fall back to plain LoopAsync (works, but its
     -- callback thread isn't confirmed safe for touching Pal actors —
     -- guarded here with IsInGameThread() as a minimum precaution).
+    local tickEverLogged = false
     local function scheduleTick()
         local ok = pcall(function()
             ExecuteInGameThreadWithDelay(TICK_INTERVAL_MS, function()
-                Logger.log("[PalBonds/Trust] [TICK] game-thread tick fired")
+                -- Two-hundred-and-sixth pass (2026-09-06): this line used
+                -- to log unconditionally, every 1.5s, forever — 396 lines
+                -- in one 10-minute session, whether or not a single Pal
+                -- was actually following. That is not free: Logger.lua
+                -- flushes every line to disk immediately by design (so a
+                -- hard crash can't lose it), so this was a forced
+                -- synchronous disk write every 1.5s for the whole session.
+                -- Its original purpose was proving the game-thread tick
+                -- fires at all, which has been settled for a very long
+                -- time. Now logged only once, the first time it fires
+                -- (still answers "did the tick ever start?"), plus
+                -- whenever there is real follower work to report.
+                if not tickEverLogged then
+                    tickEverLogged = true
+                    Logger.log("[PalBonds/Trust] [TICK] game-thread tick fired (logged once — the tick is alive; further ticks stay silent unless a Pal is actually following)")
+                end
                 safe_call(tick_followers)
                 scheduleTick()
             end)

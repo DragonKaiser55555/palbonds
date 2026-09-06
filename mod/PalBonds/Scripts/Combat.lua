@@ -81,6 +81,46 @@ local Combat = {}
 
 local FOLLOW_ACCEPTANCE_RADIUS = 200.0 -- how close the move order tries to bring the Pal (Unreal units)
 
+-- Two-hundred-and-third pass (2026-09-06): both toggles below MUST be
+-- declared here, before Combat.Init references USE_OLD_MOVE_ORDER_NUDGE in
+-- its own startup log line — the Two-hundred-and-second pass had declared
+-- this same local much further down the file (right before
+-- IssueFollowMoveOrder), and Combat.Init's earlier reference to it silently
+-- resolved to a nil global instead of the real local (Lua locals don't
+-- hoist — this project's own hook-points.md hundred-and-fortieth-pass bug,
+-- repeated). Purely cosmetic (Init's log line always printed "disabled for
+-- this test" regardless of the real value; the actual gating in
+-- IssueFollowMoveOrder was unaffected since it's declared after this point
+-- either way) — fixed by moving the declaration up here, before every use.
+--
+-- Real test result (2026-09-06): Dragón ran a live session with the old
+-- nudge fully off — the composite mechanism reported `SetRootComposite ok`
+-- for all 3 Pals that reached the 50% follow trigger, every relevant tick,
+-- with zero logged failures. All 3 nonetheless wandered off and broke the
+-- 3000-unit leash 10-20 seconds later, never visibly moving toward the
+-- player. A clean, repeated negative result — not a competing-mechanism
+-- problem (nothing else was pushing this session), a confirmed "this
+-- doesn't work on a wild Pal" result.
+--
+-- Two-hundred-and-fourth pass (2026-09-06): Dragón's explicit call after
+-- seeing that result — keep the old move-order nudge in the file as a
+-- known, real fallback, but do NOT turn it back on yet either. Both
+-- mechanisms tried so far (the plain move order, and the repeated Otomo
+-- composite) are confirmed weak-to-nonexistent on a wild Pal — the next
+-- real attempt should look for something the game itself already uses to
+-- make a Pal trail the player without full Otomo/combat bookkeeping,
+-- rather than defaulting back to the weakest option just because it's
+-- already built. Leading candidate not yet actually tried as a follow
+-- mechanism: `UPalAIActionFunnelCharacterDefault`/`BP_AIAction_FunnelFollow_C`
+-- — the real, native class behind a captured-but-inactive Pal trailing the
+-- player around (the "Funnel" system PalFollowerTweaks only ever
+-- reconfigures cosmetically, never actually used for THIS project's
+-- purpose before). See CLAUDE.md's Daedream/Dazzi/Floppie research note for
+-- the live investigation into whether/how that's reachable for a Pal that
+-- was never captured at all.
+local USE_OLD_MOVE_ORDER_NUDGE = false
+local USE_REPEATED_OTOMO_COMPOSITE = false
+
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then return result end
@@ -93,8 +133,164 @@ end
 -- yet.
 local BondingState = {}
 
+-- Hundred-and-ninety-seventh pass (2026-09-05): Dragón asked to reopen the
+-- real-follow question directly, reusing the SDK lead this file already
+-- found and left untested (the eighty-sixth pass's FOLLOW-DIAG, below in
+-- StartFollowing) plus the Otomo/FunnelCharacter composite-action classes
+-- read from the PalFollowerTweaks reference-mod research (hook-points.md's
+-- hundred-and-thirty-seventh pass, PalFunnelCharacter/Daedream-style
+-- secondary followers). Real functions confirmed directly in Pal.hpp this
+-- pass:
+--   - `UPalAIActionComponent:SetRootComposite(NewCompositeAction, Priority)`
+--   - `UPalAIActionOtomoDefault : UPalAIActionCompositeBase`, exposing
+--     `SetOtomoFollowAction()`/`SetOtomoCombatAction()`/etc — the literal
+--     decision layer a REAL Otomo Pal uses to choose follow/combat/work.
+--
+-- `EAIRequestPriority::Type` is a native, non-Palworld-specific Unreal
+-- engine enum (the classic Pawn Actions/AIModule system) — its standard
+-- order is SoftScript=0, HardScript=1, Reaction=2, Logic=3, Ultimate=4.
+-- "Logic" (3) is used here — the tier ordinary AI-decided behavior (not
+-- player-scripted, not a reaction) runs at, matching what a real Otomo's
+-- own default follow/combat layer would use. This specific value is NOT
+-- confirmed against Palworld's own build — flagged as an assumption, easy
+-- to try a different tier if this doesn't behave as expected live.
+--
+-- Two-hundred-and-second pass (2026-09-06): REWRITTEN from a one-shot
+-- attempt (called once, at follow-start) into a repeated, per-tick push —
+-- Dragón's own real observation (a FlowerRabbit glancing at the player
+-- then resuming her own path a frame later, every ~1.5s) plus the
+-- two-hundredth/two-hundred-and-first passes' analysis both point at the
+-- same mechanism: a wild Pal's own AI continuously RE-DECIDES its root
+-- action, so a composite pushed only once gets silently reclaimed almost
+-- immediately. Calling SetRootComposite on the same cadence as the old
+-- move-order nudge (TICK_INTERVAL_MS in Trust.lua, ~1.5s) is the direct,
+-- agreed-on test of whether repetition alone lets the composite actually
+-- win that ongoing competition.
+--
+-- Deliberately reuses ONE composite object per Pal (built once, cached
+-- below) rather than calling StaticConstructObject fresh every tick
+-- forever — repeating the SetRootComposite call achieves the "keep
+-- reasserting" goal without also repeating the actual object
+-- construction, which would be an unnecessary, unproven risk on top of
+-- the one this pass is already testing.
+--
+-- Per the agreed plan's combat-assist step: Pal.hpp confirms
+-- UPalAIActionOtomoDefault exposes its OWN native decision function for
+-- exactly this question — `ShouldSetCombatAction()` — alongside
+-- `FindNearestAttackTarget()`. This is the real logic a genuine Otomo
+-- uses to decide follow vs. fight; asking the composite itself each tick
+-- is more solid than guessing a trigger condition ourselves (and the
+-- PalFollowerTweaks reference mod turned out to have nothing usable here
+-- — it's a decorative "Funnel" follower/formation mod, unrelated to real
+-- Otomo combat behavior, confirmed by re-reading its actual main.lua/
+-- config.lua this pass, not just its file names).
+--
+-- Genuinely bigger risk category than anything else in this file
+-- (constructing and attaching a real AI action object, not just reading a
+-- field or issuing a movement command) — every native call here is
+-- bracketed with its own before/after log line, per this project's
+-- standing crash-diagnosis discipline. Success logging is throttled to
+-- once per Pal (see loggedFollowTickOnce) so a healthy tick loop doesn't
+-- spam the log forever — failures always log, every time.
+--
+-- Declared here, BEFORE Combat.StartFollowing calls anything that uses
+-- it — Lua locals don't hoist (this project already got burned by exactly
+-- this once before, hook-points.md's hundred-and-fortieth pass's
+-- hook_describe bug: a local referenced before its own textual
+-- declaration silently resolves as a nil global instead of the intended
+-- upvalue, and the failure gets swallowed by whatever pcall/safe_call
+-- wraps the call site).
+local AI_REQUEST_PRIORITY_LOGIC = 3
+
+-- Two-hundred-and-second pass: key (GetFullName()) -> { actionComp, composite }.
+-- The cached composite is rebuilt automatically if either half goes
+-- invalid (Pal despawned, GC'd, etc.) — see get_or_build_otomo_composite.
+local OtomoCompositeCache = {}
+local loggedFollowTickOnce = {}
+
+local function get_or_build_otomo_composite(pal, key)
+    local cached = OtomoCompositeCache[key]
+    if cached then
+        local actionCompValid = safe_call(function() return cached.actionComp:IsValid() end)
+        local compositeValid = safe_call(function() return cached.composite:IsValid() end)
+        if actionCompValid and compositeValid then
+            return cached.actionComp, cached.composite
+        end
+        OtomoCompositeCache[key] = nil -- went invalid, rebuild fresh below
+    end
+
+    local controller = safe_call(function() return pal.Controller end)
+    local controllerValid = controller ~= nil and safe_call(function() return controller:IsValid() end)
+    if not controllerValid then
+        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — no usable Controller, cannot build the real Otomo composite (move-order nudge, if enabled, stays as the only mechanism)")
+        return nil, nil
+    end
+
+    local actionComp = safe_call(function() return controller:GetAIActionComponent() end)
+    local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
+    if not actionCompValid then
+        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — no usable AIActionComponent (matches the eighty-sixth pass's open question — this wild Pal's AI likely runs a separate path), cannot build the real Otomo composite")
+        return nil, nil
+    end
+
+    local nativeClass = safe_call(function() return StaticFindObject("/Script/Pal.PalAIActionOtomoDefault") end)
+    local classValid = nativeClass ~= nil and safe_call(function() return nativeClass:IsValid() end)
+    if not classValid then
+        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — could not resolve the UPalAIActionOtomoDefault class via StaticFindObject, aborting")
+        return nil, nil
+    end
+
+    local fresh = safe_call(function() return StaticConstructObject(nativeClass, actionComp) end)
+    local freshValid = fresh ~= nil and safe_call(function() return fresh:IsValid() end)
+    Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — StaticConstructObject(UPalAIActionOtomoDefault) " .. (freshValid and "ok (built once, reused every tick from here)" or "FAILED"))
+    if not freshValid then return nil, nil end
+
+    OtomoCompositeCache[key] = { actionComp = actionComp, composite = fresh }
+    return actionComp, fresh
+end
+
+-- Called every tick_followers pass (Trust.lua), same cadence the old
+-- move-order nudge already used. See the file-header comment above this
+-- section for the full reasoning.
+function Combat.TickRealOtomoFollow(pal, key)
+    if not USE_REPEATED_OTOMO_COMPOSITE then return end
+    if not Combat.IsFollowing(pal) then return end
+    local actionComp, composite = get_or_build_otomo_composite(pal, key)
+    if not actionComp or not composite then return end
+
+    local wantsCombat = safe_call(function() return composite:ShouldSetCombatAction() end)
+    local modeOk, modeErr
+    if wantsCombat then
+        modeOk, modeErr = pcall(function() composite:SetOtomoCombatAction() end)
+        if modeOk then
+            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — ShouldSetCombatAction()=true, switched to SetOtomoCombatAction()")
+        else
+            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — ShouldSetCombatAction()=true but SetOtomoCombatAction() FAILED: " .. tostring(modeErr))
+        end
+    else
+        modeOk, modeErr = pcall(function() composite:SetOtomoFollowAction() end)
+        if not modeOk then
+            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — SetOtomoFollowAction() FAILED: " .. tostring(modeErr))
+        end
+    end
+
+    local rootOk, rootErr = pcall(function() actionComp:SetRootComposite(composite, AI_REQUEST_PRIORITY_LOGIC) end)
+    if rootOk then
+        if not loggedFollowTickOnce[key] then
+            loggedFollowTickOnce[key] = true
+            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — SetRootComposite ok, now being repeated every tick (further successes not logged individually to avoid spam)")
+        end
+    else
+        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — SetRootComposite (repeated) FAILED: " .. tostring(rootErr))
+    end
+end
+
 function Combat.Init()
-    Logger.log("[PalBonds/Combat] real (approximate) follow logic active — move-order-based, see file header for what this does and doesn't do yet")
+    Logger.log(string.format(
+        "[PalBonds/Combat] follow logic active — old move-order nudge %s, repeated real-Otomo-composite mechanism %s (see file header, Two-hundred-and-third pass)",
+        USE_OLD_MOVE_ORDER_NUDGE and "ENABLED" or "disabled",
+        USE_REPEATED_OTOMO_COMPOSITE and "ENABLED" or "disabled (confirmed not working live, 3/3 real follow-trigger events)"
+    ))
 end
 
 function Combat.StartFollowing(pal)
@@ -143,11 +339,20 @@ function Combat.StartFollowing(pal)
             end
         end
     end)
+
+    -- Two-hundred-and-second pass: the real composite is no longer built
+    -- (or pushed) here as a one-shot — see TickRealOtomoFollow above.
+    -- Trust.lua's tick_followers calls that function every tick from here
+    -- on, which lazily builds the cached composite on its first real call.
 end
 
 function Combat.StopFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
-    if key then BondingState[key] = nil end
+    if key then
+        BondingState[key] = nil
+        OtomoCompositeCache[key] = nil -- Two-hundred-and-second pass: drop the cached composite so a later re-follow builds fresh, not a stale reference
+        loggedFollowTickOnce[key] = nil
+    end
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " no longer following")
 end
 
@@ -160,15 +365,34 @@ end
 -- following Pal. Issues a fresh move-to-player order via the Pal's own
 -- AIController — a real, confirmed-safe native call (simple params, no
 -- struct-by-value return), just not the real Otomo follow system.
+--
+-- Hundred-and-ninety-ninth pass (2026-09-06): Dragón ran a real controlled
+-- test (deliberately stopped interacting right after crossing the 50%
+-- follow trigger, then watched from a distance) and found a Pal that
+-- simply never followed at all — a second one ran far enough that it
+-- despawned, meaning it made essentially zero progress keeping up. This
+-- function has ALWAYS called `PalMoveToLocation` without ever reading its
+-- return value — and the header dump confirms it's not void, it returns a
+-- real `TEnumAsByte<EPathFollowingRequestResult::Type>` (the standard
+-- Unreal AIModule enum: 0=Failed, 1=AlreadyAtGoal, 2=RequestSuccessful).
+-- If this call has been silently returning Failed every single tick since
+-- this project's very first pass at following, that alone would explain
+-- both of Dragón's reports without needing any deeper AI-state mystery.
+-- Now captured and logged (a plain byte read, no new risk) so the next
+-- real test finally shows whether this call is actually being accepted by
+-- the engine at all.
 function Combat.IssueFollowMoveOrder(pal, playerLoc)
+    if not USE_OLD_MOVE_ORDER_NUDGE then return end
     if not Combat.IsFollowing(pal) then return end
     local controller = safe_call(function() return pal.Controller end)
     if not controller or not controller:IsValid() then return end
-    local ok, err = pcall(function()
-        controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
+    local ok, resultOrErr = pcall(function()
+        return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
     end)
-    if not ok then
-        Logger.log("[PalBonds/Combat] PalMoveToLocation call failed (non-fatal, caught): " .. tostring(err))
+    if ok then
+        Logger.log("[PalBonds/Combat] [MOVE-ORDER-RESULT] PalMoveToLocation returned: " .. tostring(resultOrErr) .. " (0=Failed, 1=AlreadyAtGoal, 2=RequestSuccessful)")
+    else
+        Logger.log("[PalBonds/Combat] PalMoveToLocation call failed (non-fatal, caught): " .. tostring(resultOrErr))
     end
 end
 

@@ -314,16 +314,33 @@ end
 -- field reads (`FirstOtomoPal`/`SecondOtomoPal`/`BenchMember`), and the
 -- bool-returning query `PawnOtmoIsPartyOtomo` — nothing here writes or
 -- calls a state-mutating function.
-local function diagnose_post_capture_slot(pal)
+-- Two-hundred-and-fourth pass (2026-09-06): this used to resolve `handle`
+-- from `pal` (the actor) INSIDE this function, called AFTER
+-- `Capture.TryDirectCapture` already ran — but every real test since this
+-- diagnostic was written (hundred-and-thirty-seventh pass) hit "could not
+-- resolve a live handle for the just-captured Pal", including all 3 real
+-- captures in the session that just confirmed the composite-follow
+-- negative result. Root cause, found by re-reading `Capture.TryDirectCapture`'s
+-- own log right above this: it logs the Pal's owner-field struct going
+-- from a real value to `nil` right across the `PalCaptureSuccess` call —
+-- i.e. the capture process is actively tearing down/reassigning the very
+-- actor state this function's handle lookup depends on, in the same
+-- instant. Resolving `GetIndividualCharacterHandleByActor(pal)` at that
+-- point was never going to work reliably — `pal` is mid-transition from
+-- "wild actor" to "party data record," not a normal live actor anymore.
+--
+-- Real fix: resolve the handle BEFORE the capture call instead, while
+-- `pal` is still an ordinary, fully-live wild actor (the exact same
+-- moment `Personality.GetStableId` already reads a stable ID off wild
+-- Pals successfully, throughout this whole project) — then thread that
+-- already-resolved handle through to this function instead of re-deriving
+-- it from a (by then reassigned) actor reference. Zero new native-call
+-- risk: same function (`GetIndividualCharacterHandleByActor`), just called
+-- at a point already proven safe elsewhere in this project.
+local function diagnose_post_capture_slot(handle)
     local ok = pcall(function()
-        local utility = get_pal_utility()
-        if not utility then
-            Logger.log("[PalBonds/Capture] [POST-CAPTURE-SLOT] could not resolve PalUtility — skipping check")
-            return
-        end
-        local handle = safe_call(function() return utility:GetIndividualCharacterHandleByActor(pal) end)
         if not handle or not handle:IsValid() then
-            Logger.log("[PalBonds/Capture] [POST-CAPTURE-SLOT] could not resolve a live handle for the just-captured Pal — skipping check")
+            Logger.log("[PalBonds/Capture] [POST-CAPTURE-SLOT] no usable pre-capture handle was resolved — skipping check")
             return
         end
 
@@ -360,6 +377,62 @@ local function diagnose_post_capture_slot(pal)
     end
 end
 
+-- Two-hundred-and-fifth pass (2026-09-06): Dragón's real ask, clarified —
+-- not "let me preview a VFX out of curiosity," but a genuine completion
+-- gap: a bonded Pal reaching 100% trust currently just vanishes in total
+-- silence — no animation, no particle, nothing marks the moment it
+-- actually joins, unlike a normal sphere capture. His own words: doesn't
+-- need to be the "correct" vanilla effect, just needs to look complete.
+--
+-- Deliberately did NOT attempt to spawn the real capture/cage-release
+-- beam VFX from scratch — there's no known content path for that actor
+-- (unlike AIResponsePreset's documented CDO folder), so building one
+-- would be this project's first from-scratch actor construction purely
+-- for cosmetics, a new and bigger risk category for zero functional
+-- gain. Reused the exact same safe, already-proven reaction this project
+-- calls constantly elsewhere instead: `PlayActionByType(pal, Happy=38)`,
+-- self-targeted on the Pal's own `ActionComponent` — the same call
+-- Pet/Feed/Play already trigger, confirmed (hook-points.md "Hundred-and-
+-- forty-third pass") to include the hearts VFX baked into the action
+-- itself. No new native-call risk at all — just a new call SITE for a
+-- call shape used dozens of times already in this project.
+--
+-- `continueFn` runs after a short fixed delay (JOIN_CELEBRATION_DELAY_MS)
+-- so the Happy reaction + hearts actually have time to read on screen
+-- before the Pal disappears and rejoins as a party member — same honest
+-- "fixed delay, not a detected signal" pattern already accepted
+-- project-wide (Trust.lua's own `CAPTURE_DELAY_FIXED_MS`, for the exact
+-- same reason: no proven way yet to read back a montage's real duration).
+-- This STACKS on top of that existing 5s wait (which covers the PRIOR
+-- interaction's own animation, not this one) — total time from crossing
+-- the capture threshold to actually joining is now ~5s + 2s, worth
+-- retuning live if it feels too long.
+local JOIN_CELEBRATION_DELAY_MS = 2000
+
+local function play_join_celebration_then(pal, continueFn)
+    local actionComp = safe_call(function() return pal.ActionComponent end)
+    local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
+    if actionCompValid then
+        Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] playing Happy(38) on the newly-bonded Pal before the real capture NOW")
+        local ok, err = pcall(function() actionComp:PlayActionByType(pal, 38) end)
+        Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] Happy call returned — result=" .. (ok and "ok" or tostring(err)))
+    else
+        Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] no usable ActionComponent on the Pal — skipping the celebration reaction, capturing on the normal schedule")
+        continueFn()
+        return
+    end
+
+    local scheduled = pcall(function()
+        ExecuteInGameThreadWithDelay(JOIN_CELEBRATION_DELAY_MS, function()
+            continueFn()
+        end)
+    end)
+    if not scheduled then
+        Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] could not schedule the celebration delay — capturing immediately instead")
+        continueFn()
+    end
+end
+
 function Capture.OnTrustMaxed(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
@@ -370,24 +443,42 @@ function Capture.OnTrustMaxed(pal)
         return
     end
 
-    Capture.TryDirectCapture(pal, player)
+    -- Two-hundred-and-fourth pass (2026-09-06): resolved HERE, BEFORE the
+    -- capture call below, while `pal` is still an ordinary live wild actor
+    -- — see diagnose_post_capture_slot's own header comment for why every
+    -- past attempt to resolve this AFTER capture failed instead.
+    local preCaptureHandle = safe_call(function()
+        local utility = get_pal_utility()
+        return utility and utility:GetIndividualCharacterHandleByActor(pal)
+    end)
 
-    -- Hundred-and-thirtieth pass: real on-screen confirmation. Fired
-    -- unconditionally right after the call above — TryDirectCapture
-    -- doesn't currently report success/failure back to its caller, and
-    -- PalCaptureSuccess has been 100% reliable across every real capture
-    -- tested so far (see this file's own thirty-ninth pass note), so this
-    -- matches the project's existing confidence level rather than adding
-    -- new uncertainty.
-    Capture.NotifyJoined(pal, player)
+    play_join_celebration_then(pal, function()
+        local stillValid = safe_call(function() return pal:IsValid() end)
+        if not stillValid then
+            Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] Pal went invalid during the celebration delay — aborting the capture entirely")
+            return
+        end
 
-    -- It's a real party member now (assuming the call above worked) —
-    -- stop treating it as our own approximated bonding-follow state.
-    Combat.StopFollowing(pal)
+        Capture.TryDirectCapture(pal, player)
 
-    -- Hundred-and-thirty-seventh pass: read-only check of where the Pal
-    -- actually landed — see diagnose_post_capture_slot's own comment.
-    diagnose_post_capture_slot(pal)
+        -- Hundred-and-thirtieth pass: real on-screen confirmation. Fired
+        -- unconditionally right after the call above — TryDirectCapture
+        -- doesn't currently report success/failure back to its caller, and
+        -- PalCaptureSuccess has been 100% reliable across every real capture
+        -- tested so far (see this file's own thirty-ninth pass note), so this
+        -- matches the project's existing confidence level rather than adding
+        -- new uncertainty.
+        Capture.NotifyJoined(pal, player)
+
+        -- It's a real party member now (assuming the call above worked) —
+        -- stop treating it as our own approximated bonding-follow state.
+        Combat.StopFollowing(pal)
+
+        -- Hundred-and-thirty-seventh pass: read-only check of where the Pal
+        -- actually landed — see diagnose_post_capture_slot's own comment for
+        -- why it now takes the pre-resolved handle instead of the actor.
+        diagnose_post_capture_slot(preCaptureHandle)
+    end)
 end
 
 -- DESIGN.md §3.6. `pal` is the actor.

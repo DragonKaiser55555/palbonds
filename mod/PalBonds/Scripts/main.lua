@@ -5,9 +5,19 @@
     See DESIGN.md for the overall plan and docs/hook-points.md for which
     real class/function names each module is still waiting on.
 
-    NOTHING in the required modules does real hooking yet — they're stubs
-    that log their own startup so we have a fast "is this even loading"
-    smoke test (Phase 0 in DESIGN.md) before any game-specific work begins.
+    STALE COMMENT CORRECTED (two-hundred-and-sixth pass, 2026-09-06). This
+    header used to say "NOTHING in the required modules does real hooking
+    yet — they're stubs." That stopped being true within days of being
+    written and stayed here for months, which is exactly the kind of thing
+    that makes a later session (or a different assistant) misjudge the
+    project's real state.
+
+    The truth: every module below does real hooking and real gameplay work.
+    Personality rewrites a wild Pal's AI response preset, Interaction drives
+    the game's own Pet/Feed/Play actions on wild Pals, Trust runs the real
+    bonding economy, Capture performs a real sphere-less capture, and
+    Indicator draws live on-screen UI. The only genuine research-only
+    modules left are Spy and OtomoWatch, and neither is initialized.
 ]]
 
 local Logger       = require("Logger")
@@ -40,6 +50,38 @@ local OtomoWatch   = require("OtomoWatch") -- TEMPORARY research tool, see
                                             -- play, whether it's safe to
                                             -- try on a wild Pal. Disable
                                             -- once that's answered.
+                                            -- Two-hundred-and-sixth pass
+                                            -- (2026-09-06): that IS now
+                                            -- answered, and its own last
+                                            -- four open threads were closed
+                                            -- in the hundred-and-ninety-
+                                            -- third pass — so per this
+                                            -- comment's own instruction,
+                                            -- OtomoWatch.Init() below is
+                                            -- commented out. It installed
+                                            -- ELEVEN hooks, two of them on
+                                            -- genuinely hot functions the
+                                            -- game calls constantly:
+                                            -- PalAISensorComponent:
+                                            -- SelectResponseBySenses (every
+                                            -- Pal's AI sense decision —
+                                            -- ALSO hooked by Personality.lua
+                                            -- for real enforcement, so this
+                                            -- was a duplicate hook on the
+                                            -- same hot function) and
+                                            -- PalBattleManager:
+                                            -- TargetIsPlayerOrPlayersOtomoPal
+                                            -- (every combat targeting
+                                            -- evaluation). Both logged
+                                            -- unconditionally with
+                                            -- reflection describes. Plus a
+                                            -- FindAllOf class-existence poll
+                                            -- every 10s whose own comment
+                                            -- admits "no further use planned
+                                            -- for it right now".
+                                            -- require() left in place
+                                            -- (harmless, does nothing unless
+                                            -- .Init() is called).
 local InputSpy     = require("InputSpy") -- TEMPORARY research tool, see
                                           -- InputSpy.lua header. Seventy-
                                           -- fifth pass (2026-09-03): Dragón
@@ -97,10 +139,15 @@ function PalBonds.Init()
     Trust.Init()
     Combat.Init()
     Capture.Init()
-    OtomoWatch.Init()
+    -- OtomoWatch.Init() -- DISABLED two-hundred-and-sixth pass (2026-09-06),
+    -- see the require() note above. Same removal reasoning as InputSpy: it
+    -- is pure research instrumentation (nothing in this mod ever calls into
+    -- it — it exports Init() and nothing else), every question it was built
+    -- to answer is closed, and two of its eleven hooks sit on genuinely hot
+    -- game functions.
     -- InputSpy.Init() -- disabled hundred-and-seventy-eighth pass, see require() note above
 
-    print("[PalBonds] all modules initialized (stub mode — no real hooks registered yet)\n")
+    print("[PalBonds] all modules initialized\n")
 end
 
 -- UE4SS loads main.lua once per mod; run init immediately.

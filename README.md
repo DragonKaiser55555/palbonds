@@ -9,10 +9,37 @@ Full design, subsystem breakdown, and the phased build plan live in
 
 ## Status
 
-Design phase. The `mod/PalBonds/Scripts/*.lua` files are stubs with
-`TODO`s, not working code yet — real logic goes in once the hook points in
-[`docs/hook-points.md`](./docs/hook-points.md) are confirmed against the
-actual game files (Phase 0/1 in DESIGN.md).
+**Working mod, ~82% complete.** This section was badly out of date for a
+long time (it still described the project as "design phase, the scripts are
+stubs" well after the mod was real and playable) — corrected 2026-09-06.
+
+What actually works in-game today, all confirmed in live play:
+
+- Pet (F9), Feed (F10) and Play (F8) on **wild** Pals, using the game's own
+  real animations
+- A per-individual personality roll (7 tiers) that changes a wild Pal's real
+  AI disposition, with an on-screen label
+- A trust/bonding bar per Pal, scaled by the level gap between it and you
+- Kinship Peaches grant real bonding progress (250 lesser / 500 full against
+  a 500-point bar)
+- Crossing 20% of the bar wins the Pal over; crossing 100% captures it into
+  your party with **no Palsphere**, after a happy-reaction celebration
+- Damaging a bonding Pal costs trust; hitting it yourself is treated as
+  betrayal and resets it
+
+Known incomplete, and where the remaining work is:
+
+- A wild Pal does **not** follow you during the bonding phase yet — every
+  mechanism tried so far needs real ownership, which a still-wild Pal
+  doesn't have. This is the largest open question, and combat-assist is
+  blocked behind it.
+- No capture VFX (the Pal turns happy, then vanishes — the "becomes light
+  and travels into the player" effect is still missing)
+- Real food-item feeding for wild Pals is shelved (the game's ownership gate
+  is a raw C++ vtable call, unreachable from Lua)
+
+The ordered, authoritative list of what's left lives at the top of
+[`CLAUDE.md`](./CLAUDE.md), not here.
 
 ## What you need installed
 
@@ -27,12 +54,13 @@ actual game files (Phase 0/1 in DESIGN.md).
 4. Optionally **PalSchema**, if any subsystem turns out to be a plain data
    value we'd rather patch as JSON than hook in Lua (see DESIGN.md §4).
 
-## Local install (once there's real code)
+## Local install
 
-Copy `mod/PalBonds/` into your game's UE4SS `Mods/` folder so it looks like:
+Copy `mod/PalBonds/` into your game's UE4SS `Mods/` folder. Note the real
+path includes `ue4ss/` — corrected 2026-09-06 to match the actual install:
 
 ```
-<Palworld install>/Pal/Binaries/Win64/Mods/PalBonds/
+<Palworld install>/Pal/Binaries/Win64/ue4ss/Mods/PalBonds/
 ├── enabled.txt
 └── Scripts/
     └── main.lua (+ the rest)
@@ -52,10 +80,8 @@ multiplayer replication being out of scope for now).
 
 ## Next step
 
-Phase 0 is done — UE4SS is installed and the PalBonds stub is confirmed
-loading cleanly in the game log. **Right now:** follow
-[`docs/phase1-research.md`](./docs/phase1-research.md) to install FModel
-and start answering DESIGN.md §8's open research questions, logging
-findings in [`docs/hook-points.md`](./docs/hook-points.md). Once question
-1–2 have real answers, Phase 1 (personality reassignment) is the first
-piece worth actually coding.
+Read the "⚠️ EMPEZAR ACÁ" section at the top of [`CLAUDE.md`](./CLAUDE.md).
+It is the authoritative ordered list of what's left and is kept current;
+`docs/phase0-install.md` and `docs/phase1-research.md` are finished
+setup guides kept only for reference, and DESIGN.md §8's research
+questions are answered.
