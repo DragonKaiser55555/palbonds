@@ -1671,10 +1671,54 @@ end
 -- Battle, so a bonded companion engages other Pals it notices while leaving
 -- the player alone. That is the same Warlike behaviour already proven to
 -- work, scoped to exclude the player.
+-- Two-hundred-and-eighth pass (2026-09-06) — COMBAT BEHAVIOUR CORRECTED
+-- from Dragón's live run. He reported three things that look unrelated but
+-- share one root cause, and the split between Discover_* and Damaged_*
+-- explains all three exactly:
+--
+--   1. "a petallia changed to combat and started attacking my flopie
+--      follower, despite both of them not having fought nor i receiving
+--      damage" — a companion with Discover_Equal=Battle attacks ANY
+--      similarly-sized Pal it notices, and his other bonding companion is
+--      just another wild Pal to it. Companions were fighting each other.
+--   2. "combat pals followers start attacking random nearby pals... that
+--      caused a few to receive damage themselves and change to escape" —
+--      same cause, plus the knock-on: taking damage runs Trust's follower
+--      damage penalty, which can drop trust to zero and force the escape
+--      tier. The escape was a symptom, not a separate bug.
+--   3. "they followed but never attacked, even when i got in combat with
+--      a caprity, they didnt fight back even when they received damage" —
+--      the apparent contradiction with 1 and 2, and the key to the whole
+--      thing. Discover_* governs "I have NOTICED something", Damaged_*
+--      governs "something HURT me". Only the Discover slots were being set
+--      to Battle; the Damaged slots kept the friendly preset's passive
+--      value. So a companion would start fights with strangers it spotted,
+--      yet stand there taking hits without retaliating.
+--
+-- The corrected design, which is also the better one: companions do NOT
+-- start fights (Discover_* = Ignore, so they stop attacking each other and
+-- stop picking fights that get them killed), but they DO fight back when
+-- something actually attacks them (Damaged_* = Battle). That reads as a
+-- loyal companion rather than an aggressive one, and it removes the
+-- friendly-fire and the death-spiral in one change.
+--
+-- Honest limitation, unchanged: this makes a companion defend ITSELF, not
+-- the player. A companion will join a fight the player starts only once the
+-- enemy also turns on the companion. Making them attack the player's own
+-- target on sight needs the Hate system (HateSystem:ChangeHate /
+-- APalAIController.TargetPlayers), which is real but has never been
+-- explored for this purpose — that is the next step if this still feels too
+-- passive in play.
 local COMPANION_RESPONSE_IGNORE = 0
 local COMPANION_RESPONSE_BATTLE = 2
+-- Every slot facing the player stays Ignore: a companion must never turn on
+-- its own trainer, and this is also what stops the Pal's AI generating the
+-- competing decisions that used to override the follow order.
 local COMPANION_PLAYER_SLOTS = { "Discover_Player", "Damaged_Player" }
+-- Noticing another creature: do nothing. This is the fix for 1 and 2.
 local COMPANION_OTHER_DISCOVER_SLOTS = { "Discover_Greater", "Discover_Equal", "Discover_Smaller" }
+-- Being hurt by another creature: fight back. This is the fix for 3.
+local COMPANION_OTHER_DAMAGED_SLOTS = { "Damaged_Greater", "Damaged_Equal", "Damaged_Smaller" }
 
 function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
     if palId == nil or palActor == nil then return false end
@@ -1720,8 +1764,15 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
         for _, prop in ipairs(COMPANION_PLAYER_SLOTS) do
             fresh[prop] = COMPANION_RESPONSE_IGNORE
         end
+        -- Never start a fight, whether or not combat assist is on: this is
+        -- what stopped companions attacking each other and picking losing
+        -- fights while trying to follow.
+        for _, prop in ipairs(COMPANION_OTHER_DISCOVER_SLOTS) do
+            fresh[prop] = COMPANION_RESPONSE_IGNORE
+        end
         if combatAssist then
-            for _, prop in ipairs(COMPANION_OTHER_DISCOVER_SLOTS) do
+            -- But do fight back when actually attacked.
+            for _, prop in ipairs(COMPANION_OTHER_DAMAGED_SLOTS) do
                 fresh[prop] = COMPANION_RESPONSE_BATTLE
             end
         end
@@ -1738,7 +1789,17 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
     end
 
     local st = PersonalityState[palId]
-    if st then st.disposition = combatAssist and "companion_combat" or "companion" end
+    if st then
+        st.disposition = combatAssist and "companion_combat" or "companion"
+        -- Two-hundred-and-eighth pass: mark enforcement as done so the
+        -- periodic 8s personality scan does not later overwrite this
+        -- companion preset with the Pal's originally-rolled tier. Without
+        -- this, a Pal that had not yet been enforced (a "normal" roll, or
+        -- one whose sensor only resolved later) could silently revert to
+        -- warlike/escape behaviour part-way through bonding — which would
+        -- look exactly like a random companion turning hostile.
+        st.enforcementApplied = true
+    end
 
     Logger.log(string.format(
         "[PalBonds/Personality] [COMPANION] %s now has a companion preset (player slots=Ignore%s) — its own AI should no longer generate decisions about the player",

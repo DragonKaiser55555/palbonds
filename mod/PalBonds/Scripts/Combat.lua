@@ -153,6 +153,9 @@ local USE_REPEATED_OTOMO_COMPOSITE = false
 -- real but has never been explored for this purpose.
 local ENABLE_COMBAT_ASSIST = true
 
+-- Throttle state for [MOVE-ORDER-RESULT] — see IssueFollowMoveOrder.
+local lastMoveOrderResult = nil
+
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then return result end
@@ -462,8 +465,28 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
     local ok, resultOrErr = pcall(function()
         return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
     end)
+    -- Two-hundred-and-eighth pass (2026-09-06): this used to log every
+    -- single order — 2-3 lines every 1.5s PER FOLLOWER, each forced to disk
+    -- by Logger's flush-per-line design, so the cost scaled directly with
+    -- how many Pals were following. That is a real part of the extra lag
+    -- Dragón felt while running three followers at once.
+    --
+    -- The question it was added for (two-hundredth pass: "is
+    -- PalMoveToLocation silently returning Failed all this time?") is now
+    -- ANSWERED, and the answer is good: across Dragón's whole run it
+    -- returned only 2 (RequestSuccessful) and 1 (AlreadyAtGoal), never 0
+    -- (Failed). "AlreadyAtGoal" dominating is the strongest evidence yet
+    -- that the companion-preset fix worked — the Pals are genuinely
+    -- reaching and staying with the player rather than drifting off.
+    --
+    -- So: only log a real FAILURE, or a change in the result value. Steady
+    -- successful following is now silent.
     if ok then
-        Logger.log("[PalBonds/Combat] [MOVE-ORDER-RESULT] PalMoveToLocation returned: " .. tostring(resultOrErr) .. " (0=Failed, 1=AlreadyAtGoal, 2=RequestSuccessful)")
+        local resultNum = tonumber(resultOrErr)
+        if resultNum == 0 or resultOrErr ~= lastMoveOrderResult then
+            lastMoveOrderResult = resultOrErr
+            Logger.log("[PalBonds/Combat] [MOVE-ORDER-RESULT] PalMoveToLocation now returning: " .. tostring(resultOrErr) .. " (0=Failed, 1=AlreadyAtGoal, 2=RequestSuccessful; only logged on change or on failure)")
+        end
     else
         Logger.log("[PalBonds/Combat] PalMoveToLocation call failed (non-fatal, caught): " .. tostring(resultOrErr))
     end

@@ -431,6 +431,12 @@ local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     -- AffectionFruit_01
 --   them real keeps the one-shot peach behaviour testable too).
 local BALANCE_VERIFICATION_MODE = true
 
+-- Two-hundred-and-eighth pass: set true to restore the very verbose
+-- per-menu-hook trace ([RADIAL-WATCH]/[WORKER-WATCH] "X fired — self=... "
+-- lines). Off by default: ~8 lines per "4" press, each with four reflection
+-- calls and a forced disk write, for a mapping question closed long ago.
+local VERBOSE_MENU_HOOK_TRACE = false
+
 if BALANCE_VERIFICATION_MODE then
     PET_FRIENDSHIP_GAIN  = 100
     FEED_FRIENDSHIP_BASE = 100
@@ -545,17 +551,30 @@ local function find_targeted_pal(originLoc, forwardVec, excludeActor)
         return nil, nil, nil
     end
 
-    local excludeName = safe_call(function() return excludeActor and excludeActor:GetFullName() end)
-
+    -- Two-hundred-and-eighth pass (2026-09-06) — REAL LAG FIX, measured.
+    -- Dragón's live log shows this scan costing 48-74ms EVERY time, several
+    -- times per radial-menu open (it recomputes on a 0.25s throttle while
+    -- the menu is up). At ~4 scans/second that is 200-300ms of frame-
+    -- blocking Lua per second of menu time — by far the largest single
+    -- hitch this project has, and the one Dragón feels as a stutter when he
+    -- presses "4".
+    --
+    -- The waste: the old loop called `GetFullName()` — a string-building
+    -- reflection round-trip — on EVERY Pal in the loaded world, purely to
+    -- test whether it was the one actor to exclude. In a busy area that is
+    -- dozens of reflection calls per scan, for a comparison that can only
+    -- ever match once.
+    --
+    -- Fix: do the cheap geometry first and resolve the exclusion ONLY for
+    -- the single Pal that actually wins. Same result, but GetFullName goes
+    -- from once-per-Pal-per-scan to at most once per scan. The distance
+    -- check is also now ordered before the angle math (dist is a plain
+    -- subtract-and-length; the angle needs a normalize, a dot and an acos),
+    -- so far-away Pals cost almost nothing.
     local best, bestAngle, bestDist = nil, nil, nil
     for _, pal in ipairs(pals) do
         local validOk, isValid = pcall(function() return pal ~= nil and pal:IsValid() end)
-        local isExcluded = false
-        if validOk and isValid and excludeName then
-            local palName = safe_call(function() return pal:GetFullName() end)
-            isExcluded = (palName ~= nil and palName == excludeName)
-        end
-        if validOk and isValid and not isExcluded then
+        if validOk and isValid then
             local loc = safe_call(function() return pal:K2_GetActorLocation() end)
             if loc then
                 local toTarget = vec_sub(loc, originLoc)
@@ -570,6 +589,21 @@ local function find_targeted_pal(originLoc, forwardVec, excludeActor)
                         end
                     end
                 end
+            end
+        end
+    end
+
+    -- Exclusion resolved once, on the winner only. If the best candidate IS
+    -- the excluded actor we return nothing rather than re-scanning for the
+    -- runner-up: the excluded actor is the current Otomo standing right next
+    -- to the player, so "the Otomo is the closest thing to my crosshair"
+    -- genuinely means the player is not aiming at a wild Pal.
+    if best ~= nil and excludeActor ~= nil then
+        local excludeName = safe_call(function() return excludeActor:GetFullName() end)
+        if excludeName then
+            local bestName = safe_call(function() return best:GetFullName() end)
+            if bestName ~= nil and bestName == excludeName then
+                return nil, nil, nil
             end
         end
     end
@@ -2453,6 +2487,10 @@ local lastRedirectedWildPalName = nil
 -- and re-validated with IsValid() at the point of use, since a wild Pal can
 -- despawn between the menu opening and the action resolving.
 local lastRedirectedWildPalActor = nil
+-- Two-hundred-and-eighth pass: throttles [RADIAL-REDIRECT-FIELD] to one
+-- line per menu window (it fired 8-10 times per '4' press). Reset when a
+-- window opens, same as the two above.
+local loggedFieldWriteThisWindow = false
 
 -- Hundredth pass (2026-09-03) FIX: this was 1500ms, and Dragón's live test
 -- proved that's too short — real decision events (OnDecidedInstructionCare/
@@ -2533,6 +2571,7 @@ local function openRadialMenuActionWindow(widget)
     radialMenuRedirectedThisWindow = false
     lastRedirectedWildPalName = nil
     lastRedirectedWildPalActor = nil
+    loggedFieldWriteThisWindow = false
     lastDecidedInstruction = nil
     cachedRedirectWildPal = nil
     lastRedirectComputeClock = nil
@@ -3707,10 +3746,26 @@ function Interaction.Init()
                 -- zero declared params already).
                 safe_call(function() onFire(self_) end)
             end
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [%s] %s fired — self=%s arg1=%s arg2=%s arg3=%s",
-                logTag, tag, hook_describe(self_), hook_describe(hook_get(A)), hook_describe(hook_get(B)), hook_describe(hook_get(C))
-            ))
+            -- Two-hundred-and-eighth pass (2026-09-06) — LOG SILENCED, real
+            -- lag contributor. This handler backs the live radial/worker
+            -- menu hooks (the onFire above is load-bearing and untouched),
+            -- but its log line fired ~8 times per single "4" press, and each
+            -- line ran FOUR hook_describe reflection calls to build a ~250-
+            -- character string dominated by the same widget path every time,
+            -- then forced it to disk through Logger's flush-per-line design.
+            -- Dragón's pasted log is more than half these lines.
+            --
+            -- The mapping question they existed to answer (which menu
+            -- function fires when, and in what order) has been closed since
+            -- the hundred-and-thirty-first pass audit confirmed every one of
+            -- these hooks resolving and firing correctly. Set this to true
+            -- if a future pass needs to re-trace the menu sequence.
+            if VERBOSE_MENU_HOOK_TRACE then
+                Logger.log(string.format(
+                    "[PalBonds/Interaction] [%s] %s fired — self=%s arg1=%s arg2=%s arg3=%s",
+                    logTag, tag, hook_describe(self_), hook_describe(hook_get(A)), hook_describe(hook_get(B)), hook_describe(hook_get(C))
+                ))
+            end
         end
     end
 
@@ -4213,10 +4268,23 @@ function Interaction.Init()
                             -- logging every real scan stays cheap and gives
                             -- Dragón's next test concrete ms numbers to
                             -- confirm or rule out this as the hitch source.
-                            Logger.log(string.format(
-                                "[PalBonds/Interaction] [RADIAL-REDIRECT-PERF] find_targeted_pal scan took %.2fms",
-                                (scanEnd - scanStart) * 1000
-                            ))
+                            -- Two-hundred-and-eighth pass: this diagnostic
+                            -- did its job — Dragón's log gave the concrete
+                            -- numbers (48-74ms per scan, several per menu
+                            -- open) that identified find_targeted_pal as
+                            -- this project's largest single frame hitch, and
+                            -- the GetFullName-per-Pal waste inside it has now
+                            -- been removed. Kept, but only reports scans that
+                            -- are still slow enough to matter, so it can
+                            -- confirm the fix without adding its own cost
+                            -- back on every scan.
+                            local scanMs = (scanEnd - scanStart) * 1000
+                            if scanMs >= 15.0 then
+                                Logger.log(string.format(
+                                    "[PalBonds/Interaction] [RADIAL-REDIRECT-PERF] find_targeted_pal scan took %.2fms (only logged when >= 15ms — see two-hundred-and-eighth pass)",
+                                    scanMs
+                                ))
+                            end
                         end
                         cachedRedirectWildPal = wildPal
                         lastRedirectComputeClock = now
@@ -4339,11 +4407,22 @@ function Interaction.Init()
                             local fieldSetOk, fieldSetErr = pcall(function()
                                 lastOpenMenuWidget.SpawnedOtomo = wildPal
                             end)
-                            Logger.log(string.format(
-                                "[PalBonds/Interaction] [RADIAL-REDIRECT-FIELD] widget.SpawnedOtomo = wild %s -> %s",
-                                hook_describe(wildPal),
-                                fieldSetOk and "ok" or ("FAILED: " .. tostring(fieldSetErr))
-                            ))
+                            -- Two-hundred-and-eighth pass: this fired 8-10
+                            -- times per single "4" press in Dragón's log,
+                            -- each line rebuilding the wild Pal's full path
+                            -- via hook_describe (a reflection call) and
+                            -- forcing a disk flush — for a write that either
+                            -- always works or always fails, on the same Pal,
+                            -- within one menu window. Now logged once per
+                            -- window, and always on failure.
+                            if not fieldSetOk or not loggedFieldWriteThisWindow then
+                                loggedFieldWriteThisWindow = true
+                                Logger.log(string.format(
+                                    "[PalBonds/Interaction] [RADIAL-REDIRECT-FIELD] widget.SpawnedOtomo = wild %s -> %s (logged once per menu window)",
+                                    hook_describe(wildPal),
+                                    fieldSetOk and "ok" or ("FAILED: " .. tostring(fieldSetErr))
+                                ))
+                            end
                         else
                             Logger.log("[PalBonds/Interaction] [RADIAL-REDIRECT-FIELD] lastOpenMenuWidget is no longer valid — skipping field write")
                         end
