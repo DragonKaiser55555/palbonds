@@ -210,7 +210,59 @@ end
 -- `tone`: 0/1/2 observed in the reference mod (0 used for a plain "used
 -- item" message, 1 for errors, 2 for a positive "registered" confirmation)
 -- — 2 is used below since a Pal joining is good news.
-function Capture.NotifyJoined(pal, player)
+-- Two-hundred-and-tenth pass (2026-09-06) — split out of NotifyJoined, and
+-- this split IS the bug fix.
+--
+-- Dragón reported the new named toast never appeared. The log proves the new
+-- code ran (the "[NOTIFY] join message:" line is new this pass) but fell all
+-- the way through to the generic fallback, meaning BOTH the localized lookup
+-- AND the raw-CharacterID fallback failed. The reason is ordering, not the
+-- name lookup itself: NotifyJoined is called AFTER TryDirectCapture, and by
+-- then the Pal has already been handed to the player — the same log line
+-- shows "owner AFTER the call = nil". The actor is mid-teardown, so its
+-- CharacterParameterComponent chain no longer resolves and every name route
+-- fails at the first step.
+--
+-- This is the exact bug class the two-hundred-and-fourth pass already fixed
+-- once in diagnose_post_capture_slot (resolving a handle after the capture
+-- instead of before). Same lesson, missed a second time: ANYTHING that needs
+-- to read from the Pal must read it BEFORE PalCaptureSuccess runs.
+--
+-- So the name is now resolved up-front, next to preCaptureHandle (which
+-- exists for precisely this reason), and passed in as a plain string that
+-- survives the capture.
+local function resolve_pal_display_name(pal, player)
+    local palName = nil
+    safe_call(function()
+        if pal == nil then return end
+        local comp = pal.CharacterParameterComponent
+        if comp == nil or not comp:IsValid() then return end
+        local param = comp:GetIndividualParameter()
+        if param == nil or not param:IsValid() then return end
+        local charId = param:GetCharacterID()
+        if charId == nil then return end
+
+        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
+        local masterData = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility") end)
+        if textLibrary ~= nil and masterData ~= nil then
+            local localized = safe_call(function()
+                return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, charId)
+            end)
+            local asString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
+            if asString ~= nil and asString ~= "" then
+                palName = asString
+                return
+            end
+        end
+        -- Fallback: the raw internal id, still better than "A wild Pal".
+        local raw = safe_call(function() return charId:ToString() end)
+        if raw ~= nil and raw ~= "" then palName = raw end
+    end)
+    Logger.log("[PalBonds/Capture] [NOTIFY] resolved display name BEFORE capture = " .. tostring(palName))
+    return palName
+end
+
+function Capture.NotifyJoined(pal, player, preResolvedName)
     local ok, err = pcall(function()
         local utility = get_pal_utility()
         if utility == nil then return end
@@ -220,51 +272,10 @@ function Capture.NotifyJoined(pal, player)
         if widgetClass == nil then return end
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
-        -- Two-hundred-and-ninth pass (2026-09-06): Dragón asked for a less
-        -- generic message — "something like maybe '(palname) likes you and
-        -- decided to join your party!'". Resolving the Pal's real, localized,
-        -- in-game display name (so it reads "Petallia", the name he actually
-        -- sees, not the internal id "FlowerDoll") uses two confirmed-real
-        -- pieces from this build's own header dump:
-        --   UPalMasterDataTablesUtility::GetLocalizedText(WorldContextObject,
-        --       EPalLocalizeTextCategory TextCategory, FName TextId)
-        --   EPalLocalizeTextCategory::PalMonsterName = 4
-        -- with the Pal's CharacterID as the TextId — the same id this file
-        -- already reads elsewhere.
-        --
-        -- Every step is pcall-guarded and falls back cleanly: if the
-        -- localized lookup fails we use the raw CharacterID, and if even that
-        -- fails we use the original generic wording. A cosmetic toast must
-        -- never be able to break a capture that already succeeded.
-        local palName = nil
-        safe_call(function()
-            -- Same component chain read_owner_id above already uses — a
-            -- plain field/getter walk, never the by-value GetSaveParameter()
-            -- struct copy that caused this project's early crashes.
-            if pal == nil then return end
-            local comp = pal.CharacterParameterComponent
-            if comp == nil or not comp:IsValid() then return end
-            local param = comp:GetIndividualParameter()
-            if param == nil or not param:IsValid() then return end
-            local charId = param:GetCharacterID()
-            if charId == nil then return end
-
-            local masterData = StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility")
-            if masterData ~= nil then
-                local localized = safe_call(function()
-                    return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, charId)
-                end)
-                local asString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
-                if asString ~= nil and asString ~= "" then
-                    palName = asString
-                    return
-                end
-            end
-            -- Fallback: the raw internal id, still better than "A wild Pal".
-            local raw = safe_call(function() return charId:ToString() end)
-            if raw ~= nil and raw ~= "" then palName = raw end
-        end)
-
+        -- Two-hundred-and-tenth pass: the name is resolved BEFORE the
+        -- capture (see resolve_pal_display_name above for why) and handed in
+        -- here, so this function never touches the mid-teardown Pal actor.
+        local palName = preResolvedName
         local message
         if palName then
             message = palName .. " likes you and decided to join your party!"
@@ -335,7 +346,100 @@ end
 -- FPalInstanceID isn't used yet).
 local PermanentlyFled = {}
 
+-- Two-hundred-and-tenth pass (2026-09-06) — CAGE VFX PROBE, read-only.
+--
+-- This should have shipped last pass. I told Dragón that finding a Pal cage
+-- would unblock the join VFX, and he went to an enemy settlement and rescued
+-- a Pal ("swee") specifically to provide one — but no diagnostic existed to
+-- read anything from it, so that trip produced no data. My omission.
+--
+-- What this reads, all confirmed present in this build's header dump:
+--   class APalCapturedCage : public AActor
+--       void StartCaptureEffect_ServerBP(class APalPlayerCharacter* Player)
+--   class ABP_PalCapturedCage_C : public APalCapturedCage
+--       class UNiagaraComponent* Niagara;   // 0x0308
+--
+-- The goal is the Niagara ASSET the cage plays when a Pal is freed — the
+-- "Pal turns into light and travels into the player" effect Dragón wants at
+-- capture. Once we have its object path, it can be spawned at a bonded Pal's
+-- location without needing a cage present at all.
+--
+-- Strictly read-only: it resolves objects and reads fields. It never calls
+-- StartCaptureEffect_ServerBP, never touches a cage, and cannot affect
+-- gameplay. Two routes, because either may work:
+--   1. Live instances via FindAllOf — best, reflects real in-world state.
+--   2. The class default object — works even with no cage nearby, as long as
+--      the class has been loaded at least once (Dragón's rescue did that).
+local cageProbeDone = false
+local CAGE_PROBE_MAX_ROUNDS = 12
+local CAGE_PROBE_RETRY_MS = 10000
+
+local function probe_cage_vfx(round)
+    if cageProbeDone then return end
+    round = round or 1
+
+    local found = false
+    safe_call(function()
+        local cages = FindAllOf("BP_PalCapturedCage_C") or FindAllOf("PalCapturedCage")
+        if cages then
+            for _, cage in ipairs(cages) do
+                local valid = safe_call(function() return cage:IsValid() end)
+                if valid then
+                    local comp = safe_call(function() return cage.Niagara end)
+                    local compValid = comp ~= nil and safe_call(function() return comp:IsValid() end)
+                    local assetName = nil
+                    if compValid then
+                        local asset = safe_call(function() return comp.Asset end)
+                        assetName = asset and safe_call(function() return asset:GetFullName() end)
+                    end
+                    Logger.log(string.format(
+                        "[PalBonds/Capture] [CAGE-VFX] LIVE cage=%s NiagaraComponent=%s Asset=%s",
+                        tostring(safe_call(function() return cage:GetFullName() end)),
+                        tostring(compValid and safe_call(function() return comp:GetFullName() end) or "nil"),
+                        tostring(assetName)
+                    ))
+                    if assetName then found = true end
+                end
+            end
+        end
+    end)
+
+    if not found then
+        safe_call(function()
+            local cdo = StaticFindObject("/Game/Pal/Blueprint/MapObject/Cage/BP_PalCapturedCage.Default__BP_PalCapturedCage_C")
+            if cdo == nil then
+                Logger.log("[PalBonds/Capture] [CAGE-VFX] round " .. round .. ": no live cage and the CDO path did not resolve — will retry")
+                return
+            end
+            local comp = safe_call(function() return cdo.Niagara end)
+            local asset = comp and safe_call(function() return comp.Asset end)
+            Logger.log(string.format(
+                "[PalBonds/Capture] [CAGE-VFX] CDO cage NiagaraComponent=%s Asset=%s",
+                tostring(comp and safe_call(function() return comp:GetFullName() end) or "nil"),
+                tostring(asset and safe_call(function() return asset:GetFullName() end) or "nil")
+            ))
+            if asset then found = true end
+        end)
+    end
+
+    if found then
+        cageProbeDone = true
+        Logger.log("[PalBonds/Capture] [CAGE-VFX] asset resolved — probe done, will not run again this session")
+        return
+    end
+    if round >= CAGE_PROBE_MAX_ROUNDS then
+        Logger.log("[PalBonds/Capture] [CAGE-VFX] giving up after " .. round .. " rounds — no cage loaded this session. Walk near a Pal cage and it will be retried next session.")
+        return
+    end
+    pcall(function()
+        ExecuteInGameThreadWithDelay(CAGE_PROBE_RETRY_MS, function()
+            safe_call(function() probe_cage_vfx(round + 1) end)
+        end)
+    end)
+end
+
 function Capture.Init()
+    safe_call(function() probe_cage_vfx(1) end)
     Logger.log("[PalBonds/Capture] real trigger points wired (via Trust.lua) — sphere-less capture is now REAL (thirty-ninth pass), calls Capture.TryDirectCapture for real on OnTrustMaxed")
 end
 
@@ -509,6 +613,13 @@ function Capture.OnTrustMaxed(pal)
         return utility and utility:GetIndividualCharacterHandleByActor(pal)
     end)
 
+    -- Two-hundred-and-tenth pass: resolved HERE, before the capture, for the
+    -- same reason preCaptureHandle above is — after PalCaptureSuccess runs,
+    -- the Pal actor is mid-teardown and every read off it fails. Dragón's
+    -- last run proved this: the toast fell through to its generic fallback
+    -- because both name routes failed post-capture.
+    local preResolvedDisplayName = resolve_pal_display_name(pal, player)
+
     play_join_celebration_then(pal, function()
         local stillValid = safe_call(function() return pal:IsValid() end)
         if not stillValid then
@@ -525,7 +636,7 @@ function Capture.OnTrustMaxed(pal)
         -- tested so far (see this file's own thirty-ninth pass note), so this
         -- matches the project's existing confidence level rather than adding
         -- new uncertainty.
-        Capture.NotifyJoined(pal, player)
+        Capture.NotifyJoined(pal, player, preResolvedDisplayName)
 
         -- It's a real party member now (assuming the call above worked) —
         -- stop treating it as our own approximated bonding-follow state.

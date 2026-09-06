@@ -502,6 +502,24 @@ Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. *
 
 Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada confirmado en vivo.** Detalle en `hook-points.md` ("Two-hundred-and-ninth pass").
 
+## Continuación 179 (2026-09-06): la animación de descanso revertida (error mío, usé una señal que el proyecto ya sabía que no es confiable), el bug del aviso de captura con causa real, y la sonda del VFX de la jaula que debió salir la pasada anterior
+
+**La animación de descanso se ELIMINÓ. Fue un error mío, y evitable.** La prueba de Dragón mostró que salió mal de tres formas distintas, todas reales: (1) interrumpía su propia interacción de Pet/Feed/Play justo cuando el Pal cruzaba el 50%; (2) una vez descansando, el Pal contaba como ocupado, así que la orden de seguimiento no podía moverlo — quedaban clavados en vez de seguir; (3) ni siquiera cumplió su objetivo: igual se iban a deambular.
+
+La causa de (1) es lo importante: la condicioné a `ActionIsEmpty()`, **una señal que este proyecto ya tenía documentada como poco confiable justo para esto.** La pasada 196 dejó escrito que "se libera casi al instante" — reporta vacío en los huecos entre los pasos de una interacción real de varias partes, que es exactamente por qué disparó a mitad de una interacción. Apoyarme en una señal que las propias notas del proyecto llaman poco confiable no fue una decisión defendible; lo correcto era revisar ese historial antes de construir encima.
+
+**Reemplazo, atacando la misma causa raíz pero por el sistema de MOVIMIENTO en vez del de acciones**, así que estructuralmente no puede interrumpir una animación ni bloquear una pelea:
+- Si el Pal tiene un objetivo de odio (`UPalHate::FindMostHateTarget`, el mismo sistema al que empuja la ayuda en combate), la lógica de seguimiento no hace nada — a un compañero peleando se lo deja en paz. Esto además evita que la orden de seguimiento compita con la ayuda en combate agregada la pasada anterior.
+- Si no, cuando la orden devuelve "ya está en el destino", se reemite hacia un punto que orbita lentamente alrededor del jugador en vez de su posición exacta. Así el Pal siempre tiene una ruta activa y nunca recibe una ventana ociosa — que es exactamente la condición que Dragón ya confirmó que funciona: moviéndose sin parar, esto nunca pasa. Ahora tienen esa misma condición aunque él esté quieto.
+
+**El bug del aviso de captura, con causa real, y es la misma clase de bug que este proyecto ya arregló una vez.** El código nuevo SÍ corrió (la línea `[NOTIFY] join message:` es nueva de esta pasada) pero cayó al texto genérico, o sea que fallaron las DOS rutas del nombre. La causa es el orden, no la búsqueda del nombre: `NotifyJoined` corre DESPUÉS de `TryDirectCapture`, y el mismo log muestra `owner AFTER the call = nil`. El actor está siendo desarmado, así que su cadena de componentes ya no resuelve y toda ruta falla en el primer paso. **Es exactamente el bug que la pasada 204 arregló en `diagnose_post_capture_slot` — la misma lección, perdida por segunda vez.** Arreglado resolviendo el nombre antes, junto a `preCaptureHandle`, y pasándolo como string que sobrevive a la captura. Regla que conviene recordar: **todo lo que necesite leer del Pal debe leerse ANTES de que corra `PalCaptureSuccess`.**
+
+**Sonda `[CAGE-VFX]` agregada — solo lectura — y su ausencia la pasada anterior fue omisión mía.** Le dije a Dragón que encontrar una jaula desbloquearía el VFX; él fue a un asentamiento enemigo y rescató un Pal ("swee") justamente para eso, pero no existía ningún diagnóstico para leer nada de ahí, así que ese viaje no produjo datos. Ahora corre al iniciar, con reintento acotado, y prueba dos rutas para el asset Niagara de `ABP_PalCapturedCage_C`: instancias vivas, y el objeto por defecto de la clase (que sirve aunque no haya jaula cerca, mientras la clase se haya cargado alguna vez — el rescate de Dragón hizo eso). Solo resuelve objetos y lee campos; nunca llama a `StartCaptureEffect_ServerBP`.
+
+**También confirmado de esta corrida:** `[HATE-ASSIST]` disparó cero veces — esperable, porque ningún compañero llegó a seguir el tiempo suficiente para que hubiera una pelea, así que la ayuda en combate sigue sin probar, no descartada. Y `find_targeted_pal` bajó a 42-47ms (era 48-74ms): sacar el GetFullName por Pal ayudó, pero lo que queda sigue siendo el tirón más grande del proyecto.
+
+Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada confirmado en vivo.** Detalle en `hook-points.md` ("Two-hundred-and-tenth pass").
+
 ## Dónde está el detalle real
 
 Todo el diseño técnico (los 6 subsistemas, las 6 fases, riesgos, preguntas de investigación) vive en `DESIGN.md` — este archivo es solo el resumen de seguimiento que pide la convención de `Proyectos\CLAUDE.md`. Mantener sincronizado el % de arriba cada vez que se avance en algo.

@@ -160,9 +160,15 @@ local lastMoveOrderResult = nil
 -- returns. Confirmed from Dragón's live log: only 1 and 2 ever appear.
 local MOVE_RESULT_ALREADY_AT_GOAL = 1
 
--- Same EPalActionType value Interaction.lua's Play interaction uses, so it
--- is already proven safe to play on a wild Pal.
-local ACTION_TYPE_PAL_RANDOM_REST = 77
+-- Two-hundred-and-tenth pass: the orbit-follow parameters. A companion that
+-- has reached the player is sent to a slowly rotating point nearby instead of
+-- being left idle, so its own roam AI never gets an idle window to take over.
+-- ORBIT_RADIUS is deliberately small (well inside FOLLOW_ACCEPTANCE_RADIUS's
+-- old 200) so this reads as a companion milling about, not pacing laps.
+local ORBIT_RADIUS = 180.0
+local ORBIT_ACCEPTANCE_RADIUS = 60.0
+local ORBIT_STEP_RADIANS = 0.9 -- ~52 degrees per tick, so a full circle takes ~7 ticks (~10s)
+local orbitPhase = 0.0
 
 -- How much hate to push onto the player's current enemy for each following
 -- companion. Large enough to outrank whatever the companion may already be
@@ -549,38 +555,66 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc)
         return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
     end)
 
-    -- Two-hundred-and-ninth pass (2026-09-06) — THE WANDER-OFF FIX, and it
-    -- is Dragón's own idea, not a variation on the previous approach.
+    -- Two-hundred-and-tenth pass (2026-09-06) — THE REST ANIMATION IS GONE.
+    -- It was the previous pass's fix and it backfired in three separate ways
+    -- in Dragón's live test, all of them real:
+    --   1. It interrupted his actual Pet/Feed/Play interaction the moment a
+    --      Pal crossed 50%.
+    --   2. Once resting, the Pal counted as busy, so the follow order could
+    --      not move it — Pals got stuck standing still instead of following.
+    --   3. It did not even achieve its goal: they still wandered off, so the
+    --      AI's roam decision either queues behind or overrides the rest.
     --
-    -- His diagnosis, from watching it directly: "when they approach my
-    -- location they stand there without anything else to do, so their normal
-    -- AI triggers again and makes them move to a location x in the distance
-    -- ... i confirmed this by not staying still, when constantly moving and
-    -- running this never happens, because they never get an idle time enough
-    -- for their AI to kick again." The log agrees — the result value sits at
-    -- 1 (AlreadyAtGoal) exactly when this happens.
+    -- The mistake was mine and it was avoidable: I gated it on
+    -- `ActionIsEmpty()`, a signal THIS PROJECT HAD ALREADY DOCUMENTED as
+    -- unreliable for exactly this purpose. The hundred-and-ninety-sixth pass
+    -- established that it "se libera casi al instante" — it reports empty in
+    -- the gaps between the steps of a real multi-part interaction. That is
+    -- precisely why it fired mid-interaction. Using a signal the project's
+    -- own notes call untrustworthy was not a reasonable risk to take.
     --
-    -- His fix: "if they're already at goal, instead of idling, make them do
-    -- an animation, so they're busy with something and dont wander off."
-    -- That is better than the obvious alternative (cancel and re-issue the
-    -- order far more often), and it avoids a real problem that approach
-    -- would have caused: cancelling the Pal's current action twice a second
-    -- would also cancel its attacks, breaking the fight-back behaviour that
-    -- was only just fixed. Occupying an idle Pal costs nothing and cannot
-    -- interrupt anything, because it only runs when the Pal is doing nothing
-    -- at all.
+    -- The replacement attacks the same root cause Dragón identified (an idle
+    -- window lets the roam AI take over) but through the MOVEMENT system
+    -- instead of the action system, so it structurally cannot interrupt an
+    -- animation or block a fight:
     --
-    -- ACTION_TYPE_PAL_RANDOM_REST is the same action Play already triggers,
-    -- so it is proven safe on a wild Pal. The ActionIsEmpty() gate is what
-    -- makes this safe in combat: a Pal that is attacking, being attacked, or
-    -- mid-animation is never empty, so it is left completely alone.
+    --   * If the Pal already has a hate target, do nothing at all — leave it
+    --     free to fight. This also stops the follow order fighting the combat
+    --     assist added last pass.
+    --   * Otherwise, when the order reports AlreadyAtGoal, re-issue it to a
+    --     point that slowly orbits the player rather than the player's exact
+    --     position. The Pal therefore always has a live path request and
+    --     never gets the idle window at all — which is exactly the condition
+    --     Dragón confirmed already works: "when constantly moving and running
+    --     this never happens, because they never get an idle time enough for
+    --     their AI to kick again." This just gives them that same condition
+    --     while he stands still.
     if ok and tonumber(resultOrErr) == MOVE_RESULT_ALREADY_AT_GOAL then
         safe_call(function()
-            local actionComp = pal.ActionComponent
-            if not (actionComp and actionComp:IsValid()) then return end
-            local idle = actionComp:ActionIsEmpty()
-            if idle ~= true then return end -- busy: fighting, reacting, or already resting
-            actionComp:PlayActionByType(pal, ACTION_TYPE_PAL_RANDOM_REST)
+            -- Let a fighting companion fight. FindMostHateTarget is the real
+            -- confirmed function on UPalHate, the same system combat assist
+            -- pushes to.
+            local hate = controller:GetHateSystem()
+            if hate and hate:IsValid() then
+                local target = hate:FindMostHateTarget()
+                local targetValid = target ~= nil and safe_call(function() return target:IsValid() end)
+                if targetValid then return end
+            end
+
+            local px = playerLoc.X
+            local py = playerLoc.Y
+            local pz = playerLoc.Z
+            if px == nil or py == nil or pz == nil then return end
+
+            orbitPhase = (orbitPhase + ORBIT_STEP_RADIANS) % (2 * math.pi)
+            local dest = {
+                X = px + math.cos(orbitPhase) * ORBIT_RADIUS,
+                Y = py + math.sin(orbitPhase) * ORBIT_RADIUS,
+                Z = pz,
+            }
+            -- A tight acceptance radius here on purpose: the point of this
+            -- order is to keep a path active, not to arrive.
+            controller:PalMoveToLocation(dest, ORBIT_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
         end)
     end
     -- Two-hundred-and-eighth pass (2026-09-06): this used to log every
