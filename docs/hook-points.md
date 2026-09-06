@@ -1220,3 +1220,35 @@ It logs three things, deliberately redundant so one trip answers the question ev
 **Also cleaned up this pass:** eight hung background shell tasks on the developer machine, which Dragón spotted. Root cause: `npx --no-install luaparse <file>` with no stdout redirect hangs waiting on stdin. Every one of them had already completed its file edit before hanging, so no work was lost, and each edit had been independently verified afterwards. The working form is `out=$(npx --no-install luaparse "$f" 2>&1 >/dev/null)`, which is what every check in this session's later passes used.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-thirteenth pass (2026-09-06): the join VFX is real at last, combat assist's missing half found, and the name lookup narrowed to one unknown
+
+**THE JOIN VFX IS IMPLEMENTED — the cage trip paid off.** Dragón's rescue let the probe read a real asset:
+
+```
+[CAGE-VFX] LIVE cage=BP_PalCapturedCage_C ... | comp present=true | asset present=true |
+           asset name=NiagaraSystem /Game/Pal/Effect/Common/Glow/NS_SingleStar.NS_SingleStar
+```
+
+That asset is NOT the wanted effect — `Effect/Common/Glow/NS_SingleStar` is the little sparkle marker on the cage itself. **But knowing the asset PATH FORMAT was the actual unlock.** Searching `UE4SS_ObjectDump.txt` (117 MB, sitting in the ue4ss folder the whole time and never used before in this project) for NiagaraSystems under `/Game/Pal/Effect/` turned up a folder built for exactly this moment:
+
+```
+/Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success
+/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear   (and 01 / 02)
+/Game/Pal/Effect/Common/PalCatch/NS_PalAppear
+/Game/Pal/Effect/Common/Return/NS_Return
+```
+
+Spawning uses `UNiagaraFunctionLibrary::SpawnSystemAtLocation`, confirmed present in this build's `Niagara.hpp` with the exact signature used. `NS_PalDisappear` is the default (closest match to "the Pal turns into light"), fired at the end of the happy reaction so the sequence reads **happy -> dissolve into light -> vanish -> named toast**. The alternates are listed in the source as a one-line swap, no further research needed if it reads wrong.
+
+**Note the cage hook never fired.** `StartCaptureEffect_ServerBP` is real and the hook installed cleanly, but a cage rescue does not call it — so that function is NOT the rescue effect trigger. The polling probe is what produced the result. Worth recording so nobody re-tries that hook expecting it to fire.
+
+**Combat assist: the hate push works, and the missing half is now identified.** `[HATE-ASSIST]` fired three times, correctly naming the BerryGoat Dragón was fighting — so the two-hundred-and-eleventh pass's nil-global fix was correct and the mechanism runs. But the companions still did not join in, which is **exactly the uncertainty flagged when it shipped**: hate gives the AI a TARGET, but the decision to engage runs through the response preset, and `Discover_*` was pinned to Ignore — so "I notice that BerryGoat" resolved to "do nothing" no matter how much hate it carried.
+
+Fixed the way that pass predicted, not by reverting to permanent aggression (which caused companions to attack each other two passes ago): `Discover_*` is now **conditional** — Battle while the player is actually in a fight, Ignore otherwise. `Combat.OnPlayerCombatTarget` re-applies the companion preset on the transition into combat (once, not per damage event — a real fight fires many events a second), and a 12-second generation-guarded window flips every follower back to peaceful when the fighting stops.
+
+**Name lookup narrowed to a single unknown.** The toast now works and shows `FlowerRabbit`/`FlowerDoll` — the internal ids, not the `Flopie`/`Petallia` Dragón sees in game. So `GetLocalizedText` returned nothing and the CharacterID fallback took over. The category is right (`PalMonsterName = 4`, read from the enum dump); the remaining unknown is the TEXT ID FORMAT. Rather than guess a third time, `[NAME-DIAG]` now tries the plausible formats in order — bare CharacterID, `PAL_NAME_<id>`, `NAME_<id>`, `<id>_NAME` — and logs what each returns, so one run settles it and the winner gets hard-coded. (`FindOrAddFName` is a `UEHelpers` method, not a global; Capture.lua now requires that helper the same way Interaction.lua already did.)
+
+**Also confirmed good this run, from Dragón:** following holds much better with move-to-actor (occasional drift remains, "not as bad as before"), companions fight back without losing friendship now that third-party damage costs nothing, and three simultaneous followers "didn't feel as laggy as that previous time" — the per-follower logging removal held up.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

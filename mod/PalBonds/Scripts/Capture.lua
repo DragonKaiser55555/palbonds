@@ -52,6 +52,10 @@ local Combat = require("Combat")
 -- bodies (pcall(require, "Capture")), never at file-load time, and
 -- main.lua's own require order already loads Personality before Capture.
 local Personality = require("Personality")
+-- Two-hundred-and-thirteenth pass: FindOrAddFName, to build real FNames for
+-- the localisation-id candidates in resolve_pal_display_name. Same bundled
+-- helper Interaction.lua already uses for exactly this reason.
+local UEHelpers = require("UEHelpers")
 
 -- EPalLocalizeTextCategory::PalMonsterName, read from this build's own
 -- Pal_enums.hpp dump (two-hundred-and-ninth pass) — used for the join toast.
@@ -271,14 +275,43 @@ local function resolve_pal_display_name(pal, player)
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         local masterData = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility") end)
         if textLibrary ~= nil and masterData ~= nil then
-            local localized = safe_call(function()
-                return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, charId)
-            end)
-            local asFString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
-            local asString = to_lua_string(asFString)
-            if asString ~= nil and asString ~= "" then
-                palName = asString
-                return
+            -- Two-hundred-and-thirteenth pass: Dragón's run showed the toast
+            -- working but printing the internal ids ("FlowerDoll",
+            -- "FlowerRabbit") instead of the names he sees in game
+            -- ("Petallia", "Flopie"), which means GetLocalizedText returned
+            -- nothing and the CharacterID fallback took over.
+            --
+            -- The category is right (EPalLocalizeTextCategory::PalMonsterName
+            -- = 4, read from this build's enum dump), so the remaining unknown
+            -- is the TEXT ID format — the localisation table may key names by
+            -- something other than the bare CharacterID. Rather than guess a
+            -- third time, this tries the plausible formats in order and logs
+            -- what each one returns. One run settles it, and the winner can
+            -- then be hard-coded.
+            local rawId = to_lua_string(safe_call(function() return charId:ToString() end))
+            local candidates = { charId }
+            if rawId then
+                for _, form in ipairs({ rawId, "PAL_NAME_" .. rawId, "NAME_" .. rawId, rawId .. "_NAME" }) do
+                    local asName = safe_call(function() return UEHelpers.FindOrAddFName(form) end)
+                    if asName ~= nil then candidates[#candidates + 1] = asName end
+                end
+            end
+
+            for i, candidate in ipairs(candidates) do
+                local localized = safe_call(function()
+                    return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, candidate)
+                end)
+                local asFString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
+                local asString = to_lua_string(asFString)
+                Logger.log(string.format(
+                    "[PalBonds/Capture] [NAME-DIAG] candidate %d (%s) -> %s",
+                    i, tostring(to_lua_string(safe_call(function() return candidate:ToString() end)) or candidate),
+                    tostring(asString)
+                ))
+                if asString ~= nil and asString ~= "" and asString ~= rawId then
+                    palName = asString
+                    return
+                end
             end
         end
         -- Fallback: the raw internal id, still better than "A wild Pal".
@@ -507,6 +540,89 @@ end
 -- Strictly read-only. It is a POST hook that observes and never calls
 -- StartCaptureEffect_ServerBP itself, so it cannot trigger or alter the
 -- vanilla rescue in any way.
+-- Two-hundred-and-thirteenth pass (2026-09-06) — THE JOIN VFX, finally real.
+--
+-- Dragón's cage rescue produced the breakthrough. The probe read the cage's
+-- Niagara asset:
+--     NiagaraSystem /Game/Pal/Effect/Common/Glow/NS_SingleStar.NS_SingleStar
+-- That is NOT the effect he wants — "Glow/NS_SingleStar" is the little
+-- sparkle marker on the cage itself. But knowing the asset PATH FORMAT was
+-- enough: searching UE4SS_ObjectDump.txt for NiagaraSystems under
+-- /Game/Pal/Effect/ turned up a whole folder built for exactly this moment:
+--
+--     /Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success
+--     /Game/Pal/Effect/Common/PalCatch/NS_PalDisappear   (and 01 / 02)
+--     /Game/Pal/Effect/Common/PalCatch/NS_PalAppear
+--     /Game/Pal/Effect/Common/Return/NS_Return
+--
+-- What Dragón described is "a VFX of the Pal turning into light and
+-- travelling into the player", so NS_PalDisappear is the closest single
+-- match: the Pal dissolving into light at its own position. The others are
+-- listed above deliberately — if this one looks wrong in game, switching is a
+-- one-line change, no new research needed.
+--
+-- Spawning uses UNiagaraFunctionLibrary::SpawnSystemAtLocation, confirmed
+-- present in this build's Niagara.hpp with this exact signature:
+--     SpawnSystemAtLocation(WorldContextObject, SystemTemplate, Location,
+--                           Rotation, Scale, bAutoDestroy, bAutoActivate,
+--                           PoolingMethod, bPreCullCheck)
+--
+-- Fired from play_join_celebration_then, at the Pal's own location, right
+-- before the real capture — so the sequence becomes: happy reaction ->
+-- dissolve into light -> vanish -> named toast. That closes the "smiles then
+-- instantly disappears with nothing in between" gap Dragón has been
+-- describing for many passes.
+--
+-- Fully pcall-guarded and purely cosmetic: if any step fails the capture
+-- itself is completely unaffected.
+local JOIN_VFX_ASSET_PATH = "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear.NS_PalDisappear"
+-- Alternatives, if the above reads wrong in game (swap the path, nothing else):
+--   /Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success.NS_PalCatch_Success
+--   /Game/Pal/Effect/Common/Return/NS_Return.NS_Return
+--   /Game/Pal/Effect/Common/PalCatch/NS_PalDisappear01.NS_PalDisappear01
+local loggedJoinVfxOnce = false
+
+local function play_join_vfx(pal)
+    safe_call(function()
+        if pal == nil or not pal:IsValid() then return end
+
+        local system = StaticFindObject(JOIN_VFX_ASSET_PATH)
+        if system == nil then
+            if not loggedJoinVfxOnce then
+                loggedJoinVfxOnce = true
+                Logger.log("[PalBonds/Capture] [JOIN-VFX] could not resolve " .. JOIN_VFX_ASSET_PATH ..
+                    " — the asset may not be loaded yet (it loads when the game first plays it). Try again after a normal sphere capture, or switch to one of the alternates listed in the source.")
+            end
+            return
+        end
+
+        local niagaraLib = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary")
+        if niagaraLib == nil then
+            Logger.log("[PalBonds/Capture] [JOIN-VFX] could not resolve NiagaraFunctionLibrary — no effect played")
+            return
+        end
+
+        local loc = safe_call(function() return pal:K2_GetActorLocation() end)
+        if loc == nil then return end
+
+        local comp = safe_call(function()
+            return niagaraLib:SpawnSystemAtLocation(
+                pal,                              -- WorldContextObject
+                system,                           -- SystemTemplate
+                loc,                              -- Location
+                {Pitch = 0.0, Yaw = 0.0, Roll = 0.0},
+                {X = 1.0, Y = 1.0, Z = 1.0},
+                true,                             -- bAutoDestroy
+                true,                             -- bAutoActivate
+                0,                                -- ENCPoolMethod::None
+                true                              -- bPreCullCheck
+            )
+        end)
+        Logger.log("[PalBonds/Capture] [JOIN-VFX] spawned " .. JOIN_VFX_ASSET_PATH ..
+            " at the joining Pal — component=" .. tostring(comp ~= nil))
+    end)
+end
+
 local function install_cage_effect_hook()
     local ok, err = pcall(function()
         RegisterHook("/Script/Pal.PalCapturedCage:StartCaptureEffect_ServerBP", function(Context, PlayerParam)
@@ -701,8 +817,14 @@ local function play_join_celebration_then(pal, continueFn)
         return
     end
 
+    -- Two-hundred-and-thirteenth pass: play the dissolve-into-light VFX at the
+    -- END of the happy reaction rather than at its start, so the order reads
+    -- happy -> light -> vanish. The capture itself follows immediately after
+    -- this callback, which is exactly the "nothing in between" gap Dragón has
+    -- been pointing at.
     local scheduled = pcall(function()
         ExecuteInGameThreadWithDelay(JOIN_CELEBRATION_DELAY_MS, function()
+            play_join_vfx(pal)
             continueFn()
         end)
     end)

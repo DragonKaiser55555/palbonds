@@ -202,6 +202,12 @@ local FollowerActors = {}
 -- Throttles the [HATE-ASSIST] line to one per target change — a real fight
 -- produces a damage event many times a second.
 local lastHateTargetName = nil
+-- Two-hundred-and-thirteenth pass: is the player currently in a fight? While
+-- true, companions are allowed to engage on discovery; when it lapses they go
+-- back to never starting fights.
+local playerCombatActive = false
+local combatWindowGeneration = 0
+local COMBAT_WINDOW_MS = 12000 -- how long after the last hit the fight counts as ongoing
 
 -- Hundred-and-ninety-seventh pass (2026-09-05): Dragón asked to reopen the
 -- real-follow question directly, reusing the SDK lead this file already
@@ -320,6 +326,25 @@ function Combat.OnPlayerCombatTarget(enemyActor)
                         local hate = controller:GetHateSystem()
                         if not (hate and hate:IsValid()) then return end
                         hate:ChangeHate(enemyActor, COMBAT_ASSIST_HATE_AMOUNT)
+
+                        -- Two-hundred-and-thirteenth pass: hate alone was NOT
+                        -- enough — Dragón's run had [HATE-ASSIST] firing
+                        -- correctly three times while the companions still
+                        -- stood by. The AI needs the response preset to also
+                        -- permit engaging, so flip this companion's
+                        -- Discover_* slots to Battle for the duration of the
+                        -- fight. Re-applied only on the transition into
+                        -- combat, not per damage event, since a real fight
+                        -- fires many events a second.
+                        if not playerCombatActive then
+                            local okP, Personality = pcall(require, "Personality")
+                            if okP and Personality and Personality.ApplyCompanionPreset then
+                                local palId = Personality.GetOrInitState and Personality.GetOrInitState(pal)
+                                if palId then
+                                    Personality.ApplyCompanionPreset(palId, pal, ENABLE_COMBAT_ASSIST, true)
+                                end
+                            end
+                        end
                         if lastHateTargetName ~= enemyName then
                             Logger.log(string.format(
                                 "[PalBonds/Combat] [HATE-ASSIST] pushed hate toward the player's current enemy %s onto following companions (only logged when the target changes)",
@@ -332,6 +357,38 @@ function Combat.OnPlayerCombatTarget(enemyActor)
         end
     end
     lastHateTargetName = enemyName
+
+    -- Two-hundred-and-thirteenth pass: open (or extend) the combat window, and
+    -- schedule the return to peaceful behaviour. Without this, companions
+    -- would keep Discover_* = Battle forever after the first fight and drift
+    -- straight back into the "attacks everything, including each other"
+    -- problem from two passes ago.
+    playerCombatActive = true
+    combatWindowGeneration = combatWindowGeneration + 1
+    local myGen = combatWindowGeneration
+    pcall(function()
+        ExecuteInGameThreadWithDelay(COMBAT_WINDOW_MS, function()
+            if myGen ~= combatWindowGeneration then return end -- a newer hit extended the fight
+            playerCombatActive = false
+            Logger.log("[PalBonds/Combat] [HATE-ASSIST] player combat window closed — companions return to not starting fights")
+            for key, isFollowing in pairs(BondingState) do
+                if isFollowing then
+                    local pal = FollowerActors[key]
+                    if pal ~= nil and safe_call(function() return pal:IsValid() end) then
+                        safe_call(function()
+                            local okP, Personality = pcall(require, "Personality")
+                            if okP and Personality and Personality.ApplyCompanionPreset then
+                                local palId = Personality.GetOrInitState and Personality.GetOrInitState(pal)
+                                if palId then
+                                    Personality.ApplyCompanionPreset(palId, pal, ENABLE_COMBAT_ASSIST, false)
+                                end
+                            end
+                        end)
+                    end
+                end
+            end
+        end)
+    end)
 end
 
 

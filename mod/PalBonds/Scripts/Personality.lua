@@ -1720,7 +1720,7 @@ local COMPANION_OTHER_DISCOVER_SLOTS = { "Discover_Greater", "Discover_Equal", "
 -- Being hurt by another creature: fight back. This is the fix for 3.
 local COMPANION_OTHER_DAMAGED_SLOTS = { "Damaged_Greater", "Damaged_Equal", "Damaged_Smaller" }
 
-function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
+function Personality.ApplyCompanionPreset(palId, palActor, combatAssist, playerInCombat)
     if palId == nil or palActor == nil then return false end
 
     local okReq, Capture = pcall(require, "Capture")
@@ -1764,11 +1764,30 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
         for _, prop in ipairs(COMPANION_PLAYER_SLOTS) do
             fresh[prop] = COMPANION_RESPONSE_IGNORE
         end
-        -- Never start a fight, whether or not combat assist is on: this is
-        -- what stopped companions attacking each other and picking losing
-        -- fights while trying to follow.
+        -- Two-hundred-and-thirteenth pass (2026-09-06) — the discover slots are
+        -- now CONDITIONAL, which is the fix for "they still didn't defend me".
+        --
+        -- Dragón's run confirmed the hate push itself works: [HATE-ASSIST]
+        -- fired three times, correctly naming the BerryGoat he was fighting.
+        -- But the companions still did not join in. That is exactly the
+        -- uncertainty flagged when combat assist shipped — hate gives the AI a
+        -- TARGET, but the decision to engage still runs through the response
+        -- preset, and Discover_* was pinned to Ignore, so "I notice that
+        -- BerryGoat" resolved to "do nothing" no matter how much hate it
+        -- carried.
+        --
+        -- Setting Discover_* permanently to Battle is not the answer either —
+        -- that is what caused companions to attack each other and pick losing
+        -- fights two passes ago. So it is now time-limited: Battle while the
+        -- player is actually in a fight, Ignore otherwise. Combat.lua flips
+        -- this by re-applying the preset when a player-combat target appears
+        -- and again when it goes quiet.
+        local discoverResponse = COMPANION_RESPONSE_IGNORE
+        if combatAssist and playerInCombat then
+            discoverResponse = COMPANION_RESPONSE_BATTLE
+        end
         for _, prop in ipairs(COMPANION_OTHER_DISCOVER_SLOTS) do
-            fresh[prop] = COMPANION_RESPONSE_IGNORE
+            fresh[prop] = discoverResponse
         end
         if combatAssist then
             -- But do fight back when actually attacked.
@@ -1790,7 +1809,7 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist)
 
     local st = PersonalityState[palId]
     if st then
-        st.disposition = combatAssist and "companion_combat" or "companion"
+        st.disposition = (combatAssist and playerInCombat) and "companion_fighting" or (combatAssist and "companion_combat" or "companion")
         -- Two-hundred-and-eighth pass: mark enforcement as done so the
         -- periodic 8s personality scan does not later overwrite this
         -- companion preset with the Pal's originally-rolled tier. Without
