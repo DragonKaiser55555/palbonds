@@ -1101,6 +1101,148 @@ local function update_territory_anchor(pal, playerLoc)
     end
 end
 
+-- ===================================================================
+-- REAL FOLLOW ACTION (two-hundred-and-twenty-second pass, 2026-09-07)
+-- ===================================================================
+-- This is the eighth follow mechanism, but the first one built on measured
+-- evidence rather than a plausible-looking API. Dragón's three-funnel test
+-- produced the chain:
+--
+--   BP_AIAction_FunnelFollow_C : public BP_AIAction_OtomoFollow_C
+--   BP_AIAction_OtomoFollow_C  : public UPalAIActionBase
+--       class APalCharacter* Trainer;   -- 0x0140, a PLAIN FIELD
+--       class APawn*         SelfActor; -- 0x0148
+--
+-- Funnel following and Otomo following are the SAME action class, and the
+-- thing it follows is an ordinary settable field on the action object — not an
+-- ownership query, not GetTrainer() on the Pal.
+--
+-- That overturns this project's assumption since the hundred-and-thirty-
+-- seventh pass, which was that follow behaviour requires real party
+-- membership. It does not. It requires a Trainer POINTER, and whoever creates
+-- the action fills that in.
+--
+-- Why this differs from the two-hundred-and-second pass's failed attempt: that
+-- one pushed UPalAIActionOtomoDefault, a COMPOSITE, via SetRootComposite. The
+-- composite is not the thing that does the following; BP_AIAction_OtomoFollow_C
+-- is. Different object, different call.
+--
+-- SAFETY. Dragón gave an explicit go-ahead knowing this is the same category
+-- as the SetActiveAI incident (the one change that ever left his Pals standing
+-- still and dying), and a restore tag exists: checkpoint-before-follow-action.
+-- Discipline applied here, learned from the leash leak:
+--   * ONE construct+push attempt per Pal, ever. Never per tick.
+--   * A hard session budget across all Pals.
+--   * Self-disable after repeated failures.
+--   * Every step pcall-guarded and logged before and after, so a hard crash
+--     still leaves a trail on disk (Logger flushes per line).
+--   * The existing follow mechanisms stay running underneath, so a failure
+--     here is a no-op rather than a regression.
+local USE_REAL_FOLLOW_ACTION = true
+local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/BP_AIAction_OtomoFollow.BP_AIAction_OtomoFollow_C"
+-- EAIRequestPriority: Ultimate=3 is what this project already used for the
+-- composite attempt (AI_REQUEST_PRIORITY_LOGIC=3). Same value kept for
+-- consistency; the log records it either way.
+local FOLLOW_ACTION_PRIORITY = 3
+local FOLLOW_ACTION_MAX_PER_PAL = 1
+local FOLLOW_ACTION_MAX_TOTAL = 40
+
+local followActionAttempts = {}
+local followActionTotal = 0
+local followActionDisabled = false
+local FollowActionClass = nil
+
+local function get_follow_action_class()
+    if FollowActionClass ~= nil then return FollowActionClass end
+    FollowActionClass = safe_call(function() return StaticFindObject(FOLLOW_ACTION_CLASS_PATH) end)
+    if FollowActionClass == nil then
+        -- Fall back to the funnel subclass, which is confirmed live in the
+        -- world whenever Dragón has a Daedream out, so it is certainly loaded.
+        FollowActionClass = safe_call(function()
+            return StaticFindObject("/Game/Pal/Blueprint/Controller/AIAction/Funnel/BP_AIAction_FunnelFollow.BP_AIAction_FunnelFollow_C")
+        end)
+        if FollowActionClass ~= nil then
+            Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] OtomoFollow class path did not resolve; using the FunnelFollow subclass instead")
+        end
+    end
+    return FollowActionClass
+end
+
+-- Builds a real follow action for this Pal, points it at the player, and hands
+-- it to the Pal's own AI action component. One shot per Pal.
+local function try_real_follow_action(pal, key, playerActor)
+    if not USE_REAL_FOLLOW_ACTION or followActionDisabled then return end
+    if key == nil or pal == nil or playerActor == nil then return end
+
+    local attempts = followActionAttempts[key] or 0
+    if attempts >= FOLLOW_ACTION_MAX_PER_PAL then return end
+    if followActionTotal >= FOLLOW_ACTION_MAX_TOTAL then
+        followActionDisabled = true
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] session budget reached (" .. FOLLOW_ACTION_MAX_TOTAL .. ") — no further attempts")
+        return
+    end
+    followActionAttempts[key] = attempts + 1
+    followActionTotal = followActionTotal + 1
+
+    local cls = get_follow_action_class()
+    if cls == nil then
+        followActionDisabled = true
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] neither follow-action class could be resolved — disabling; the class path may differ on this build")
+        return
+    end
+
+    local controller = safe_call(function() return pal.Controller end)
+    if not (controller and safe_call(function() return controller:IsValid() end)) then return end
+    local actionComp = safe_call(function() return controller:GetAIActionComponent() end)
+    if not (actionComp and safe_call(function() return actionComp:IsValid() end)) then
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) .. " has no usable AIActionComponent — skipping")
+        return
+    end
+
+    Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) .. " — about to CONSTRUCT the follow action NOW")
+    local action = safe_call(function() return StaticConstructObject(cls, actionComp) end)
+    local actionValid = action ~= nil and safe_call(function() return action:IsValid() end)
+    Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) .. " — construct returned valid=" .. tostring(actionValid))
+    if not actionValid then
+        followActionDisabled = true
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] construction failed — disabling so this is not retried")
+        return
+    end
+
+    -- The whole point: tell the action who to follow. Trainer and SelfActor are
+    -- plain object fields, the same category of write this project already does
+    -- safely on AI response presets.
+    local setOk, setErr = pcall(function()
+        action.Trainer = playerActor
+        action.SelfActor = pal
+    end)
+    Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) .. " — Trainer/SelfActor write " ..
+        (setOk and "ok" or ("FAILED: " .. tostring(setErr))))
+    if not setOk then return end
+
+    Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) .. " — about to SetAction (priority " .. FOLLOW_ACTION_PRIORITY .. ") NOW")
+    local pushOk, pushErr = pcall(function()
+        actionComp:SetAction(action, FOLLOW_ACTION_PRIORITY, pal)
+    end)
+    Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) .. " — SetAction returned " ..
+        (pushOk and "ok" or ("FAILED: " .. tostring(pushErr))))
+    if not pushOk then
+        followActionDisabled = true
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] SetAction is not callable this way — disabling; other follow mechanisms remain active")
+        return
+    end
+
+    -- Read back what the component is actually running now. This is the line
+    -- that says whether it took: if the current action becomes the follow
+    -- action, the mechanism is genuinely installed.
+    safe_call(function()
+        local cur = actionComp:GetCurrentAction_BP()
+        local curName = cur and safe_call(function() return cur:GetFullName() end)
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) ..
+            " — current action immediately after push = " .. tostring(curName))
+    end)
+end
+
 function Combat.StartFollowing(pal)
     safe_call(function() Combat.DiagnoseFollowDifference(pal) end)
 
@@ -1325,6 +1467,15 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
     safe_call(function()
         local key = pal:GetFullName()
         update_leash_anchor(pal, key, playerLoc)
+    end)
+
+    -- Two-hundred-and-twenty-second pass: install the real follow action once
+    -- per Pal. Driven from the tick rather than StartFollowing so the player
+    -- actor is guaranteed available and the Pal's controller is fully set up;
+    -- the per-Pal cap inside makes it a one-shot regardless.
+    safe_call(function()
+        local key = pal:GetFullName()
+        try_real_follow_action(pal, key, playerActor)
     end)
 
     safe_call(function() update_territory_anchor(pal, playerLoc) end)

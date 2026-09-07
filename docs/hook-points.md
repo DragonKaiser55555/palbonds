@@ -1471,3 +1471,34 @@ Note this is a different call from `SetRootComposite`, which is what the two-hun
 **Concrete plan for the next mechanism** (not implemented yet, deliberately — this is the same category as the `SetActiveAI` incident and deserves an explicit go-ahead): resolve `BP_AIAction_OtomoFollow_C`, `StaticConstructObject` it (already proven safe here for private AI presets), set `Trainer` to the player and `SelfActor` to the Pal, then `SetAction` it onto the wild Pal's action component. One-shot per Pal, never per tick, with the same caps and logging discipline now standard after the leash leak.
 
 **Territory-anchor safety result: CLEAN.** `SetupLeash(type=0, inner=500, outer=1200)` returned ok and the leash-actor count went **0 before, 0 after** — no leak, and the self-policing monitor confirmed it rather than assuming. Also worth noting: Dragón described "5 pals following me at the same time" including the bonded wild Petallia, and did not report the usual drifting. That is a promising but unconfirmed signal for the territory anchor — worth one deliberate check next run rather than being claimed as a win.
+
+## Two-hundred-and-twenty-second pass (2026-09-07): the real follow action, built on measured evidence — with an explicit restore tag first
+
+**Dragón's call, quoted because it is a scope decision:** *"lets go with it, we have been on this for so long and moved so far that it wouldnt make sense to back up now just because there's risk... but first and just in case, lets commit to github first in case we need to go back to this point."*
+
+**Restore point created before touching anything:** annotated tag `checkpoint-before-follow-action`, pushed. It records exactly what works at that point (radial Pet/Feed/Play, personality roll incl. kill_all, trust bar and triggers, sphere-less capture, named toast, join VFX, fight-back, leak-free territory anchor) and what does not (reliable following, combat-assist retargeting). Return with `git checkout checkpoint-before-follow-action`.
+
+**This is the eighth follow mechanism, but the first built on measured evidence rather than a plausible-looking API.** The chain the three-funnel test produced:
+
+```
+BP_AIAction_FunnelFollow_C : public BP_AIAction_OtomoFollow_C
+BP_AIAction_OtomoFollow_C  : public UPalAIActionBase
+    class APalCharacter* Trainer;    -- 0x0140, a PLAIN FIELD
+    class APawn*         SelfActor;  -- 0x0148
+```
+
+`try_real_follow_action` resolves that class, `StaticConstructObject`s it (the same call already proven safe here for private AI presets), writes `Trainer` = the player and `SelfActor` = the Pal, then hands it to the Pal's own component via `SetAction(action, priority, instigator)`.
+
+**Why this is not a repeat of the two-hundred-and-second pass's failure:** that attempt pushed `UPalAIActionOtomoDefault` — a COMPOSITE — through `SetRootComposite`. The composite is not the thing that performs following; `BP_AIAction_OtomoFollow_C` is. Different object, different call, and this time the target class was identified by reading what a working follower is actually running rather than by picking a likely-sounding name.
+
+**Safety discipline, carried over from the leash leak:**
+- ONE construct-and-push attempt per Pal, ever (`FOLLOW_ACTION_MAX_PER_PAL = 1`). Never per tick.
+- Hard session budget across all Pals (`FOLLOW_ACTION_MAX_TOTAL = 40`).
+- Self-disables permanently on class-resolution failure, construction failure, or `SetAction` failure — so a wrong assumption costs one log line, not a session.
+- Every step logged before and after, so a hard crash still leaves a trail (Logger flushes per line).
+- Every existing follow mechanism stays running underneath, so failure here is a no-op rather than a regression.
+- Includes a readback of the component's current action immediately after the push — that line is what will say whether the mechanism genuinely installed, rather than inferring it from behaviour.
+
+**Fallback built in:** if the OtomoFollow class path does not resolve on this build, it falls back to `BP_AIAction_FunnelFollow_C`, which is certainly loaded whenever Dragón has a Daedream out (his last run proved three of them live in the world).
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
