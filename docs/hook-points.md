@@ -1424,3 +1424,50 @@ The wild controller keeps its **own** territory anchor and exposes a setter for 
 **Dragón's Daedream suggestion, added.** He proposed comparing a Daedream as well, and it is a better data point than the Otomo row: a funnel Pal follows the player **while not being the active Otomo**, which is far closer to a bonding wild Pal's situation than a real Otomo is. If its controller class differs from both existing rows, that is the closest available model for what a wild follower should look like. `find_funnel_follower` adds it as a third comparison row, read-only like the rest.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-twenty-first pass (2026-09-07): Dragón's three-funnel test answers it — one shared follow ACTION, and its Trainer is a plain settable field
+
+**Dragón's experiment (a Daedream, a Dazzi and a Flopie out at once, plus his Otomo and a bonded wild Petallia) answered the question directly: all three funnels use ONE shared mechanism, not three.** Identical across all of them:
+
+```
+controller     = BP_FunnelCharacterAIController_C
+currentAction  = BP_AIAction_FunnelFollow_C
+trainer        = BP_Player_Female_C   (the player)
+ownerPal       = BP_DreamDemon_C / BP_RaijinDaughter_C / BP_FlowerRabbit_C
+actor          = BP_FunnelCharacter_<species>_C
+```
+
+**Structural finding worth recording on its own:** a funnel follower is a SEPARATE ACTOR from the owned Pal. `BP_FunnelCharacter_DreamDemon_C` is a distinct `PalFunnelCharacter` trailing the player, while `BP_DreamDemon_C` is the actual party Pal. That is how a Daedream "follows" without being the active Otomo — the game spawns a lightweight companion actor rather than moving the real one.
+
+**Three follow implementations now visible side by side:**
+
+| | controller | current action |
+|---|---|---|
+| Wild (bonding) | `BP_MonsterAIController_Wild_C` | whatever it is doing |
+| Real Otomo | `BP_MonsterAIController_Otomo_C` | `PalAIActionOtomoStandby` |
+| Funnel | `BP_FunnelCharacterAIController_C` | `BP_AIAction_FunnelFollow_C` |
+
+**And the decisive read — the class hierarchy collapses two of them into one:**
+
+```
+UBP_AIAction_FunnelFollow_C : public UBP_AIAction_OtomoFollow_C
+UBP_AIAction_OtomoFollow_C  : public UPalAIActionBase
+    class APalCharacter* Trainer;      // 0x0140  <-- a PLAIN FIELD
+    class APawn* SelfActor;            // 0x0148
+    FVector Destination; EOtomoFollowState FollowState; ...
+```
+
+Funnel following and Otomo following are **the same action class**, and its trainer is **an ordinary settable field on the action object** — not an ownership query, not `GetTrainer()` on the Pal.
+
+**This overturns a long-standing assumption in this project.** Since the hundred-and-thirty-seventh pass the working belief has been "funnel/Otomo following requires real party membership, so it is unreachable for a wild Pal". That belief was based on the Pal-side `GetTrainer()`. But the follow behaviour does not read ownership — it reads a Trainer pointer that whoever creates the action fills in. A wild Pal does not need to be owned; the action just needs to be told who to follow.
+
+**The push API exists too**, on the component this project already uses:
+```
+UPalAIActionComponent::SetAction(UPawnAction* NewAction, EAIRequestPriority Priority, UObject* Instigator)
+UPalAIActionComponent::SetActionClassParameter(TSubclassOf<UPalAIActionBase>, FPalAIActionDynamicParameter)
+```
+Note this is a different call from `SetRootComposite`, which is what the two-hundred-and-second pass used. That attempt pushed `UPalAIActionOtomoDefault` — a COMPOSITE — and the composite is not the thing that does the following. `BP_AIAction_OtomoFollow_C` is.
+
+**Concrete plan for the next mechanism** (not implemented yet, deliberately — this is the same category as the `SetActiveAI` incident and deserves an explicit go-ahead): resolve `BP_AIAction_OtomoFollow_C`, `StaticConstructObject` it (already proven safe here for private AI presets), set `Trainer` to the player and `SelfActor` to the Pal, then `SetAction` it onto the wild Pal's action component. One-shot per Pal, never per tick, with the same caps and logging discipline now standard after the leash leak.
+
+**Territory-anchor safety result: CLEAN.** `SetupLeash(type=0, inner=500, outer=1200)` returned ok and the leash-actor count went **0 before, 0 after** — no leak, and the self-policing monitor confirmed it rather than assuming. Also worth noting: Dragón described "5 pals following me at the same time" including the bonded wild Petallia, and did not report the usual drifting. That is a promising but unconfirmed signal for the territory anchor — worth one deliberate check next run rather than being claimed as a win.
