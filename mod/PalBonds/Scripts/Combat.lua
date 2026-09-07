@@ -884,20 +884,78 @@ local function find_active_otomo(excludePal)
     return found
 end
 
--- Two-hundred-and-twentieth pass (Dragón's idea): find a Daedream-type
--- secondary follower if one is out. Read-only, same as everything else here.
-local function find_funnel_follower()
-    local found = nil
+-- Two-hundred-and-twenty-first pass (2026-09-06) — Dragón is bringing a
+-- Daedream, a Flopie AND a Dazzi at once, specifically so we can see whether
+-- all three secondary-followers share one mechanism or each solves it
+-- differently. That is a better experiment than the single-funnel row from the
+-- previous pass, so this reports EVERY funnel follower rather than the first.
+--
+-- Why funnel Pals are the most relevant comparison of the three rows: they
+-- follow the player while NOT being the active Otomo, which is exactly the
+-- situation a bonding wild Pal is in. The header dump already shows they have
+-- their own controller class (BP_FunnelCharacterAIController) distinct from
+-- both BP_MonsterAIController_Wild_C and BP_MonsterAIController_Otomo_C, so
+-- there are three different follow implementations in this game and we are
+-- about to see all three side by side.
+--
+-- Also dumped per funnel, all read-only:
+--   * GetTrainer() — the project's long-standing assumption is that funnel
+--     following requires real ownership. This says so directly.
+--   * AssistOwnerPal / OwnerCharacterId — what a funnel is anchored TO.
+--   * SetLocationNearTrainer exists on this class as a real function; not
+--     called here, but noted because it is the most direct "put yourself next
+--     to the player" call found anywhere in this project so far.
+local function report_funnel_followers()
     safe_call(function()
         local list = FindAllOf("PalFunnelCharacter")
-        if list == nil then return end
+        if list == nil or #list == 0 then
+            Logger.log("[PalBonds/Combat] [FOLLOW-DIFF] FUNNEL: no PalFunnelCharacter found — is a Daedream/Dazzi/Flopie actually out?")
+            return
+        end
+        Logger.log("[PalBonds/Combat] [FOLLOW-DIFF] FUNNEL: " .. #list .. " funnel follower(s) present")
+        local shown = 0
         for _, f in ipairs(list) do
-            if found == nil and safe_call(function() return f:IsValid() end) then
-                found = f
+            if shown >= 5 then break end
+            if safe_call(function() return f:IsValid() end) then
+                shown = shown + 1
+                local name = safe_call(function() return f:GetFullName() end)
+                local charId = safe_call(function()
+                    local c = f:GetCharacterID()
+                    return c and c:ToString() or nil
+                end)
+                local trainer = safe_call(function()
+                    local t = f:GetTrainer()
+                    if t == nil or not t:IsValid() then return nil end
+                    return t:GetFullName()
+                end)
+                local ownerPal = safe_call(function()
+                    local o = f:GetOwnerPal()
+                    if o == nil or not o:IsValid() then return nil end
+                    return o:GetFullName()
+                end)
+                local controllerClass = safe_call(function()
+                    local c = f.Controller
+                    if c == nil or not c:IsValid() then return nil end
+                    return c:GetClass():GetFullName()
+                end)
+                local actionName, actionCategory = nil, nil
+                safe_call(function()
+                    local c = f.Controller
+                    if c == nil or not c:IsValid() then return end
+                    local ac = c:GetAIActionComponent()
+                    if ac == nil or not ac:IsValid() then return end
+                    actionCategory = safe_call(function() return ac:GetCurrentAIActionCategory() end)
+                    local cur = safe_call(function() return ac:GetCurrentAction_BP() end)
+                    actionName = cur and safe_call(function() return cur:GetFullName() end)
+                end)
+                Logger.log(string.format(
+                    "[PalBonds/Combat] [FOLLOW-DIFF]   funnel %d (%s): controller=%s | trainer=%s | ownerPal=%s | AIcategory=%s | currentAction=%s | actor=%s",
+                    shown, tostring(charId), tostring(controllerClass), tostring(trainer),
+                    tostring(ownerPal), tostring(actionCategory), tostring(actionName), tostring(name)
+                ))
             end
         end
     end)
-    return found
 end
 
 function Combat.DiagnoseFollowDifference(bondingPal)
@@ -913,7 +971,7 @@ function Combat.DiagnoseFollowDifference(bondingPal)
     -- bonding wild Pal's situation than a real Otomo is. If its controller
     -- class differs from both rows above, that is the closest available model
     -- for what a wild follower should look like.
-    describe_follow_state("FUNNEL (daedream-type)", find_funnel_follower())
+    report_funnel_followers()
     report_existing_leashes()
 end
 
