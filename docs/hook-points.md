@@ -1372,3 +1372,22 @@ All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed 
 **On Dragón's question "how come we didn't find this before":** honest answer, search vocabulary. Every previous hunt used follow/move/otomo/wander/composite terms. "Leash" was never searched against the game's API — despite this project using that exact word for its OWN distance check for many passes (`MAX_FOLLOW_DISTANCE`, described in comments as "approximates a leash break"). The concept was in our vocabulary and never turned into a query.
 
 All 11 files verified with `luaparse`, deployed and md5-verified.
+
+## Two-hundred-and-nineteenth pass (2026-09-06): stop guessing at follow APIs — measure a real Otomo against a bonding Pal instead
+
+**Dragón's priority call:** keep working on movement, not combat. His reasoning is sound and worth recording as a scope decision: *"we can end up with a finished product that simply makes them fight whatever hits them, but wouldnt want to end up with pals not following, since its the whole idea of bonding with them."* So combat degrading to "they fight whatever hits them" is an accepted v1 outcome; Pals that do not follow is not.
+
+**This pass deliberately ships NO new follow mechanism.** Six have now been tried and failed — the move-order nudge, the orbit, the repeated Otomo composite, Funnel, move-to-actor, and the leash spawn (which leaked). The pattern across all six is the same: pick a plausible-looking API from the header dump, wire it up, and discover in a live run that the wild AI either ignores it or that it does not apply to unowned Pals. Continuing to guess is not working, and the last guess cost Dragón a degraded session.
+
+**There is one enormous piece of evidence this project has never used: a real Otomo follows the player perfectly, in vanilla, right now.** Dragón always has one out. So instead of inventing a seventh mechanism, `Combat.DiagnoseFollowDifference` reads the SAME fields off a real Otomo and off a bonding wild Pal at the same instant, when a Pal crosses the 50% follow trigger. Whatever differs is, by definition, part of how real following actually works — evidence rather than a guess.
+
+What it reads on both:
+- `CharacterParameterComponent.IsOverrideTarget` / `OverrideTargetLocation` — real fields on the same component this project already reads for friendship. "Override target" is a plausible movement anchor but its consumer is not visible in the header dump, so it is exactly the kind of thing to measure rather than assume.
+- The AIController's class name, current AI action, and AI action category — if a real Otomo runs a different controller class or action category while following, that names the mechanism directly.
+- Every `APalAILeashActor` in the world and which character each is leashed to — answering the question the leash incident raised: do Pals or Otomos already HAVE a leash we could safely MOVE (a write), instead of spawning new ones (the thing that leaked)?
+
+**Strictly read-only, and that constraint is deliberate after the leash incident.** It resolves objects and reads fields; it never calls a setter, a spawn, or anything with a side effect. It cannot leak, cannot loop, and cannot change behaviour. It is also capped at 3 dumps per session so it cannot become a log-volume problem.
+
+Also this pass: the previously-shipped `USE_NATIVE_LEASH_FOLLOW` stays off with its attempt caps intact, and following continues on move-to-actor — no worse than two runs ago.
+
+All 11 files verified with `luaparse`, deployed and md5-verified.

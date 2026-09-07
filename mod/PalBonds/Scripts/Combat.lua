@@ -749,7 +749,154 @@ local function release_leash(key)
     Logger.log("[PalBonds/Combat] [LEASH] released the leash for " .. tostring(key))
 end
 
+-- ===================================================================
+-- FOLLOW DIFF PROBE (two-hundred-and-nineteenth pass, 2026-09-06)
+-- ===================================================================
+-- Dragón's call after the leash leak: keep working on movement, because
+-- following is the whole point of the mod — combat degrading to "they fight
+-- whatever hits them" is an acceptable v1, Pals that do not follow is not.
+--
+-- After six failed follow mechanisms, the honest conclusion is that guessing
+-- at APIs is not working. So this pass ships NO new mechanism at all. It ships
+-- a read-only comparison instead, because there is one enormous piece of
+-- evidence this project has never used:
+--
+--     A REAL OTOMO FOLLOWS THE PLAYER PERFECTLY, IN VANILLA, RIGHT NOW.
+--
+-- Dragón always has one out. So rather than inventing a seventh mechanism, we
+-- read the SAME fields off a real Otomo and off a bonding wild Pal at the same
+-- instant, and whatever differs is — by definition — part of how real
+-- following actually works. That is evidence instead of a guess.
+--
+-- Strictly read-only: it resolves objects and reads fields, and never calls a
+-- setter, a spawn, or anything with a side effect. After the leash incident
+-- that constraint is deliberate — this cannot leak, cannot loop, and cannot
+-- change behaviour. It also runs at most FOLLOW_DIFF_MAX_DUMPS times per
+-- session, so it cannot become a log-volume problem either.
+--
+-- What it reads on both Pals:
+--   * CharacterParameterComponent.IsOverrideTarget / OverrideTargetLocation
+--     (real fields on the same component this project already reads for
+--     friendship; "override target" is a plausible movement anchor, but its
+--     consumer is not visible in the header dump, so it is exactly the kind of
+--     thing to MEASURE rather than assume)
+--   * the AIController's class name, its current AI action and category
+--   * whether any APalAILeashActor in the world has that Pal as its
+--     LeashedCharacter — which answers the question the leash incident raised:
+--     do wild Pals or Otomos already HAVE a leash we could safely move,
+--     instead of spawning new ones?
+local FOLLOW_DIFF_MAX_DUMPS = 3
+local followDiffDumps = 0
+
+local function describe_follow_state(label, pal)
+    if pal == nil then
+        Logger.log("[PalBonds/Combat] [FOLLOW-DIFF] " .. label .. ": <none found>")
+        return
+    end
+    local name = safe_call(function() return pal:GetFullName() end)
+
+    local isOverride, overrideLoc = nil, nil
+    safe_call(function()
+        local cp = pal.CharacterParameterComponent
+        if cp == nil or not cp:IsValid() then return end
+        isOverride = cp.IsOverrideTarget
+        local v = cp.OverrideTargetLocation
+        if v ~= nil then
+            overrideLoc = string.format("(%.0f, %.0f, %.0f)", v.X or 0, v.Y or 0, v.Z or 0)
+        end
+    end)
+
+    local controllerClass, actionName, actionCategory = nil, nil, nil
+    safe_call(function()
+        local c = pal.Controller
+        if c == nil or not c:IsValid() then return end
+        controllerClass = safe_call(function() return c:GetClass():GetFullName() end)
+        local ac = safe_call(function() return c:GetAIActionComponent() end)
+        if ac == nil or not ac:IsValid() then return end
+        actionCategory = safe_call(function() return ac:GetCurrentAIActionCategory() end)
+        local cur = safe_call(function() return ac:GetCurrentAction_BP() end)
+        actionName = cur and safe_call(function() return cur:GetFullName() end)
+    end)
+
+    Logger.log(string.format(
+        "[PalBonds/Combat] [FOLLOW-DIFF] %s: pal=%s | IsOverrideTarget=%s | OverrideTargetLocation=%s | controller=%s | AIcategory=%s | currentAction=%s",
+        label, tostring(name), tostring(isOverride), tostring(overrideLoc),
+        tostring(controllerClass), tostring(actionCategory), tostring(actionName)
+    ))
+end
+
+-- Answers the question the leash incident raised: does a leash already EXIST
+-- for these Pals? If so, moving it is a safe write instead of a dangerous
+-- spawn, and that becomes the next mechanism to try.
+local function report_existing_leashes()
+    safe_call(function()
+        local leashes = FindAllOf("PalAILeashActor") or FindAllOf("PalAILeashActorBase")
+        if leashes == nil then
+            Logger.log("[PalBonds/Combat] [FOLLOW-DIFF] FindAllOf found NO leash actors of either class in the world")
+            return
+        end
+        Logger.log("[PalBonds/Combat] [FOLLOW-DIFF] " .. #leashes .. " leash actor(s) exist in the world right now")
+        local shown = 0
+        for _, l in ipairs(leashes) do
+            if shown >= 6 then break end
+            if safe_call(function() return l:IsValid() end) then
+                shown = shown + 1
+                local who = safe_call(function()
+                    local c = l.LeashedCharacter
+                    if c == nil or not c:IsValid() then return nil end
+                    return c:GetFullName()
+                end)
+                Logger.log(string.format(
+                    "[PalBonds/Combat] [FOLLOW-DIFF]   leash %d: leashedCharacter=%s active=%s inner=%s outer=%s",
+                    shown, tostring(who),
+                    tostring(safe_call(function() return l:IsActiveLeash() end)),
+                    tostring(safe_call(function() return l.LeashInnerRadius end)),
+                    tostring(safe_call(function() return l.LeashOuterRadius end))
+                ))
+            end
+        end
+    end)
+end
+
+-- Finds the player's currently-out Otomo: an owned Pal that is not the player.
+-- Read-only, and uses the ownership check this project already relies on.
+local function find_active_otomo(excludePal)
+    local found = nil
+    safe_call(function()
+        local okReq, CaptureMod = pcall(require, "Capture")
+        if not okReq then return end
+        if CaptureMod == nil or CaptureMod.IsAlreadyOwned == nil then return end
+        local excludeName = excludePal and safe_call(function() return excludePal:GetFullName() end)
+        local pals = FindAllOf("PalCharacter")
+        if pals == nil then return end
+        for _, p in ipairs(pals) do
+            if found == nil and safe_call(function() return p:IsValid() end) then
+                local n = safe_call(function() return p:GetFullName() end)
+                local isPlayer = n ~= nil and (n:find("PalPlayerCharacter") ~= nil or n:find("BP_Player") ~= nil)
+                if n ~= nil and n ~= excludeName and not isPlayer then
+                    if safe_call(function() return CaptureMod.IsAlreadyOwned(p) end) == true then
+                        found = p
+                    end
+                end
+            end
+        end
+    end)
+    return found
+end
+
+function Combat.DiagnoseFollowDifference(bondingPal)
+    if followDiffDumps >= FOLLOW_DIFF_MAX_DUMPS then return end
+    followDiffDumps = followDiffDumps + 1
+    Logger.log("[PalBonds/Combat] [FOLLOW-DIFF] ===== comparison " .. followDiffDumps .. " of " ..
+        FOLLOW_DIFF_MAX_DUMPS .. " — a REAL Otomo follows correctly and this bonding Pal does not, so whatever differs below is part of why =====")
+    describe_follow_state("BONDING (wild)", bondingPal)
+    describe_follow_state("REAL OTOMO    ", find_active_otomo(bondingPal))
+    report_existing_leashes()
+end
+
 function Combat.StartFollowing(pal)
+    safe_call(function() Combat.DiagnoseFollowDifference(pal) end)
+
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
         BondingState[key] = true
