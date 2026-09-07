@@ -2854,7 +2854,12 @@ local function do_instant_bond()
     -- math.ceil, not floor: with an odd threshold, floor would land one point
     -- short and the >= comparison in Trust.lua would not fire — which would
     -- look on the log exactly like "the follow mechanism failed again".
-    local threshold = safe_call(function() return Trust.GetBondingThreshold(pal) end)
+    -- ComputeBondingThresholdFor, NOT GetBondingThreshold: the latter returns
+    -- nil for a Pal that has never been interacted with, which is precisely the
+    -- Pal this key exists to act on. See Trust.lua's comment on the new
+    -- function for the full story — this is what made every F9 press in the
+    -- first live test refuse to grant.
+    local threshold = safe_call(function() return Trust.ComputeBondingThresholdFor(pal) end)
     if not threshold or threshold <= 0 then
         Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read this Pal's bonding threshold — nothing granted")
         return

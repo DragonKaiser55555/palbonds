@@ -1688,3 +1688,79 @@ Implementation notes:
 **Toggle state for this run:** `USE_REAL_FOLLOW_ACTION = true` (still Otomo, still priority 10), `USE_TERRITORY_FOLLOW = false`, nudge/orbit/move-to-actor off. One variable changed from the previous run: the petting is gone. The tight leash radii stay written in the file, merely disabled.
 
 All 11 files pass `luaparse`; deployed and md5-verified.
+
+## Two-hundred-and-thirtieth pass (2026-09-07): the follow action runs and moves nobody — and the class dump says why
+
+**The F9 run settled it.** Four Pals, and they split cleanly:
+
+| Pal | running action 6s later | behaviour |
+|---|---|---|
+| `FlowerDoll_2147438039` | `TurnAndEncount` — our action **removed** (`present=false`) | normal |
+| `FlowerDoll_2147437921` | `CombatPal` → `Damage` | **moved and attacked** — Dragón's Petallia |
+| `PinkRabbit_Grass_2147437378` | **`AIAction_OtomoFollow`** | frozen |
+| `PinkRabbit_Grass_2147438315` | **`AIAction_OtomoFollow`** | frozen |
+
+The correlation is exact: **our action running ⇒ frozen; anything else running ⇒ a normal Pal.** Dragón's Petallia that "somehow managed to move and attacked a hostile pal" is not an anomaly, it is the control case — she was in combat when the action was pushed, combat outranks Logic, so our action never got a turn on her.
+
+His report supplies the other half: **they froze with no pet or feed anywhere in the sequence**, and they stayed frozen after a later interaction finished. The petting confound raised in the previous pass is ruled out. The two-hundred-and-twenty-eighth pass's conclusion was right after all, and it is no longer an inference — `GetCurrentAction_BP()` names `AIAction_OtomoFollow` as the running action while the Pal stands still.
+
+Also now recorded rather than inferred: the class built was `BP_AIAction_OtomoFollow_C`. Never the funnel.
+
+**`ue4ss/CXXHeaderDump/BP_AIAction_OtomoFollow.hpp` explains it, and overturns the assumption this mechanism was built on:**
+
+```cpp
+void GetFollowSpeedFromController(double& FollowSpeed);
+void GetFollowInterpolatedPosFromController(FVector& FollowInterpolatedPos);
+```
+
+**The action does not derive its destination from `Trainer`. It asks its CONTROLLER.** `Trainer` was set correctly and was never the input that mattered. A wild Pal's controller is `BP_MonsterAIController_Wild_C`, which has no reason to answer either question — so the action ticks, asks, gets nothing, and stands there.
+
+**This also demotes the funnel idea before it costs a run.** `BP_AIAction_FunnelFollow_C : public UBP_AIAction_OtomoFollow_C` overrides exactly those two getters — which confirms the answer lives in the controller, and the funnel's version will be asking `BP_FunnelCharacterAIController_C`. A bonding wild Pal is not that either. Still worth trying eventually, but it is no longer the strong candidate it looked like.
+
+**Two things added, and the interpretation was written down before the run so the result cannot be rationalised afterwards.**
+
+1. `dump_follow_action_fields` — read-only, at three moments (right after the push, at the 6s recheck, at a new 14s late read). Reads the fields the header says decide whether it can move: `Movement`, `Destination`, `DelayedDestination`, `IsMoveMode`, `FollowState`, `DefaultMaxSpeed`, `CurrentMoveSpeedRate`, `FolowEndDistance`. Two one-shot timers per Pal, bounded by the same per-Pal attempt cap — deliberately not a polling loop, after the per-event timer leak and the leash-spawn leak.
+
+2. `SetInitialValue()` — the initialiser the header declares and this project never called. `StaticConstructObject` allocates the object; it does not run whatever normally populates `Movement`/`DefaultMaxSpeed`. Called once per Pal right after the push, `pcall`-guarded, bracketed by the dump on both sides so its effect is measured. Dragón approved this specific write knowing it is the same category as the `SetActiveAI` incident.
+
+**Pre-committed reading of the result:**
+
+- `Movement = nil` or `DefaultMaxSpeed = 0` in the first dump, populated in the second → initialisation was the missing step, and the Pal should move.
+- Both dumps identical, or `Destination` still `(0,0,0)` at 14s while the action is the running one → the controller dependency is structural, this action cannot work on a wild controller, and the honest recommendation becomes the tight leash rather than a ninth mechanism.
+
+## Two-hundred-and-thirty-first pass (2026-09-07): SOLVED — the follow action was erasing our Trainer, and re-asserting it makes a wild Pal follow
+
+**A wild Pal followed the player and defended him.** Dragón's words: *"omg for a moment she followed me and actually defended me, a wld pal behaved like an otomo even if for but a moment!"* — then he bonded fully with her and captured her, which is why her data stops in the log.
+
+**The cause, found by the field dump rather than guessed.** On every Pal of the previous run, without exception:
+
+```
+at push ............... Trainer = BP_Player_Female_C   (correct)
+after SetInitialValue . Trainer = BP_Player_Female_C   (still correct)
+at 6s ................. Trainer = INVALID
+at 14s ................ Trainer = INVALID
+```
+
+The Trainer pointer was being nulled within six seconds while our action was confirmed to be the running one. The class dump names the mechanism: `BP_AIAction_OtomoFollow_C` declares `void TryGetTrainer(class APalCharacter*& Trainer)` — it does not trust the field, it re-derives the trainer itself, and on a wild Pal (no owner) that lookup yields nothing and overwrites what we wrote. No trainer, no destination: `Destination` stayed `(0,0,0)`, `FollowState` stayed `0`, and the Pal stood still.
+
+**So "the action is inert" was wrong twice over.** It is not inert and it was never ignoring `Trainer` — it reads it, then clobbers it. The supporting evidence was already in the previous run and worth stating: `DelayedDestination` went from `(0,0,0)` to a real world coordinate the instant `SetInitialValue()` ran, while Trainer was still valid. `SetInitialValue()` also demonstrably worked — `DefaultMaxSpeed` 0 → 245, `CurrentSpeedVsPlayer` 0 → 2.
+
+**The fix is to keep the field populated.** `reassert_follow_trainer` re-writes `Trainer` on every follow tick for any Pal whose follow action is still alive. It writes one pointer field on an object this mod constructed itself — it allocates nothing, spawns nothing and schedules nothing — bounded by a session budget, self-disabling after 5 failures, with logging throttled to one line in 20 and **the `Destination` read done only on the ticks that log** (a guard that still evaluates its arguments has cost this project real performance three separate times).
+
+**The measurement, from Dragón's run (`FlowerDoll_2147427416`):**
+
+| moment | Trainer | Destination | FollowState |
+|---|---|---|---|
+| at push | valid | `(0, 0, 0)` | 0 |
+| **6s** | **still valid** | **`(-212309.97, 157186.30, 140.0)`** | **3** |
+| **14s** | **still valid** | **`(-212292.16, 160882.67, 449.63)`** | **3** |
+
+Trainer no longer goes invalid, the destination is real, and — decisively — the two destinations *differ*, so the action is recomputing as the player moves. That is genuine following, not a one-off value.
+
+`[HATE-ASSIST]` then fired twice (11:59:07, 11:59:13) and she fought for him. Combat assist has now worked in two consecutive runs after firing zero times for the entire project before that.
+
+**Also fixed this pass:** `Combat.StopFollowing` now clears `followActionObjects[key]` and `trainerReassertCounter[key]`. This matters most on capture — the normal way following ends — because the Pal becomes a real Otomo with its own controller and its own follow behaviour, and a hand-pushed action of ours still holding a re-asserted Trainer would compete with it. It also stops both tables growing by one dead entry per Pal per session.
+
+**A near-miss caught before deploy, worth recording because it is this project's recurring failure shape.** The re-assert call was placed after a `safe_call` whose closure declared `local key` *inside* it, so the call was reading a nil global. No error, no log — the mechanism simply would not have run, and the test run would have "proved" the fix does not work. `key` is now hoisted above both calls.
+
+**Still imperfect, and honestly stated:** Dragón saw following "for a moment", not continuously. Expected — the action can clear `Trainer` far more often than the follow tick re-writes it (roughly every 1.5s), so the two are racing. Raising the re-assert cadence is the obvious next step, and it is cheap.

@@ -689,6 +689,27 @@ function Trust.GetBondingThreshold(palActor)
     return get_bonding_threshold(palActor)
 end
 
+-- Two-hundred-and-thirtieth pass (2026-09-07) — the bug that made F9 do
+-- nothing on its first live test, and it is a chicken-and-egg of my own making.
+--
+-- Trust.GetBondingThreshold above returns nil for any Pal this file has never
+-- tracked (`State[key] == nil`). That is CORRECT for its existing callers: the
+-- trust bar and the follow bookkeeping use nil to mean "not a bonding Pal, draw
+-- nothing". It is exactly wrong for F9, whose entire purpose is to act on a Pal
+-- that has never been touched — so it asked for the bar size of a Pal that did
+-- not have a bar yet, got nil, and refused to grant. Ten presses in Dragón's
+-- run, every one logging "could not read this Pal's bonding threshold".
+--
+-- Rather than loosen GetBondingThreshold and change what nil means for its
+-- existing callers, this exposes the underlying calculation, which never needed
+-- state at all: get_bonding_threshold is just the base value times the level
+-- multiplier. Any wild Pal has a well-defined bar size before it is ever
+-- touched; only the PROGRESS along it requires state.
+function Trust.ComputeBondingThresholdFor(palActor)
+    if palActor == nil then return nil end
+    return get_bonding_threshold(palActor)
+end
+
 function Trust.StartFollowing(pal, st, ratio)
     st = st or (select(1, get_state(pal)))
     if not st or st.isFollowing then return end

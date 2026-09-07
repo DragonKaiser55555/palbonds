@@ -1333,6 +1333,136 @@ local FOLLOW_ACTION_MAX_TOTAL = 40
 -- How long after the push to re-read, so the check lands when the Pal is idle
 -- rather than mid-interaction. See the readback block for why this matters.
 local FOLLOW_ACTION_RECHECK_MS = 6000
+-- A second, later read. Two timers per Pal only, both one-shot, both bounded by
+-- the same per-Pal attempt cap — deliberately not a polling loop, after the
+-- per-event timer leak Dragón predicted and the leash-spawn leak before it.
+local FOLLOW_ACTION_LATE_DUMP_MS = 14000
+-- Two-hundred-and-thirtieth pass: call the action's own initialiser after
+-- constructing it. From BP_AIAction_OtomoFollow.hpp:
+--
+--   void SetInitialValue();
+--
+-- The class carries fields that plainly have to be populated before it can move
+-- anything -- Movement (a UPalCharacterMovementComponent*), DefaultMaxSpeed,
+-- ConstMaxSpeedRateVsPlayer, FolowEndDistance -- and StaticConstructObject only
+-- allocates the object, it does not run whatever the game normally runs to fill
+-- them in. A hand-built action with a null Movement and a zero DefaultMaxSpeed
+-- would behave exactly as observed: it becomes the running action and moves
+-- nobody.
+--
+-- Called ONCE per Pal, immediately after the push, bracketed by the field dump
+-- on both sides so its effect is measured rather than assumed. Dragón approved
+-- this specific write knowing it is the same category as the SetActiveAI
+-- incident; the restore tag checkpoint-before-follow-action still stands, the
+-- call is pcall-guarded, and it targets an object this mod created itself
+-- rather than anything belonging to the Pal.
+local USE_FOLLOW_ACTION_SET_INITIAL_VALUE = true
+
+-- ===================================================================
+-- TRAINER RE-ASSERT (two-hundred-and-thirty-first pass, 2026-09-07)
+-- ===================================================================
+-- The field dump found the actual failure, and it is not "the action is inert".
+-- Identical on all three Pals of Dragón's run, no exceptions:
+--
+--   at push .............. Trainer = BP_Player_Female_C   (correct)
+--   after SetInitialValue  Trainer = BP_Player_Female_C   (still correct)
+--   at 6s ................ Trainer = INVALID
+--   at 14s ............... Trainer = INVALID
+--
+-- The Trainer pointer we write is being NULLED within six seconds, every time,
+-- while our action is confirmed to be the running one. And the class dump names
+-- the mechanism: BP_AIAction_OtomoFollow_C has its own
+--
+--   void TryGetTrainer(class APalCharacter*& Trainer);
+--
+-- The action does not trust the field — it re-derives the trainer for itself,
+-- and on a wild Pal (which has no owner) that lookup yields nothing and
+-- overwrites what we wrote. With no trainer there is no destination, which is
+-- exactly what the rest of the dump shows: Destination stays (0,0,0),
+-- IsMoveMode stays false, FollowState stays 0, and the Pal stands still.
+--
+-- The decisive supporting evidence, and the reason this is worth one more pass
+-- rather than a retirement: DelayedDestination was (0,0,0) before
+-- SetInitialValue and became a REAL world coordinate immediately after it,
+-- while Trainer was still valid — e.g. (-214012.05, 159727.16, 220.40). The
+-- action can and does compute real follow positions. It only stops once its
+-- trainer is gone. SetInitialValue also demonstrably worked: DefaultMaxSpeed
+-- went 0 -> 245 and CurrentSpeedVsPlayer 0 -> 2.
+--
+-- So the fix to try is not another mechanism — it is to keep the field
+-- populated. This re-writes Trainer on every follow tick for any Pal whose
+-- follow action is still alive, and logs Destination alongside it so the effect
+-- is measured rather than assumed: if Destination ever becomes non-zero, this is
+-- the right track.
+--
+-- SAFETY. This is a per-tick write, the shape that produced the leash-actor leak
+-- and the per-event timer leak. It is deliberately the cheapest possible kind:
+-- it writes one pointer field on an object this mod constructed itself. It
+-- allocates nothing, spawns nothing and schedules nothing. It is additionally
+-- bounded by a hard session budget and self-disables on repeated failure, and
+-- its logging is throttled to once every N re-asserts rather than every tick,
+-- with the Destination read done ONLY on the ticks that actually log — a log
+-- guard that still evaluates its arguments has cost this project real
+-- performance three separate times.
+local USE_TRAINER_REASSERT = true
+local TRAINER_REASSERT_MAX_TOTAL = 4000
+local TRAINER_REASSERT_LOG_EVERY = 20
+
+local followActionObjects = {}
+local trainerReassertTotal = 0
+local trainerReassertDisabled = false
+local trainerReassertFailures = 0
+local trainerReassertCounter = {}
+
+-- Re-writes Trainer on this Pal's live follow action. Called from the follow
+-- tick; a no-op for any Pal that never got a follow action installed.
+local function reassert_follow_trainer(pal, key, playerActor)
+    if not USE_TRAINER_REASSERT or trainerReassertDisabled then return end
+    if key == nil or playerActor == nil then return end
+
+    local action = followActionObjects[key]
+    if action == nil then return end
+    if not safe_call(function() return action:IsValid() end) then
+        -- The action was destroyed (cancelled, or the Pal despawned). Drop the
+        -- reference so this stops being retried for a Pal that no longer has one.
+        followActionObjects[key] = nil
+        return
+    end
+
+    if trainerReassertTotal >= TRAINER_REASSERT_MAX_TOTAL then
+        trainerReassertDisabled = true
+        Logger.log("[PalBonds/Combat] [TRAINER-REASSERT] session budget reached (" .. TRAINER_REASSERT_MAX_TOTAL .. ") — no further re-asserts")
+        return
+    end
+    trainerReassertTotal = trainerReassertTotal + 1
+
+    local ok = pcall(function() action.Trainer = playerActor end)
+    if not ok then
+        trainerReassertFailures = trainerReassertFailures + 1
+        if trainerReassertFailures >= 5 then
+            trainerReassertDisabled = true
+            Logger.log("[PalBonds/Combat] [TRAINER-REASSERT] the Trainer write failed 5 times — disabling; nothing else is affected")
+        end
+        return
+    end
+
+    -- Throttled reporting. The Destination read lives INSIDE this branch on
+    -- purpose: Lua evaluates arguments before the call, so a throttle that only
+    -- guards the log call saves nothing at all.
+    local n = (trainerReassertCounter[key] or 0) + 1
+    trainerReassertCounter[key] = n
+    if n % TRAINER_REASSERT_LOG_EVERY == 1 then
+        local dest = safe_call(function() return action.Destination end)
+        local dx = dest and safe_call(function() return dest.X end)
+        local dy = dest and safe_call(function() return dest.Y end)
+        local moveMode = safe_call(function() return action.IsMoveMode end)
+        local followState = safe_call(function() return action.FollowState end)
+        Logger.log(string.format(
+            "[PalBonds/Combat] [TRAINER-REASSERT] %s — re-assert #%d: Destination=(%s, %s) IsMoveMode=%s FollowState=%s  <-- a non-zero Destination means this worked",
+            tostring(key), n, tostring(dx), tostring(dy), tostring(moveMode), tostring(followState)
+        ))
+    end
+end
 
 local followActionAttempts = {}
 local followActionTotal = 0
@@ -1363,6 +1493,109 @@ local function get_follow_action_class()
         Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] follow-action class resolved = " .. tostring(resolvedName))
     end
     return FollowActionClass
+end
+
+-- ===================================================================
+-- FOLLOW-ACTION FIELD DUMP (two-hundred-and-thirtieth pass, 2026-09-07)
+-- ===================================================================
+-- Read-only. Nothing here writes anything.
+--
+-- The previous run finally produced an unambiguous result: in 2 of 4 Pals,
+-- GetCurrentAction_BP() named AIAction_OtomoFollow as the RUNNING action while
+-- the Pal stood completely still. The other 2 moved normally, and in both cases
+-- our action was not the one running (one was cancelled outright, the other was
+-- outranked by combat — that is Dragón's Petallia that "somehow managed to move
+-- and attacked a hostile pal"). The correlation is exact: our action running
+-- means frozen, anything else running means a normal Pal. So the action really
+-- does execute and really does produce no movement.
+--
+-- The real class dump (ue4ss/CXXHeaderDump/BP_AIAction_OtomoFollow.hpp) says why
+-- that is even possible, and it overturns the assumption this mechanism was
+-- built on:
+--
+--   void GetFollowSpeedFromController(double& FollowSpeed);
+--   void GetFollowInterpolatedPosFromController(FVector& FollowInterpolatedPos);
+--
+-- The action does NOT derive where to go from the Trainer field. It asks its
+-- CONTROLLER. We set Trainer correctly and Trainer was never the input that
+-- mattered. A wild Pal's controller is BP_MonsterAIController_Wild_C, which has
+-- no reason to answer either question — so the action ticks, asks, gets nothing,
+-- and stands there.
+--
+-- The same dump also lists the fields that decide whether it can move at all,
+-- plus an explicit initialiser we never called:
+--
+--   class UPalCharacterMovementComponent* Movement;   // 0x0178
+--   FVector Destination;                              // 0x0158
+--   bool    IsMoveMode;                               // 0x0150
+--   double  DefaultMaxSpeed;                          // 0x01B0
+--   TEnumAsByte<EOtomoFollowState::Type> FollowState;  // 0x0188
+--   void SetInitialValue();
+--
+-- Constructing the object by hand skipped whatever normally populates those.
+-- This dump reads them at three moments so the answer is not inferred:
+--   * right after the push (before anything has ticked),
+--   * at the 6s recheck (when it was observed to be the RUNNING action),
+--   * again at 14s (has Destination ever been populated, or is it stuck at
+--     zero forever?).
+--
+-- What each outcome means, written down BEFORE the run so the result cannot be
+-- rationalised afterwards:
+--   * Movement nil or DefaultMaxSpeed 0  -> initialisation was skipped;
+--     SetInitialValue() is a one-call fix and worth trying.
+--   * Movement/DefaultMaxSpeed fine but Destination stays (0,0,0) -> the
+--     controller dependency above is confirmed structural, this action cannot
+--     work on a wild controller, and the honest recommendation becomes the
+--     tight leash rather than a ninth mechanism.
+local function dump_follow_action_fields(action, key, whenLabel)
+    if action == nil then return end
+    safe_call(function()
+        if not action:IsValid() then
+            Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS] " .. tostring(key) .. " (" .. tostring(whenLabel) ..
+                "): the action object is no longer valid — it was destroyed")
+            return
+        end
+
+        local function objName(v)
+            if v == nil then return "nil" end
+            local ok = safe_call(function() return v:IsValid() end)
+            if not ok then return "invalid" end
+            return tostring(safe_call(function() return v:GetFullName() end))
+        end
+        local function vec(v)
+            if v == nil then return "nil" end
+            local x = safe_call(function() return v.X end)
+            local y = safe_call(function() return v.Y end)
+            local z = safe_call(function() return v.Z end)
+            return string.format("(%s, %s, %s)", tostring(x), tostring(y), tostring(z))
+        end
+        local function raw(name)
+            return tostring(safe_call(function() return action[name] end))
+        end
+
+        -- Split across several lines rather than one very long one: the logger
+        -- flushes per line, so a crash mid-dump still leaves everything read up
+        -- to that point on disk.
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS] " .. tostring(key) .. " (" .. tostring(whenLabel) .. "):")
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   Trainer  = " .. objName(safe_call(function() return action.Trainer end)))
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   SelfActor= " .. objName(safe_call(function() return action.SelfActor end)))
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   Movement = " .. objName(safe_call(function() return action.Movement end)) ..
+            "   <-- nil here means SetInitialValue() never ran")
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   Destination = " .. vec(safe_call(function() return action.Destination end)) ..
+            "   <-- (0,0,0) while running means the controller never answered")
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   DelayedDestination = " .. vec(safe_call(function() return action.DelayedDestination end)))
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   IsMoveMode=" .. raw("IsMoveMode") ..
+            " IsTurnMode=" .. raw("IsTurnMode") ..
+            " IsForceFitGoal=" .. raw("IsForceFitGoal") ..
+            " FollowState=" .. raw("FollowState"))
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   DefaultMaxSpeed=" .. raw("DefaultMaxSpeed") ..
+            " CurrentMoveSpeedRate=" .. raw("CurrentMoveSpeedRate") ..
+            " CurrentSpeedVsPlayer=" .. raw("CurrentSpeedVsPlayer") ..
+            " ConstMaxSpeedRateVsPlayer=" .. raw("ConstMaxSpeedRateVsPlayer"))
+        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   FolowEndDistance=" .. raw("FolowEndDistance") ..
+            " TargetLocationDistanceForward=" .. raw("TargetLocationDistanceForward") ..
+            " TargetLocationDistanceRight=" .. raw("TargetLocationDistanceRight"))
+    end)
 end
 
 -- Builds a real follow action for this Pal, points it at the player, and hands
@@ -1465,6 +1698,26 @@ local function try_real_follow_action(pal, key, playerActor)
             "  <-- this is the line that says whether the push actually stuck")
     end)
 
+    -- Kept so the follow tick can re-assert Trainer on it. One entry per Pal,
+    -- cleared as soon as the action stops being valid.
+    followActionObjects[key] = action
+
+    dump_follow_action_fields(action, key, "immediately after push, before anything ticked")
+
+    -- The candidate fix. If the dump above showed Movement=nil / DefaultMaxSpeed=0
+    -- and the dump below shows them populated, this was the missing step and the
+    -- Pal should start moving. If both dumps look identical, the initialiser is
+    -- not the problem and the controller dependency is.
+    if USE_FOLLOW_ACTION_SET_INITIAL_VALUE then
+        Logger.log("[PalBonds/Combat] [FOLLOW-INIT] " .. tostring(key) .. " — about to call SetInitialValue() on the constructed action NOW")
+        local initOk, initErr = pcall(function() action:SetInitialValue() end)
+        Logger.log("[PalBonds/Combat] [FOLLOW-INIT] " .. tostring(key) .. " — SetInitialValue() returned " ..
+            (initOk and "ok" or ("FAILED: " .. tostring(initErr))))
+        if initOk then
+            dump_follow_action_fields(action, key, "AFTER SetInitialValue()")
+        end
+    end
+
     pcall(function()
         ExecuteInGameThreadWithDelay(FOLLOW_ACTION_RECHECK_MS, function()
             safe_call(function()
@@ -1477,6 +1730,25 @@ local function try_real_follow_action(pal, key, playerActor)
                     tostring(key), FOLLOW_ACTION_RECHECK_MS / 1000, tostring(cur2Name),
                     FOLLOW_ACTION_PRIORITY, tostring(still)
                 ))
+                dump_follow_action_fields(action, key, "at the 6s recheck")
+            end)
+        end)
+    end)
+
+    -- One more read, late enough that the action has had many ticks to ask its
+    -- controller for a destination. If Destination is STILL (0,0,0) here while
+    -- the action is the running one, that is the structural answer.
+    pcall(function()
+        ExecuteInGameThreadWithDelay(FOLLOW_ACTION_LATE_DUMP_MS, function()
+            safe_call(function()
+                if not (pal and pal:IsValid() and actionComp and actionComp:IsValid()) then return end
+                local cur3 = actionComp:GetCurrentAction_BP()
+                local cur3Name = cur3 and safe_call(function() return cur3:GetFullName() end)
+                Logger.log(string.format(
+                    "[PalBonds/Combat] [FOLLOW-ACTION] %s — LATE re-read after %.0fs: current action = %s",
+                    tostring(key), FOLLOW_ACTION_LATE_DUMP_MS / 1000, tostring(cur3Name)
+                ))
+                dump_follow_action_fields(action, key, "at the 14s late read")
             end)
         end)
     end)
@@ -1567,6 +1839,15 @@ function Combat.StopFollowing(pal)
         FollowerActors[key] = nil
         OtomoCompositeCache[key] = nil -- Two-hundred-and-second pass: drop the cached composite so a later re-follow builds fresh, not a stale reference
         loggedFollowTickOnce[key] = nil
+        -- Two-hundred-and-thirty-first pass: drop the follow-action reference and
+        -- its re-assert counter. This matters most on CAPTURE, which is the
+        -- normal way following ends: the Pal becomes a real Otomo with its own
+        -- controller and its own follow behaviour, and a hand-pushed action of
+        -- ours still holding a re-asserted Trainer would be competing with it.
+        -- It also stops these two tables growing by one dead entry per Pal for
+        -- the whole session.
+        followActionObjects[key] = nil
+        trainerReassertCounter[key] = nil
     end
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " no longer following")
 end
@@ -1610,11 +1891,15 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
     -- The install, the territory anchor and the re-sense are therefore hoisted
     -- above the gate. The gate now controls ONLY the movement orders, which is
     -- what it was always meant to mean.
-    safe_call(function()
-        local key = pal:GetFullName()
-        try_real_follow_action(pal, key, playerActor)
-    end)
+    -- Hoisted out of the safe_call below: it used to be a local INSIDE that
+    -- closure, which meant the re-assert call underneath was reading a nil
+    -- global and silently doing nothing on every tick. Exactly the shape of
+    -- failure this project keeps paying for — no error, no log, just a
+    -- mechanism that never runs and a test run that "proves" it does not work.
+    local key = safe_call(function() return pal:GetFullName() end)
 
+    safe_call(function() try_real_follow_action(pal, key, playerActor) end)
+    safe_call(function() reassert_follow_trainer(pal, key, playerActor) end)
     safe_call(function() update_territory_anchor(pal, playerLoc) end)
 
     resenseTickCounter = resenseTickCounter + 1
