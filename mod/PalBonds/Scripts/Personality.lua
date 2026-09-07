@@ -153,6 +153,7 @@ local DISPOSITIONS = {
     "warlike",                 -- BP_AIResponsePreset_Warlike — attacks, but conditionally (see hook-points.md)
     "warlike_anyway",          -- BP_AIResponsePreset_Warlike_Anyway — attacks unconditionally
     "warlike_without_player",  -- BP_AIResponsePreset_Warlike_WithoutPlayer — aggressive even without the player around
+    "kill_all",                -- BP_AIResponsePreset_Kill_All — attacks anything on sight, player or not
 }
 Personality.DISPOSITIONS = DISPOSITIONS
 
@@ -195,7 +196,23 @@ local PERSONALITY_TIERS = {
     { tier = "notinterested", weight = 10 },
     { tier = "warlike", weight = 5 },
     { tier = "warlike_anyway", weight = 5 },
-    { tier = "warlike_without_player", weight = 5 },
+    -- Two-hundred-and-sixteenth pass (2026-09-06): "warlike_without_player"
+    -- swapped out for "kill_all" at Dragón's request. His report: that tier
+    -- "seems to not be reacting at all as it should", and what he actually
+    -- wanted from it was a Pal that attacks anyone on sight — behaviour he has
+    -- seen in vanilla but could not name. BP_AIResponsePreset_Kill_All_C is
+    -- that preset, confirmed real (it is one of the 11 found via repak against
+    -- the vanilla pak, and already referenced in EXCLUDED_FROM_ROLLING below).
+    --
+    -- Note the two mechanisms do NOT conflict, same as with NotInterested:
+    -- EXCLUDED_FROM_ROLLING keeps Pals whose SPECIES preset is already
+    -- Kill_All out of the roll, while this entry makes "kill_all" an outcome
+    -- the roll can assign to any other Pal.
+    --
+    -- warlike_without_player stays defined in the tables below so ForceTier
+    -- can still reach it and so existing saved/labelled state stays readable —
+    -- it just is not rolled any more.
+    { tier = "kill_all", weight = 5 },
 }
 
 -- Hundred-and-twenty-eighth pass (2026-09-03): Dragón hit a real, fair
@@ -310,6 +327,7 @@ local PRESET_NAME_TO_DISPOSITION = {
     -- rolling/enforcement entirely (Dragón: "npc, bosses and other
     -- things, those should stay normal always"). Left as "friendly" here
     -- only as a harmless label if ever displayed, never acted on.
+    ["BP_AIResponsePreset_Kill_All_C"] = "kill_all", -- two-hundred-and-sixteenth pass: now a real rolled tier, so it gets a real label
     ["BP_AIResponsePreset_VillageNPC_C"] = "friendly",
 }
 
@@ -378,6 +396,7 @@ local TIER_TO_DONOR_PRESET_CLASS = {
     warlike = "BP_AIResponsePreset_Warlike",
     warlike_anyway = "BP_AIResponsePreset_Warlike_Anyway",
     warlike_without_player = "BP_AIResponsePreset_Warlike_WithoutPlayer",
+    kill_all = "BP_AIResponsePreset_Kill_All",
 }
 
 -- Hundred-and-twenty-ninth pass (2026-09-03) — REAL FIX, found by reading a

@@ -1305,3 +1305,21 @@ His theory points at the SIGHT/SENSOR layer losing track of the player, which is
 **Friendly fire, honest status:** `[FRIENDLY-FIRE]` fired 20 times, so the detection and hate-clearing both work — but the chaos still happened, because clearing the grudge does not stop `Discover_* = Battle` from re-aggroing them a moment later. The retarget above is the real fix for that; the hate-clearing stays as a complement. If the next run still shows companions fighting each other, the conclusion is that broad aggression has to go entirely and engagement must come from the retarget alone.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-sixteenth pass (2026-09-06): kill_all swapped into the roll, and Dragón's per-event edge case caught a real timer leak
+
+**Personality roll: `warlike_without_player` -> `kill_all`**, at Dragón's request. His report was that the old tier "seems to not be reacting at all as it should", and what he actually wanted was a Pal that attacks anyone on sight — behaviour he had seen in vanilla but could not name. That is `BP_AIResponsePreset_Kill_All_C`, already confirmed real (one of the 11 found via repak against the vanilla pak, and already referenced in `EXCLUDED_FROM_ROLLING`).
+
+Worth stating because it looks contradictory at a glance: the two mechanisms do NOT conflict, exactly as with NotInterested. `EXCLUDED_FROM_ROLLING` keeps Pals whose SPECIES preset is already Kill_All out of the roll; the new tier entry makes "kill_all" an outcome the roll can assign to any OTHER Pal. `warlike_without_player` stays defined in `TIER_TO_DONOR_PRESET_CLASS`, `DISPOSITIONS` and the label map so `ForceTier` can still reach it and old labels stay readable — it is simply no longer rolled. New distribution: normal 35 / friendly 30 / escape 10 / notinterested 10 / warlike 5 / warlike_anyway 5 / **kill_all 5**.
+
+**Dragón's per-event edge case — he was right, and it was worse than log flooding.** His warning, from having watched other assistants make this mistake: *"when including a 'run per event' it usually ends up flooding the console... ideally you should only activate that IF there are pals following, otherwise you dont need to check everytime i get hit."*
+
+Checked rather than assumed, and the real cost was not the log. With ZERO followers, `Combat.OnPlayerCombatTarget` still resolved the enemy actor, walked `BondingState`, set `playerCombatActive`, bumped the window generation, and **scheduled a fresh `ExecuteInGameThreadWithDelay` timer** — on every single damage event involving the player. One fight against one enemy is dozens of hits, so that is dozens of pending 12-second timers queued to do nothing, in an empty field, with nothing bonded. That is a genuine leak, not just noise, and it would have shipped unnoticed because it produces no visible symptom until it accumulates.
+
+Fixed at both levels:
+- `Combat.OnPlayerCombatTarget` early-returns on a plain `BondingState` scan before touching anything.
+- `Combat.HasAnyFollower()` added (pure table scan, zero engine calls) and used one level up in Trust.lua's `PalHate:DamageEvent` hook, which fires for **every damage event in the world** — it previously did a `FindFirstOf` plus a `GetFullName` on the player before it could even decide whether the event was relevant. Now none of that runs unless something is actually following.
+
+This is the second time Dragón's operational instinct has caught a real cost that the code review did not: the earlier one was spotting eight hung background shell tasks. Worth taking his "this pattern usually goes wrong" flags at face value and actually verifying them.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

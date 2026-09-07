@@ -329,8 +329,42 @@ function Combat.ClearMutualHate(a, b)
     clear(b, a)
 end
 
+-- Two-hundred-and-sixteenth pass: cheap "is anything following?" test so
+-- callers can skip their own setup work entirely. Pure table scan.
+function Combat.HasAnyFollower()
+    for _, isFollowing in pairs(BondingState) do
+        if isFollowing then return true end
+    end
+    return false
+end
+
 function Combat.OnPlayerCombatTarget(enemyActor)
     if enemyActor == nil then return end
+
+    -- Two-hundred-and-sixteenth pass (2026-09-06) — DRAGÓN'S EDGE CASE, and he
+    -- was right to flag it. His warning, from having watched other assistants
+    -- do this: "when including a 'run per event' it usually ends up flooding
+    -- the console... ideally you should only activate that IF there are pals
+    -- following, otherwise you dont need to check everytime i get hit."
+    --
+    -- Checked, and it was worse than log flooding. With ZERO followers this
+    -- function still: resolved the enemy actor, walked BondingState, set
+    -- playerCombatActive, bumped the window generation, and — the real problem
+    -- — SCHEDULED A NEW ExecuteInGameThreadWithDelay TIMER. Every single
+    -- damage event involving the player, in an empty field, with nothing
+    -- bonded, would queue another 12-second timer. A single fight against one
+    -- enemy is dozens of hits, so that is dozens of pending timers doing
+    -- nothing, forever, for no reason.
+    --
+    -- This early-out is a plain table scan with no engine calls at all, so the
+    -- no-followers case (which is most of the time) now costs essentially
+    -- nothing. Same reasoning applies one level up in Trust.lua's damage hook.
+    local anyFollowers = false
+    for _, isFollowing in pairs(BondingState) do
+        if isFollowing then anyFollowers = true break end
+    end
+    if not anyFollowers then return end
+
     local enemyValid = safe_call(function() return enemyActor:IsValid() end)
     if not enemyValid then return end
 

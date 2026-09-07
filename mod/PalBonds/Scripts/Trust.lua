@@ -914,7 +914,17 @@ function Trust.Init()
             end
 
             do
-                local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                -- Two-hundred-and-sixteenth pass (2026-09-06) — Dragón's
+                -- edge case, applied at the outermost point too. This hook
+                -- fires for EVERY damage event in the world, and the block
+                -- below does a FindFirstOf plus a GetFullName on the player
+                -- before it can even decide whether the event is relevant.
+                -- With nothing following, none of that can lead anywhere, so
+                -- skip it on a plain table check first. HasAnyFollower does no
+                -- engine calls at all.
+                local okHas, CombatCheck = pcall(require, "Combat")
+                local anyFollowing = okHas and CombatCheck and CombatCheck.HasAnyFollower and CombatCheck.HasAnyFollower()
+                local player = anyFollowing and safe_call(function() return FindFirstOf("PalPlayerCharacter") end) or nil
                 local playerName = player and safe_call(function() return player:GetFullName() end)
                 if playerName then
                     local enemy = nil
