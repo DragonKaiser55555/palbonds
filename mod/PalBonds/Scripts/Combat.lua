@@ -1052,7 +1052,11 @@ end
 -- So the leash cannot do both. It is a fence, not following: a radius small
 -- enough to keep them is small enough to trap them. That is structural, so
 -- further tuning is not worth another run.
-local USE_TERRITORY_FOLLOW = false
+-- Two-hundred-and-twenty-eighth pass: RESTORED. The real follow action was
+-- proven to install and still not move the Pal (see its block below), so the
+-- fallback Dragón pre-committed to applies. This is his call, made in advance
+-- and in his own words: go back to the tight leash, not the nudge.
+local USE_TERRITORY_FOLLOW = true
 local TERRITORY_LEASH_TYPE = 0
 -- Two-hundred-and-twenty-fourth pass (2026-09-07) — WIDENED, and this is the
 -- change being tested. Dragón's two symptoms from the last run point at the
@@ -1077,8 +1081,21 @@ local TERRITORY_LEASH_TYPE = 0
 -- and fight, while still being far inside the 3000-unit leash-break distance
 -- that ends a bond. Per-follower stagger (below) additionally stops them all
 -- wanting the identical spot.
-local TERRITORY_INNER_RANGE = 1100.0
-local TERRITORY_OUTER_RANGE = 2800.0
+-- Two-hundred-and-twenty-eighth pass: back to the TIGHT radii (500/1200).
+-- These are the values that actually held Pals — the run that used them was
+-- the one Dragón described as following "much better", with no drifting and
+-- five followers at once. Their known cost is the cage: at 500 units a Pal
+-- cannot reach an attacker, so it stops fighting back.
+--
+-- Worth stating plainly rather than quietly re-testing: the two leash runs
+-- differed in TWO ways, not one. The tight run (500/1200) had no per-follower
+-- stagger; the loose run (1100/2800) added it. So a middle radius WITH the
+-- stagger has never actually been tried, and that combination is the one place
+-- left in this space where "holds them" and "can still fight" might coexist.
+-- Not changed unilaterally — flagged for Dragón, since it is a gameplay-feel
+-- decision rather than a technical one.
+local TERRITORY_INNER_RANGE = 500.0
+local TERRITORY_OUTER_RANGE = 1200.0
 -- Each follower gets its own slightly different inner radius, so three of them
 -- do not all target the same distance from the player and fight over it. Keyed
 -- off a per-Pal counter rather than anything random, so a given Pal keeps a
@@ -1229,7 +1246,59 @@ end
 -- once would make that untestable. This pass changes exactly one thing (the
 -- leash radii below). If the fighting comes back, this was innocent and can be
 -- retried at a real priority; if it does not, this was never the cause either.
-local USE_REAL_FOLLOW_ACTION = true
+-- ===================================================================
+-- TWO-HUNDRED-AND-TWENTY-EIGHTH PASS (2026-09-07) — THE ISOLATED TEST RAN,
+-- AND IT ANSWERED THE QUESTION. SWITCHED OFF AS A RESULT.
+-- ===================================================================
+-- Dragón's run with every other mechanism disabled produced the first
+-- unambiguous measurement this feature has ever had. From palbonds-live.log,
+-- one bonding Petallia (BP_FlowerDoll_C_2147437680):
+--
+--   construct returned valid=true
+--   Trainer/SelfActor write ok
+--   SetAction returned ok
+--   HasAction(followClass, priority 10) = true
+--   RECHECK after 6s: still present at priority 10 = true
+--
+-- So the push is NOT dropped. The action is genuinely constructed, accepted,
+-- and still resident at Logic six seconds later. Eight mechanisms in, this is
+-- the first one confirmed to actually install.
+--
+-- And it still did not follow. Dragón's own description is the other half of
+-- the measurement, and it is more informative than the log alone:
+--
+--   "i did see her stay still... waited to see if she would move or react,
+--    even making noise around her, but she was simply non-moving... then i
+--    moved far to see if escape would make her move again and that made her
+--    move"
+--
+-- A wild Pal left alone wanders, grazes and reacts. This one did nothing at
+-- all until an Escape reaction fired. That is not "our action lost" — that is
+-- our action WINNING the Logic slot, holding it, and being INERT: it suppresses
+-- the wild AI's own decisions (which live at Logic) while producing no movement
+-- of its own. Higher-priority tiers still pre-empt it, which is exactly why
+-- Escape (Reaction, 12) could still move her, and why the interactions kept
+-- working.
+--
+-- That rules out the obvious next guess. Raising the priority to HardScript or
+-- Reaction cannot help: the action is already not losing. The action is not
+-- FUNCTIONING. Trainer + SelfActor are evidently not sufficient state for
+-- BP_AIAction_OtomoFollow_C to compute where to go — a StaticConstructObject'd
+-- Blueprint action never went through whatever normal initialisation the Otomo
+-- controller does, so it holds the slot without a destination.
+--
+-- A mechanism that freezes a Pal in place is strictly worse than no mechanism,
+-- and freezing Pals is precisely the failure mode of the SetActiveAI incident
+-- Dragón was warned about before approving this. So it goes off now, on the
+-- evidence, rather than being tuned.
+--
+-- Per Dragón's standing instruction, recorded verbatim before this run:
+--   "the old nudge is not as good as the tight leash, so i would say if we
+--    ever go back, we will go back to the tight leash instead, the old nudge
+--    failed way too often"
+-- The territory leash below is therefore restored to its TIGHT values, and the
+-- nudge stays off.
+local USE_REAL_FOLLOW_ACTION = false
 local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/BP_AIAction_OtomoFollow.BP_AIAction_OtomoFollow_C"
 -- EAIRequestPriority: Ultimate=3 is what this project already used for the
 -- composite attempt (AI_REQUEST_PRIORITY_LOGIC=3). Same value kept for

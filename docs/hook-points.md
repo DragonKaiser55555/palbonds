@@ -1620,3 +1620,40 @@ So next run, any following at all is attributable to the follow action, and no f
 **Standing fallback decision recorded, from Dragón:** *"the old nudge is not as good as the tight leash, so i would say if we ever go back, we will go back to the tight leash instead, the old nudge failed way too often."* The evidence agrees — the tight leash held Pals reliably and failed only by caging them, while the nudge never reliably held anything. **If the follow action fails, the fallback is the tight leash (inner ~500), not the nudge.** Recorded so a later session does not default back to the weaker mechanism just because it is the older one.
 
 All 11 files verified with `luaparse`, deployed and md5-verified.
+
+## Two-hundred-and-twenty-eighth pass (2026-09-07): the follow action installs, holds the slot, and does nothing — the mechanism is retired on evidence
+
+The isolated test ran, and for the first time in eight follow mechanisms the log gives an unambiguous answer rather than another ambiguity.
+
+**The push is not being dropped.** One bonding Petallia (`BP_FlowerDoll_C_2147437680`), every line in sequence:
+
+```
+construct returned valid=true
+Trainer/SelfActor write ok
+SetAction returned ok
+HasAction(followClass, priority 10) = true
+RECHECK after 6s: still present at priority 10 = true
+```
+
+The action is constructed, accepted, and still resident at Logic six seconds later. Everything this project assumed might be silently failing — class resolution, construction, the field writes, `SetAction` itself — is confirmed working.
+
+**And she still did not follow.** Dragón's report is the other half of the measurement and says more than the log does on its own: *"i did see her stay still... waited to see if she would move or react, even making noise around her, but she was simply non-moving... then i moved far to see if escape would make her move again and that made her move."*
+
+A wild Pal left alone wanders, grazes and reacts to noise. This one did nothing at all until an Escape reaction fired. That is not our action losing to the wild AI — **it is our action winning the Logic slot, holding it, and being inert.** It suppresses the wild AI's own decisions (which live at Logic) while producing no movement of its own. Higher tiers still pre-empt it, which is exactly why Escape (Reaction, 12) could move her and why Pet/Play kept working throughout.
+
+**This rules out the obvious next guess, which is worth stating explicitly so it is not retried later.** Raising the priority to HardScript (11) or Reaction (12) cannot help: the action is already not losing. It is not functioning. `Trainer` + `SelfActor` are evidently not sufficient state for `BP_AIAction_OtomoFollow_C` to compute a destination — a `StaticConstructObject`'d Blueprint action never went through whatever initialisation the Otomo controller normally performs, so it occupies the slot with no target.
+
+**Retired rather than tuned.** A mechanism that freezes a Pal in place is strictly worse than no mechanism, and freezing Pals is precisely the failure mode of the `SetActiveAI` incident that Dragón was warned about before approving this. `USE_REAL_FOLLOW_ACTION = false`.
+
+**Fallback applied, per Dragón's pre-committed instruction:** the territory leash is restored to its TIGHT radii (inner 500 / outer 1200), and the nudge stays off. Those are the values from the run he described as following *"much better"*, with no drifting and five followers at once. Their known cost is the cage: at 500 units a Pal cannot reach an attacker, so it stops fighting back.
+
+**One untested combination remains, and it is the only place left where both goals might coexist.** The two leash runs differed in *two* ways, not one:
+
+| run | inner | stagger | held them? | could fight? |
+|---|---|---|---|---|
+| tight | 500 | **no** | ✅ | ❌ caged |
+| loose | 1100 | **yes** | ❌ escaped | ✅ |
+
+A middle radius **with** the per-follower stagger has never been tried. The stagger was introduced at the same time as the widening, so its effect was never isolated either. Flagged for Dragón rather than changed unilaterally — it is a gameplay-feel decision, not a technical one.
+
+Deployed and md5-verified; all 11 files pass `luaparse`.
