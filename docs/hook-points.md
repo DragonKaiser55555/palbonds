@@ -1323,3 +1323,31 @@ Fixed at both levels:
 This is the second time Dragón's operational instinct has caught a real cost that the code review did not: the earlier one was spotting eight hung background shell tasks. Worth taking his "this pattern usually goes wrong" flags at face value and actually verifying them.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-seventeenth pass (2026-09-06): the native LEASH system found — a categorically different answer to following, and RETARGET confirmed dead
+
+**Dragón asked whether we are running low on options and whether stripping the AI (`SetActiveAI`) has to come back. We are not, and it does not.** Palworld has a complete native leash system that this project had never looked at:
+
+```
+class APalAILeashActor : public APalAILeashActorBase
+    APalAILeashActor* SpawnLeash(APalAIController* InInstigatorController,
+                                 float InLeashInnerRadius, float InLeashOuterRadius,
+                                 float InInvokerExtentRadius, bool bInAutoActivateLeash)
+class APalAILeashActorBase : public AActor
+    void SetLeashLocation(const FVector& NewLeashLocation)
+    void ActivateLeash() / DeactivateLeash() / IsActiveLeash()
+    float LeashInnerRadius / LeashOuterRadius
+    delegate OnCharacterOutOfLeashRange(...)
+```
+
+**Why this is categorically different from the six mechanisms already tried.** Every previous attempt — the move-order nudge, the orbit, the Otomo composite, Funnel, move-to-actor — issued a COMMAND that the wild AI could out-vote on its very next decision. That is precisely the behaviour Dragón keeps describing: *"its like they follow for a few seconds then their IA make them ignore me, even if the tick nudge makes them look at me."* A leash is not a command the AI competes with; it is a **constraint the AI already obeys** when deciding where to wander. So instead of repeatedly telling the Pal to come back, we move the boundary it is already staying inside, and its own wandering keeps it near the player.
+
+It is also exactly the "something like SetActiveAI but less total" he asked for two passes ago, and it disables nothing — the Pal keeps sensing, reacting and fighting normally, just inside a region that travels with the player. Implemented as `ensure_leash_for` / `update_leash_anchor` (called every follow tick with the player's location) / `release_leash` on stop. Inner 400, outer 900.
+
+**Stated plainly as unverified:** `SpawnLeash` is declared on `APalAILeashActor` and is called here through that class's default object — the same route this project already uses for `PalUtility`, `NiagaraFunctionLibrary` and `KismetTextLibrary`. Whether it accepts being driven this way for a wild Pal is exactly what the next run tests. Every step is pcall-guarded and the existing move-to-actor follow is deliberately left running underneath, so a total failure is a no-op rather than a regression.
+
+**`[RETARGET]` fired ZERO times — the previous pass's combat fix does not work.** `SetTargetAndNextAction` is real and on `UPalAIActionCombatBase`, but `GetCurrentAction_BP()` evidently does not hand back an object that accepts it (most likely it returns the composite/base action rather than the combat action itself). This matches Dragón's report exactly — *"havent seen them attack the pal attacking me unless they get hit"* — and it also means his Petallia moment was almost certainly retaliation, not protection, since the retarget never ran once. Recorded as a confirmed negative rather than left ambiguous; not chased further this pass because he asked to focus on following first.
+
+**Log evidence this run:** 7 follow starts, 7 ends, 5 leash breaks and 5 forced escapes — so most follows still end by drifting out of range. `[FOLLOW-ACTOR]` confirms `SimpleMoveToActorWithLineTraceGround` is being accepted, so move-to-actor IS active and is still being out-voted; that is the strongest evidence yet that no command-based approach will hold, and the reason the leash is worth trying. `[HATE-ASSIST]` dropped to 3 (from 8) confirming the no-followers gate works. `[FRIENDLY-FIRE]` 11, unchanged in mechanism.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

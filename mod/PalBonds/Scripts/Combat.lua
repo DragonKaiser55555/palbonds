@@ -576,6 +576,123 @@ function Combat.Init()
     ))
 end
 
+-- ===================================================================
+-- NATIVE LEASH FOLLOW (two-hundred-and-seventeenth pass, 2026-09-06)
+-- ===================================================================
+-- Dragón, after the last run: "the pals still keep drifting away too often...
+-- its like they follow for a few seconds then their IA make them ignore me,
+-- even if the tick nudge makes them look at me... should we go back to that
+-- time we stripped them of their Ai? honestly wouldnt want that, but seems
+-- like we are running low on options."
+--
+-- We are not out of options — and this one is better than any of the six
+-- mechanisms tried so far, because it stops fighting the wild AI entirely.
+-- Palworld has a COMPLETE NATIVE LEASH SYSTEM that had never been looked at:
+--
+--     class APalAILeashActor : public APalAILeashActorBase
+--         APalAILeashActor* SpawnLeash(APalAIController* InInstigatorController,
+--                                      float InLeashInnerRadius,
+--                                      float InLeashOuterRadius,
+--                                      float InInvokerExtentRadius,
+--                                      bool  bInAutoActivateLeash)
+--     class APalAILeashActorBase : public AActor
+--         void SetLeashLocation(const FVector& NewLeashLocation)
+--         void ActivateLeash() / DeactivateLeash() / IsActiveLeash()
+--         float LeashInnerRadius / LeashOuterRadius
+--         delegate OnCharacterOutOfLeashRange(...)
+--
+-- A leash is the anchor point a Pal's OWN AI is allowed to roam around. This
+-- is the mechanism the game itself uses to keep Pals in an area.
+--
+-- Why this is categorically different from everything tried before: every
+-- previous attempt (move order, orbit, Otomo composite, Funnel, move-to-actor)
+-- issued a command the wild AI could out-vote on its next decision, which is
+-- exactly the behaviour Dragón keeps describing — "they follow for a few
+-- seconds then their AI makes them ignore me". A leash is not a command the AI
+-- competes with; it is a CONSTRAINT the AI already obeys when it chooses where
+-- to wander. So instead of telling the Pal to come back, we move the boundary
+-- it is already staying inside, and its own wandering keeps it near the player.
+--
+-- It is also precisely the "something like SetActiveAI but less total" Dragón
+-- asked for two passes ago, and it does not disable anything: the Pal keeps
+-- reacting, fighting and behaving normally, just within a region that follows
+-- the player.
+--
+-- UNVERIFIED, and stated plainly: SpawnLeash is declared on APalAILeashActor
+-- and is called here through that class's default object, which is how this
+-- project already calls other static/library functions (PalUtility,
+-- NiagaraFunctionLibrary, KismetTextLibrary). Whether it accepts being driven
+-- this way for a wild Pal is exactly what the next run tests. Every step is
+-- pcall-guarded and the previous follow mechanism is left running underneath,
+-- so a total failure here is a no-op rather than a regression.
+local USE_NATIVE_LEASH_FOLLOW = true
+local LEASH_INNER_RADIUS = 400.0   -- comfortable "stay around here" distance
+local LEASH_OUTER_RADIUS = 900.0   -- past this the Pal is pulled back by its own AI
+local LEASH_INVOKER_EXTENT = 900.0
+local LeashByKey = {}
+local loggedLeashOnce = false
+
+local function get_leash_cdo()
+    return safe_call(function() return StaticFindObject("/Script/Pal.Default__PalAILeashActor") end)
+end
+
+local function ensure_leash_for(pal, key)
+    if not USE_NATIVE_LEASH_FOLLOW or key == nil then return nil end
+    local existing = LeashByKey[key]
+    if existing ~= nil and safe_call(function() return existing:IsValid() end) then
+        return existing
+    end
+
+    local cdo = get_leash_cdo()
+    if cdo == nil then
+        if not loggedLeashOnce then
+            loggedLeashOnce = true
+            Logger.log("[PalBonds/Combat] [LEASH] could not resolve Default__PalAILeashActor — native leash follow unavailable, falling back to the move order (logged once)")
+        end
+        return nil
+    end
+
+    local controller = safe_call(function() return pal.Controller end)
+    if not (controller and safe_call(function() return controller:IsValid() end)) then return nil end
+
+    local leash = safe_call(function()
+        return cdo:SpawnLeash(controller, LEASH_INNER_RADIUS, LEASH_OUTER_RADIUS, LEASH_INVOKER_EXTENT, true)
+    end)
+    local leashValid = leash ~= nil and safe_call(function() return leash:IsValid() end)
+    if not leashValid then
+        if not loggedLeashOnce then
+            loggedLeashOnce = true
+            Logger.log("[PalBonds/Combat] [LEASH] SpawnLeash returned nothing usable — native leash follow not available this way, move order still active (logged once)")
+        end
+        return nil
+    end
+
+    LeashByKey[key] = leash
+    Logger.log("[PalBonds/Combat] [LEASH] spawned a native AI leash for " .. tostring(key) ..
+        " (inner=" .. LEASH_INNER_RADIUS .. " outer=" .. LEASH_OUTER_RADIUS .. ") — its own AI should now roam around the player instead of its spawn point")
+    return leash
+end
+
+-- Moves the anchor. This is the whole point: called every follow tick with the
+-- player's current location, so the region the Pal is allowed to wander in
+-- travels with the player.
+local function update_leash_anchor(pal, key, playerLoc)
+    if not USE_NATIVE_LEASH_FOLLOW or playerLoc == nil then return end
+    local leash = ensure_leash_for(pal, key)
+    if leash == nil then return end
+    safe_call(function() leash:SetLeashLocation(playerLoc) end)
+end
+
+local function release_leash(key)
+    local leash = LeashByKey[key]
+    if leash == nil then return end
+    LeashByKey[key] = nil
+    safe_call(function()
+        if leash:IsValid() then leash:DeactivateLeash() end
+    end)
+    Logger.log("[PalBonds/Combat] [LEASH] released the leash for " .. tostring(key))
+end
+
 function Combat.StartFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
@@ -654,6 +771,7 @@ end
 function Combat.StopFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
+        release_leash(key)
         BondingState[key] = nil
         FollowerActors[key] = nil
         OtomoCompositeCache[key] = nil -- Two-hundred-and-second pass: drop the cached composite so a later re-follow builds fresh, not a stale reference
@@ -790,6 +908,15 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
     -- rather than every tick: it is an async sight trace, and firing one per
     -- follower per 1.5s was exactly the shape of cost that caused the earlier
     -- interrupt-related lag.
+    -- Two-hundred-and-seventeenth pass: move the leash anchor to the player.
+    -- This is the primary follow mechanism now; everything below it stays as a
+    -- complement rather than being removed, so if the leash turns out not to
+    -- work on a wild Pal nothing is worse than before.
+    safe_call(function()
+        local key = pal:GetFullName()
+        update_leash_anchor(pal, key, playerLoc)
+    end)
+
     resenseTickCounter = resenseTickCounter + 1
     if resenseTickCounter % RESENSE_EVERY_N_TICKS == 0 then
         safe_call(function()
