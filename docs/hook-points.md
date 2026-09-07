@@ -1279,3 +1279,29 @@ Rather than spend one whole test run per candidate, the seven candidates are now
 **Still open, and honestly stated:** companions fought the enemy Pal but did not defend Dragón, and drifted off again. His own observation is the most useful lead — *"i could make noise nearby to make them focus on me again... probably what makes them drift away is that they forget im there"* — which points at the sensor/sight system losing track of the player rather than at the movement order. `RequestSightCheckAsync` is already used in `interrupt_and_resense` and would be the natural thing to re-trigger periodically on followers. Not implemented this pass; recorded as the next concrete lead rather than guessed at.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-fifteenth pass (2026-09-06): the VFX settled, Dragón's targeted-attack idea implemented with a real function, and his "re-discover" theory turned into code
+
+**Join VFX — SETTLED.** Dragón cycled all seven with CTRL+V and picked the first: candidate 1 is `/Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success`. `JOIN_VFX_INDEX` was already 1, so real captures have been using it since the previous pass — nothing to change, just confirmed. **This item is closed.**
+
+**Combat — Dragón's question produced a better design than what was in place.** His words: *"isnt it possible to just issue a command of, if im being attacked, make the pals following attack that pal in specific? instead of becoming agro on everything?"*
+
+He is right, and the function for it exists:
+
+```
+UPalAIActionCombatBase::SetTargetAndNextAction(class AActor* Target)
+```
+
+That is the combat action's own "this is who you are fighting" setter. The previous approach relied entirely on broad aggression (`Discover_* = Battle`) to make a companion pick *something* and hoped it picked correctly — which is precisely why his run turned into companions fighting each other. Now, on every player-damage event, each following companion's current AI action is fetched and pointed directly at the player's enemy. Running it per damage event rather than only on entering combat means a companion that latches onto the wrong target gets corrected within a fraction of a second instead of staying locked on it. Type-checking is done by letting the pcall fail harmlessly on non-combat actions, rather than trying to enumerate every subclass.
+
+This is a genuine improvement over the broad-aggression approach and came from Dragón, not from this project's own analysis. The aggression window stays for now (it is still what gets them to engage at all), but the retarget is what should make the engagement *correct*.
+
+**Fleeing — Dragón's "re-discover" theory implemented.** He has now observed twice that *"i could make noise nearby to make them focus on me again... probably what makes them drift away is that they 'forget' that im there"*, and reported more running away this run. The log agrees on the mechanism: **7 leash breaks and 6 resulting forced escapes** — so they drift beyond the leash, lose all trust, and get force-tiered to escape. The drift is the cause; the fleeing is downstream.
+
+His theory points at the SIGHT/SENSOR layer losing track of the player, which is a different subsystem from everything the movement work has been touching — and would explain why none of the move-order fixes addressed it. `RequestSightCheckAsync` is exactly a "look for things now" call and is already proven safe on wild Pals (`interrupt_and_resense` has used it for many passes). `Personality.RefreshSightOn` now re-triggers it on each follower every 3 follow ticks (~4.5s) — the software equivalent of him making noise. Throttled deliberately: it is an async sight trace, and one per follower per 1.5s is exactly the cost shape that caused the earlier interrupt-related lag.
+
+**Lag confirmed improving:** the session dropped from 2379 to 1955 lines even though this run included Dragón cycling seven VFX previews, so the previous pass's four cuts held.
+
+**Friendly fire, honest status:** `[FRIENDLY-FIRE]` fired 20 times, so the detection and hate-clearing both work — but the chaos still happened, because clearing the grudge does not stop `Discover_* = Battle` from re-aggroing them a moment later. The retarget above is the real fix for that; the hate-clearing stays as a complement. If the next run still shows companions fighting each other, the conclusion is that broad aggression has to go entirely and engagement must come from the retarget alone.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

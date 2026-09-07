@@ -1728,6 +1728,19 @@ local COMPANION_OTHER_DISCOVER_SLOTS = { "Discover_Greater", "Discover_Equal", "
 -- Being hurt by another creature: fight back. This is the fix for 3.
 local COMPANION_OTHER_DAMAGED_SLOTS = { "Damaged_Greater", "Damaged_Equal", "Damaged_Smaller" }
 
+-- Two-hundred-and-fifteenth pass: force a Pal to re-run its sight check, so it
+-- notices the player again. This is Dragón's own "they forget im there, making
+-- noise brings them back" observation turned into code — see Combat.lua's
+-- [RE-SENSE] block. Uses only the sensor call already proven safe here.
+function Personality.RefreshSightOn(palActor)
+    if palActor == nil then return end
+    local palId = Personality.GetOrInitState(palActor)
+    if not palId then return end
+    local sensor = find_cached_sensor(palId) or find_sensor_component(palActor)
+    if not sensor then return end
+    safe_call(function() sensor:RequestSightCheckAsync(true, true, false, 1.0, false) end)
+end
+
 function Personality.ApplyCompanionPreset(palId, palActor, combatAssist, playerInCombat)
     if palId == nil or palActor == nil then return false end
 

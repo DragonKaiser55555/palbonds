@@ -202,6 +202,12 @@ local FollowerActors = {}
 -- Throttles the [HATE-ASSIST] line to one per target change — a real fight
 -- produces a damage event many times a second.
 local lastHateTargetName = nil
+local loggedRetargetOnce = false
+-- Two-hundred-and-fifteenth pass: how often a follower is nudged to re-sense
+-- the player (see the [RE-SENSE] block in IssueFollowMoveOrder). 3 ticks at
+-- 1.5s each = roughly every 4.5 seconds per follower.
+local RESENSE_EVERY_N_TICKS = 3
+local resenseTickCounter = 0
 -- Two-hundred-and-thirteenth pass: is the player currently in a fight? While
 -- true, companions are allowed to engage on discovery; when it lapses they go
 -- back to never starting fights.
@@ -344,6 +350,47 @@ function Combat.OnPlayerCombatTarget(enemyActor)
                         local hate = controller:GetHateSystem()
                         if not (hate and hate:IsValid()) then return end
                         hate:ChangeHate(enemyActor, COMBAT_ASSIST_HATE_AMOUNT)
+
+                        -- Two-hundred-and-fifteenth pass (2026-09-06) —
+                        -- DRAGÓN'S IDEA, and it is a better design than what
+                        -- was here. His question: "isnt it possible to just
+                        -- issue a command of, if im being attacked, make the
+                        -- pals following attack that pal in specific? instead
+                        -- of becoming agro on everything?"
+                        --
+                        -- Yes. Searching APalAIController's action classes
+                        -- turned up the exact function for it:
+                        --     UPalAIActionCombatBase::SetTargetAndNextAction(AActor* Target)
+                        -- That is the combat action's own "this is who you are
+                        -- fighting" setter. So instead of relying only on
+                        -- broad aggression to make a companion pick SOMETHING
+                        -- and hoping it picks right, we now reach into
+                        -- whatever combat action it is actually running and
+                        -- point it at the player's enemy directly.
+                        --
+                        -- This runs on every player-damage event, not just the
+                        -- transition into combat, so a companion that drifts
+                        -- onto the wrong target (another companion, a passing
+                        -- Pal) gets corrected within a fraction of a second
+                        -- rather than staying locked on it. That is the direct
+                        -- answer to the friendly-fire chaos: even when one
+                        -- starts a fight with the wrong Pal, it is immediately
+                        -- steered back to the real enemy.
+                        safe_call(function()
+                            local actionComp = controller:GetAIActionComponent()
+                            if not (actionComp and actionComp:IsValid()) then return end
+                            local current = actionComp:GetCurrentAction_BP()
+                            if not (current and current:IsValid()) then return end
+                            -- SetTargetAndNextAction only exists on combat
+                            -- actions; on anything else this pcall simply
+                            -- fails harmlessly, which doubles as the type
+                            -- check without needing to name every subclass.
+                            local okSet = pcall(function() current:SetTargetAndNextAction(enemyActor) end)
+                            if okSet and not loggedRetargetOnce then
+                                loggedRetargetOnce = true
+                                Logger.log("[PalBonds/Combat] [RETARGET] SetTargetAndNextAction accepted — companions are being pointed directly at the player's enemy (logged once)")
+                            end
+                        end)
 
                         -- Two-hundred-and-thirteenth pass: hate alone was NOT
                         -- enough — Dragón's run had [HATE-ASSIST] firing
@@ -687,6 +734,34 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
     if not usedActorMove then
         ok, resultOrErr = pcall(function()
             return controller:PalMoveToLocation(playerLoc, FOLLOW_ACCEPTANCE_RADIUS, false, true, true, true, nil, true)
+        end)
+    end
+
+    -- Two-hundred-and-fifteenth pass (2026-09-06) — DRAGÓN'S "RE-DISCOVER"
+    -- IDEA, implemented. His observation from two runs now: "i could make
+    -- noise nearby to make them focus on me again... probably what makes them
+    -- drift away is that they 'forget' that im there", and this run he saw
+    -- them running off more often (the log agrees: 7 leash breaks and 6
+    -- resulting forced escapes).
+    --
+    -- That points at the SIGHT/SENSOR layer losing track of the player, not at
+    -- the movement order — a different subsystem than everything else that has
+    -- been fixed so far, which is why none of the movement work addressed it.
+    -- Making noise works because it forces the Pal to sense the player again.
+    --
+    -- RequestSightCheckAsync is exactly that "look for things now" call, and it
+    -- is already proven safe on wild Pals (interrupt_and_resense has used it
+    -- for many passes). Re-triggering it periodically on followers is the
+    -- software equivalent of Dragón making noise. Throttled to every few ticks
+    -- rather than every tick: it is an async sight trace, and firing one per
+    -- follower per 1.5s was exactly the shape of cost that caused the earlier
+    -- interrupt-related lag.
+    resenseTickCounter = resenseTickCounter + 1
+    if resenseTickCounter % RESENSE_EVERY_N_TICKS == 0 then
+        safe_call(function()
+            local okP, Personality = pcall(require, "Personality")
+            if not (okP and Personality and Personality.RefreshSightOn) then return end
+            Personality.RefreshSightOn(pal)
         end)
     end
 
