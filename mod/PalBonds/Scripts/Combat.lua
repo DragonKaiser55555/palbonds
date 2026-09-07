@@ -138,7 +138,21 @@ local FOLLOW_ACCEPTANCE_RADIUS = 200.0 -- how close the move order tries to brin
 -- in the two-hundred-and-third pass (3/3 Pals broke the leash without
 -- moving toward the player once) and depends on ownership this Pal doesn't
 -- have. Nothing learned since changes that assessment.
-local USE_OLD_MOVE_ORDER_NUDGE = true
+-- Two-hundred-and-twenty-seventh pass (2026-09-07) — OFF, at Dragón's request
+-- and for exactly the right reason: "wouldnt it be better to remove the old
+-- nudge for now? just so we can check if the new follow intalls? (if it
+-- follows we will know for sure its that and if it not follows then we can
+-- make sure it didnt install or it doesnt work)". That is clean single-variable
+-- isolation, and it is the discipline this project should have applied to the
+-- follow work several passes ago instead of stacking mechanisms.
+--
+-- His second point is recorded as the standing fallback decision: if the follow
+-- action fails, we go back to the TIGHT LEASH, not to this nudge. His words:
+-- "the old nudge is not as good as the tight leash, so i would say if we ever
+-- go back, we will go back to the tight leash instead, the old nudge failed
+-- way too often." The evidence agrees — the tight leash held Pals reliably and
+-- only failed by caging them, while the nudge never reliably held anything.
+local USE_OLD_MOVE_ORDER_NUDGE = false
 local USE_REPEATED_OTOMO_COMPOSITE = false
 
 -- Combat assist, per Dragón's explicit go-ahead this pass. Applied as part
@@ -175,7 +189,10 @@ local USE_ORBIT_WHEN_AT_GOAL = false
 -- Two-hundred-and-eleventh pass: try the continuous move-to-actor follow
 -- first (see IssueFollowMoveOrder). Set false to go back to pure
 -- location-order following.
-local USE_MOVE_TO_ACTOR_FOLLOW = true
+-- Two-hundred-and-twenty-seventh pass: also off, for the same isolation. This
+-- is what produced the "following but fighting her own AI" movement Dragón
+-- described, so leaving it on would make any movement next run ambiguous.
+local USE_MOVE_TO_ACTOR_FOLLOW = false
 local ECC_VISIBILITY = 3 -- ECollisionChannel::ECC_Visibility, from Engine_enums.hpp
 local loggedActorMoveOnce = false
 
@@ -1487,6 +1504,36 @@ end
 -- real test finally shows whether this call is actually being accepted by
 -- the engine at all.
 function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
+    -- Two-hundred-and-twenty-seventh pass (2026-09-07) — REORDERED, and this
+    -- restructure had to happen before Dragón's requested test could even be
+    -- valid. He asked to switch the old nudge off so the follow action can be
+    -- tested in isolation, which is exactly the right experiment — but the
+    -- nudge's early-return sat ABOVE the follow-action install, so simply
+    -- flipping that toggle would have silently prevented the follow action
+    -- from ever being installed, and killed the re-sense too. The test would
+    -- have "proved" the follow action does nothing, for entirely the wrong
+    -- reason.
+    --
+    -- The install, the territory anchor and the re-sense are therefore hoisted
+    -- above the gate. The gate now controls ONLY the movement orders, which is
+    -- what it was always meant to mean.
+    safe_call(function()
+        local key = pal:GetFullName()
+        try_real_follow_action(pal, key, playerActor)
+    end)
+
+    safe_call(function() update_territory_anchor(pal, playerLoc) end)
+
+    resenseTickCounter = resenseTickCounter + 1
+    if resenseTickCounter % RESENSE_EVERY_N_TICKS == 0 then
+        safe_call(function()
+            local okP, Personality = pcall(require, "Personality")
+            if not (okP and Personality and Personality.RefreshSightOn) then return end
+            Personality.RefreshSightOn(pal)
+        end)
+    end
+
+    -- Everything below this line is the old movement-order approach.
     if not USE_OLD_MOVE_ORDER_NUDGE then return end
     if not Combat.IsFollowing(pal) then return end
     local controller = safe_call(function() return pal.Controller end)
@@ -1597,26 +1644,6 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
         local key = pal:GetFullName()
         update_leash_anchor(pal, key, playerLoc)
     end)
-
-    -- Two-hundred-and-twenty-second pass: install the real follow action once
-    -- per Pal. Driven from the tick rather than StartFollowing so the player
-    -- actor is guaranteed available and the Pal's controller is fully set up;
-    -- the per-Pal cap inside makes it a one-shot regardless.
-    safe_call(function()
-        local key = pal:GetFullName()
-        try_real_follow_action(pal, key, playerActor)
-    end)
-
-    safe_call(function() update_territory_anchor(pal, playerLoc) end)
-
-    resenseTickCounter = resenseTickCounter + 1
-    if resenseTickCounter % RESENSE_EVERY_N_TICKS == 0 then
-        safe_call(function()
-            local okP, Personality = pcall(require, "Personality")
-            if not (okP and Personality and Personality.RefreshSightOn) then return end
-            Personality.RefreshSightOn(pal)
-        end)
-    end
 
     -- Two-hundred-and-tenth pass (2026-09-06) — THE REST ANIMATION IS GONE.
     -- It was the previous pass's fix and it backfired in three separate ways

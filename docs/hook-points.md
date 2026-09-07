@@ -1596,3 +1596,27 @@ What Dragón observed is also consistent with a partial success rather than a to
 No mechanism changed this pass. The point is to stop drawing conclusions from a measurement taken at the wrong instant, which has now cost two runs' worth of wrong inference.
 
 All 11 files verified with `luaparse`, deployed and md5-verified.
+
+## Two-hundred-and-twenty-seventh pass (2026-09-07): Dragón's isolation test — and the reorder that had to happen first for it to mean anything
+
+**Dragón's request, and it is the right experiment:** *"wouldnt it be better to remove the old nudge for now? just so we can check if the new follow intalls? (if it follows we will know for sure its that and if it not follows then we can make sure it didnt install or it doesnt work)"*. That is clean single-variable isolation, and it is the discipline this follow work should have had several passes ago instead of stacking mechanisms on top of each other and then arguing about which one was responsible.
+
+**But flipping that toggle alone would have produced a false negative.** `if not USE_OLD_MOVE_ORDER_NUDGE then return end` sat at the TOP of `IssueFollowMoveOrder`, while the follow-action install lives further down the same function. Turning the nudge off would therefore have silently prevented the follow action from ever being installed — and killed the re-sense as well — and the run would have "proved" the follow action does nothing, for entirely the wrong reason. Found by checking the call order before flipping the switch rather than after.
+
+The install, the territory anchor and the re-sense are now hoisted ABOVE the gate. The gate controls only the movement orders, which is what it always should have meant.
+
+**Isolation now genuinely clean — every other movement mechanism is off:**
+
+| mechanism | state |
+|---|---|
+| Old move-order nudge | off |
+| Move-to-actor | off |
+| Orbit | off |
+| Territory leash | off |
+| **Real follow action** | **ON, priority Logic (10)** |
+
+So next run, any following at all is attributable to the follow action, and no following plus `HasAction=false` means the push is genuinely being dropped.
+
+**Standing fallback decision recorded, from Dragón:** *"the old nudge is not as good as the tight leash, so i would say if we ever go back, we will go back to the tight leash instead, the old nudge failed way too often."* The evidence agrees — the tight leash held Pals reliably and failed only by caging them, while the nudge never reliably held anything. **If the follow action fails, the fallback is the tight leash (inner ~500), not the nudge.** Recorded so a later session does not default back to the weaker mechanism just because it is the older one.
+
+All 11 files verified with `luaparse`, deployed and md5-verified.
