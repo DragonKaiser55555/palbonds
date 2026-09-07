@@ -884,6 +884,22 @@ local function find_active_otomo(excludePal)
     return found
 end
 
+-- Two-hundred-and-twentieth pass (Dragón's idea): find a Daedream-type
+-- secondary follower if one is out. Read-only, same as everything else here.
+local function find_funnel_follower()
+    local found = nil
+    safe_call(function()
+        local list = FindAllOf("PalFunnelCharacter")
+        if list == nil then return end
+        for _, f in ipairs(list) do
+            if found == nil and safe_call(function() return f:IsValid() end) then
+                found = f
+            end
+        end
+    end)
+    return found
+end
+
 function Combat.DiagnoseFollowDifference(bondingPal)
     if followDiffDumps >= FOLLOW_DIFF_MAX_DUMPS then return end
     followDiffDumps = followDiffDumps + 1
@@ -891,7 +907,140 @@ function Combat.DiagnoseFollowDifference(bondingPal)
         FOLLOW_DIFF_MAX_DUMPS .. " — a REAL Otomo follows correctly and this bonding Pal does not, so whatever differs below is part of why =====")
     describe_follow_state("BONDING (wild)", bondingPal)
     describe_follow_state("REAL OTOMO    ", find_active_otomo(bondingPal))
+    -- Two-hundred-and-twentieth pass: Dragón's suggestion, and a better data
+    -- point than the Otomo row. A Daedream/Dazzi/Flopie "funnel" Pal follows
+    -- the player while NOT being the active Otomo — which is much closer to a
+    -- bonding wild Pal's situation than a real Otomo is. If its controller
+    -- class differs from both rows above, that is the closest available model
+    -- for what a wild follower should look like.
+    describe_follow_state("FUNNEL (daedream-type)", find_funnel_follower())
     report_existing_leashes()
+end
+
+-- ===================================================================
+-- TERRITORY FOLLOW (two-hundred-and-twentieth pass, 2026-09-06)
+-- ===================================================================
+-- The FOLLOW-DIFF probe answered the question this project has been guessing
+-- at for seven attempts. From Dragón's run, the same fields on both Pals:
+--
+--   BONDING (wild): controller = BP_MonsterAIController_Wild_C
+--   REAL OTOMO    : controller = BP_MonsterAIController_Otomo_C
+--
+-- Following is not a command, a flag, or an order. It is an ENTIRELY
+-- DIFFERENT AI CONTROLLER CLASS. That single line explains every failure so
+-- far: every mechanism tried was shouting orders at the Wild controller, whose
+-- whole job is to keep the Pal near its own territory.
+--
+-- Two more results from the same probe, both valuable:
+--   * IsOverrideTarget was FALSE on both the Otomo and the wild Pal, so that
+--     field is NOT the follow mechanism. Ruled out without a test run.
+--   * FindAllOf found ZERO leash actors in the world. The leash-actor route
+--     from the previous pass is definitively dead — not "the spawn failed",
+--     but "the game is not using that system here at all".
+--
+-- Reading BP_MonsterAIController_Wild_C then produced the actual opening:
+--
+--   void SetupLeash(ELeashType LeashType, FVector LeashLocation,
+--                   double LeashInnerRange, double LeashOuterRange)
+--   void ReturnToTerritory()
+--   void "Set Spawnd Info"(FVector SpawnerLoc, double ReturnRadius, ...)
+--
+-- The wild controller keeps its own territory anchor, and exposes a setter for
+-- it. So rather than fighting the Wild controller, we tell it that the player
+-- IS the territory. Its own AI then keeps the Pal nearby, using the exact
+-- system that has been out-voting us all along.
+--
+-- SAFETY, written deliberately after the leash-spawn leak of the previous
+-- pass. SetupLeash MIGHT create something internally, and this is called
+-- periodically, which is the exact shape that leaked before. So this version
+-- polices itself:
+--   * It counts leash actors in the world before the first call and again
+--     after, and logs both.
+--   * If that count ever grows beyond TERRITORY_LEASH_ACTOR_CEILING, the whole
+--     mechanism disables itself immediately and says so loudly.
+--   * There is a hard global call budget as well.
+-- A repeat of the previous leak is therefore self-limiting rather than
+-- something Dragón has to notice in his framerate.
+--
+-- UNKNOWN, stated plainly: ELeashType's values are unnamed in this build's
+-- enum dump (NewEnumerator0/1/2), so the type argument is a guess. If type 0
+-- misbehaves the other two are one constant away, and the log says which was
+-- used.
+local USE_TERRITORY_FOLLOW = true
+local TERRITORY_LEASH_TYPE = 0
+local TERRITORY_INNER_RANGE = 500.0
+local TERRITORY_OUTER_RANGE = 1200.0
+local TERRITORY_EVERY_N_TICKS = 3          -- ~4.5s, same cadence as the re-sense
+local TERRITORY_MAX_TOTAL_CALLS = 400      -- hard budget for a whole session
+local TERRITORY_LEASH_ACTOR_CEILING = 8    -- if leash actors ever exceed this, stop
+
+local territoryTickCounter = 0
+local territoryTotalCalls = 0
+local territoryDisabled = false
+local territoryBaselineLeashCount = nil
+local loggedTerritoryOnce = false
+
+local function count_leash_actors()
+    local n = safe_call(function()
+        local l = FindAllOf("PalAILeashActor")
+        return l and #l or 0
+    end)
+    return n or 0
+end
+
+-- Points a wild Pal's own territory at the player. Called on the follow tick.
+local function update_territory_anchor(pal, playerLoc)
+    if not USE_TERRITORY_FOLLOW or territoryDisabled or playerLoc == nil then return end
+
+    territoryTickCounter = territoryTickCounter + 1
+    if territoryTickCounter % TERRITORY_EVERY_N_TICKS ~= 0 then return end
+
+    if territoryTotalCalls >= TERRITORY_MAX_TOTAL_CALLS then
+        if not territoryDisabled then
+            territoryDisabled = true
+            Logger.log("[PalBonds/Combat] [TERRITORY] hit the session call budget (" .. TERRITORY_MAX_TOTAL_CALLS .. ") — disabling to stay safe")
+        end
+        return
+    end
+
+    if territoryBaselineLeashCount == nil then
+        territoryBaselineLeashCount = count_leash_actors()
+        Logger.log("[PalBonds/Combat] [TERRITORY] leash actors in world BEFORE the first SetupLeash call: " .. territoryBaselineLeashCount)
+    end
+
+    local controller = safe_call(function() return pal.Controller end)
+    if not (controller and safe_call(function() return controller:IsValid() end)) then return end
+
+    territoryTotalCalls = territoryTotalCalls + 1
+    local ok = pcall(function()
+        controller:SetupLeash(TERRITORY_LEASH_TYPE, playerLoc, TERRITORY_INNER_RANGE, TERRITORY_OUTER_RANGE)
+    end)
+
+    if not loggedTerritoryOnce then
+        loggedTerritoryOnce = true
+        local after = count_leash_actors()
+        Logger.log(string.format(
+            "[PalBonds/Combat] [TERRITORY] first SetupLeash(type=%d, inner=%.0f, outer=%.0f) call returned %s — leash actors before=%s after=%s",
+            TERRITORY_LEASH_TYPE, TERRITORY_INNER_RANGE, TERRITORY_OUTER_RANGE,
+            ok and "ok" or "FAILED", tostring(territoryBaselineLeashCount), tostring(after)
+        ))
+        if not ok then
+            territoryDisabled = true
+            Logger.log("[PalBonds/Combat] [TERRITORY] SetupLeash is not callable this way — disabling territory follow, move-to-actor still active")
+        end
+    end
+
+    -- Self-policing: if actors start accumulating, stop before it becomes the
+    -- previous pass's leak.
+    if territoryTotalCalls % 10 == 0 then
+        local now = count_leash_actors()
+        if now > (territoryBaselineLeashCount or 0) + TERRITORY_LEASH_ACTOR_CEILING then
+            territoryDisabled = true
+            Logger.log("[PalBonds/Combat] [TERRITORY] LEASH ACTORS ARE ACCUMULATING (" ..
+                tostring(territoryBaselineLeashCount) .. " -> " .. tostring(now) ..
+                ") — disabling territory follow immediately to prevent a leak")
+        end
+    end
 end
 
 function Combat.StartFollowing(pal)
@@ -1119,6 +1268,8 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
         local key = pal:GetFullName()
         update_leash_anchor(pal, key, playerLoc)
     end)
+
+    safe_call(function() update_territory_anchor(pal, playerLoc) end)
 
     resenseTickCounter = resenseTickCounter + 1
     if resenseTickCounter % RESENSE_EVERY_N_TICKS == 0 then

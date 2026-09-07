@@ -1391,3 +1391,36 @@ What it reads on both:
 Also this pass: the previously-shipped `USE_NATIVE_LEASH_FOLLOW` stays off with its attempt caps intact, and following continues on move-to-actor — no worse than two runs ago.
 
 All 11 files verified with `luaparse`, deployed and md5-verified.
+
+## Two-hundred-and-twentieth pass (2026-09-06): the FOLLOW-DIFF probe answered it — following is a different AI CONTROLLER CLASS, and the wild controller exposes its own territory setter
+
+**The probe worked, and it settled seven passes of guessing in two log lines.** From Dragón's run, the same fields read off both Pals at the same instant:
+
+```
+BONDING (wild): controller = BP_MonsterAIController_Wild_C
+REAL OTOMO    : controller = BP_MonsterAIController_Otomo_C
+```
+
+**Following is not a command, a flag or an order — it is an entirely different AI controller class.** That single difference explains every failure in this project's follow history: the move-order nudge, the orbit, the Otomo composite, Funnel, move-to-actor and the leash spawn were all shouting instructions at the Wild controller, whose entire job is keeping the Pal near its own territory. It was never going to obey.
+
+**Two further results from the same probe, both closing open questions without needing a test run each:**
+- `IsOverrideTarget` was **false on both** the Otomo and the wild Pal. That field is not the follow mechanism — ruled out for free, having been a genuine candidate.
+- `FindAllOf` found **ZERO leash actors in the world**. The leash-actor route is definitively dead: not "the spawn failed" but "the game is not using that system here at all". Closes the question the previous pass's leak raised.
+
+**Reading `BP_MonsterAIController_Wild_C` then produced the actual opening:**
+
+```
+void SetupLeash(ELeashType LeashType, FVector LeashLocation, double InnerRange, double OuterRange)
+void ReturnToTerritory()
+void "Set Spawnd Info"(FVector SpawnerLoc, double ReturnRadius, double WalkRadius, ...)
+```
+
+The wild controller keeps its **own** territory anchor and exposes a setter for it. So instead of fighting it, `update_territory_anchor` tells it the player IS the territory, and its own AI keeps the Pal nearby — using the exact system that has been out-voting every previous attempt.
+
+**Safety, written deliberately after the leash-spawn leak.** `SetupLeash` might create something internally and this is called periodically, which is precisely the shape that leaked last pass. So it polices itself: it counts leash actors before the first call and after, logs both, disables the whole mechanism immediately if that count ever grows past a ceiling, and has a hard session call budget. A repeat leak is now self-limiting rather than something Dragón has to notice in his framerate.
+
+**Stated unknown:** `ELeashType`'s values are unnamed in this build (`NewEnumerator0/1/2`), so the type argument is a guess. Type 0 is used and logged; the other two are one constant away.
+
+**Dragón's Daedream suggestion, added.** He proposed comparing a Daedream as well, and it is a better data point than the Otomo row: a funnel Pal follows the player **while not being the active Otomo**, which is far closer to a bonding wild Pal's situation than a real Otomo is. If its controller class differs from both existing rows, that is the closest available model for what a wild follower should look like. `find_funnel_follower` adds it as a third comparison row, read-only like the rest.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
