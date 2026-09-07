@@ -349,6 +349,36 @@ local TEST_CAPTURE_MODIFIERS = {ModifierKey.CONTROL}
 -- calls these same do_pet/do_feed functions anyway (see do_interaction) —
 -- so this claims F8 instead, a single plain key, same shape as F9/F10.
 local PLAY_KEY = "F8"
+-- Two-hundred-and-twenty-ninth pass (2026-09-07) — Dragon's own idea, and a
+-- better experiment than the one this file was about to get.
+--
+-- The problem with every follow test so far: the follow only ever installs as
+-- a SIDE EFFECT of crossing the bonding bar, which means the Pal has to be
+-- petted three times first. Dragon then pointed out something the log could
+-- never have shown -- pet and feed OUTRANK whatever a Pal is doing ("if a pal
+-- is fighting or moving around i can use the radial menu to pet and feed and
+-- they will drop everything they're doing and come to me"). That makes them
+-- high-priority interactions, and it makes a STUCK PETTING ACTION a complete
+-- explanation for the frozen Petallia of the previous run, entirely
+-- independent of whether the follow action itself works.
+--
+-- So petting is a CONFOUND, not merely a setup step. F9 removes it: aim at a
+-- Pal that has never been touched, press once, and its bonding bar jumps
+-- straight past the follow threshold with no game action played at all -- no
+-- pair-call, no animation, nothing that can occupy the action stack. Whatever
+-- happens next is the follow mechanism alone.
+--
+-- F9 is genuinely free: it used to be the manual Pet key, the radial menu
+-- replaced it, and the bind was removed (the PET_KEY constant above is a dead
+-- leftover that was never deleted). InputSpy, which used to watch every F-key,
+-- is disabled.
+--
+-- Listed under the release cleanup with the other test keys -- this never ships.
+local INSTANT_BOND_KEY = "F9"
+-- Fraction of the Pal's OWN bonding bar to grant, so this stays correct if the
+-- balance numbers or the level multiplier change later. FOLLOW_TRIGGER_RATIO in
+-- Trust.lua is 0.5 and the comparison there is >=, so exactly half crosses it.
+local INSTANT_BOND_BAR_FRACTION = 0.5
 local PET_RANGE = 500.0       -- Unreal units (cm). ~5 meters.
 local PET_MAX_ANGLE_DEG = 25  -- how far off-center the camera can be and still count as "looking at" a Pal.
 -- Two-hundred-and-first pass: Play-specific now (Pet has its own
@@ -2768,6 +2798,97 @@ grant_wild_interaction = function(pal, amount, label)
     return true
 end
 
+-- F9. Grants a share of the bonding bar directly, with NO interaction played.
+--
+-- Deliberately different from do_play() in two ways, both of which are the
+-- point of the test rather than oversights:
+--   * it does NOT require the player to be idle, and
+--   * it does NOT require the TARGET to be idle
+-- because nothing is played on either of them. do_play() checks both because
+-- it starts a real animation; this only writes a number and notifies Trust.
+--
+-- Everything downstream is the ordinary path -- grant_wild_interaction keeps
+-- its hard ownership guard (an owned Pal is never granted through it), and the
+-- follow trigger fires from Trust exactly as it does after a third pet. The
+-- only thing removed is the interaction itself.
+local function do_instant_bond()
+    Logger.log(string.format("[PalBonds/Interaction] [INSTANT-BOND] %s pressed", INSTANT_BOND_KEY))
+
+    local player = FindFirstOf("PalPlayerCharacter")
+    if not player or not player:IsValid() then
+        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] no local PalPlayerCharacter found — are you in-world?")
+        return
+    end
+
+    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
+    if not originLoc then
+        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
+    end
+    if not originLoc then
+        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read player/camera location")
+        return
+    end
+
+    local controlRot = safe_call(function() return player:GetControlRotation() end)
+    if not controlRot then
+        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read player control rotation")
+        return
+    end
+
+    local pal, dist, angle = find_targeted_pal(originLoc, rotator_to_forward(controlRot), player)
+    if not pal then
+        Logger.log(string.format(
+            "[PalBonds/Interaction] [INSTANT-BOND] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
+            PET_RANGE, PET_MAX_ANGLE_DEG
+        ))
+        return
+    end
+
+    if Capture.HasPermanentlyFled(pal) then
+        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] this Pal already lost all its trust and fled permanently — refusing")
+        return
+    end
+
+    -- Half of THIS Pal's own bar, not a hardcoded number, so the test stays
+    -- valid once the balance values go back to their real settings.
+    -- math.ceil, not floor: with an odd threshold, floor would land one point
+    -- short and the >= comparison in Trust.lua would not fire — which would
+    -- look on the log exactly like "the follow mechanism failed again".
+    local threshold = safe_call(function() return Trust.GetBondingThreshold(pal) end)
+    if not threshold or threshold <= 0 then
+        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read this Pal's bonding threshold — nothing granted")
+        return
+    end
+    local amount = math.ceil(threshold * INSTANT_BOND_BAR_FRACTION)
+
+    Logger.log(string.format(
+        "[PalBonds/Interaction] [INSTANT-BOND] target %s at %.0f units (%.1f deg off-center) — bar threshold %s, granting +%s (%.0f%% of the bar) with NO interaction played",
+        tostring(safe_call(function() return pal:GetFullName() end)), dist, angle,
+        tostring(threshold), tostring(amount), INSTANT_BOND_BAR_FRACTION * 100
+    ))
+
+    local granted = grant_wild_interaction(pal, amount, "InstantBond (F9)")
+    if not granted then
+        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] grant refused — see the [GRANT] line above for the reason")
+        return
+    end
+
+    -- State the resulting ratio explicitly. If following does not start, this
+    -- line is what separates "the threshold was never actually crossed" from
+    -- "it was crossed and the follow mechanism still did nothing" — the exact
+    -- ambiguity that has already cost several test runs.
+    safe_call(function()
+        local param = get_individual_parameter(pal)
+        local point = param and param:IsValid() and param:GetFriendshipPoint() or nil
+        if point ~= nil then
+            Logger.log(string.format(
+                "[PalBonds/Interaction] [INSTANT-BOND] after grant: friendship %s / %s = ratio %.2f (follow triggers at >= 0.50)",
+                tostring(point), tostring(threshold), point / threshold
+            ))
+        end
+    end)
+end
+
 local function closeRadialMenuActionWindow()
     if radialMenuRedirectedThisWindow and lastDecidedInstruction then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] window closing with a substituted wild Pal and a decided instruction=" .. tostring(lastDecidedInstruction) .. " — firing the real action now")
@@ -3032,6 +3153,14 @@ function Interaction.Init()
         safe_call(do_play)
     end)
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(PLAY_KEY) returned — still alive")
+
+    -- Two-hundred-and-twenty-ninth pass: F9 = instant bond, no interaction.
+    -- Same plain RegisterKeyBind shape as PLAY_KEY (a single unmodified key).
+    Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBind(INSTANT_BOND_KEY=%s) NOW", tostring(INSTANT_BOND_KEY)))
+    RegisterKeyBind(Key[INSTANT_BOND_KEY], function()
+        safe_call(do_instant_bond)
+    end)
+    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(INSTANT_BOND_KEY) returned — still alive")
 
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to run log_emote_index_mapping (static EMOTE-DIAG scan) NOW")
     safe_call(log_emote_index_mapping)

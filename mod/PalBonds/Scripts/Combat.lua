@@ -1056,7 +1056,11 @@ end
 -- proven to install and still not move the Pal (see its block below), so the
 -- fallback Dragón pre-committed to applies. This is his call, made in advance
 -- and in his own words: go back to the tight leash, not the nudge.
-local USE_TERRITORY_FOLLOW = true
+-- Two-hundred-and-twenty-ninth pass: OFF again for the duration of the F9
+-- test, so any following observed is attributable to the follow action alone.
+-- The tight radii below (500/1200) stay as they are — this is a toggle, and
+-- flipping it back is the whole fallback.
+local USE_TERRITORY_FOLLOW = false
 local TERRITORY_LEASH_TYPE = 0
 -- Two-hundred-and-twenty-fourth pass (2026-09-07) — WIDENED, and this is the
 -- change being tested. Dragón's two symptoms from the last run point at the
@@ -1298,7 +1302,17 @@ end
 --    failed way too often"
 -- The territory leash below is therefore restored to its TIGHT values, and the
 -- nudge stays off.
-local USE_REAL_FOLLOW_ACTION = false
+-- Two-hundred-and-twenty-ninth pass: BACK ON for Dragon's F9 test. It was
+-- switched off last pass on the reading that it installs but is inert; his
+-- petting observation reopened that, because a stuck high-priority petting
+-- action explains the frozen Petallia just as well and would have been
+-- invisible in every earlier run (every previous mechanism bypassed the action
+-- stack entirely). F9 grants the bar with no interaction played, so this run
+-- finally tests the follow action with the confound removed.
+-- ONE variable changed: still BP_AIAction_OtomoFollow_C, still priority 10.
+-- The FunnelFollow subclass is the next thing to try, deliberately NOT
+-- combined with this one.
+local USE_REAL_FOLLOW_ACTION = true
 local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/BP_AIAction_OtomoFollow.BP_AIAction_OtomoFollow_C"
 -- EAIRequestPriority: Ultimate=3 is what this project already used for the
 -- composite attempt (AI_REQUEST_PRIORITY_LOGIC=3). Same value kept for
@@ -1337,6 +1351,16 @@ local function get_follow_action_class()
         if FollowActionClass ~= nil then
             Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] OtomoFollow class path did not resolve; using the FunnelFollow subclass instead")
         end
+    end
+    -- Two-hundred-and-twenty-ninth pass: log WHICH class was actually resolved,
+    -- always. Dragón asked a fair question the log could not answer directly
+    -- ("weren't we trying the funnel follow?") — it had to be inferred from the
+    -- ABSENCE of the fallback line above, which is a terrible way to establish a
+    -- fact. The two classes are a parent and its subclass and may well behave
+    -- differently, so which one ran is a primary result, not a footnote.
+    if FollowActionClass ~= nil then
+        local resolvedName = safe_call(function() return FollowActionClass:GetFullName() end)
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] follow-action class resolved = " .. tostring(resolvedName))
     end
     return FollowActionClass
 end

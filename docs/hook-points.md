@@ -1657,3 +1657,34 @@ A wild Pal left alone wanders, grazes and reacts to noise. This one did nothing 
 A middle radius **with** the per-follower stagger has never been tried. The stagger was introduced at the same time as the widening, so its effect was never isolated either. Flagged for Dragón rather than changed unilaterally — it is a gameplay-feel decision, not a technical one.
 
 Deployed and md5-verified; all 11 files pass `luaparse`.
+
+## Two-hundred-and-twenty-ninth pass (2026-09-07): Dragón reopens the previous conclusion with a fact the log could not contain, and F9 removes the confound
+
+Two corrections from Dragón, both landing.
+
+**1. We never actually tried the funnel's follow.** He asked directly: *"i thought we were trying for the funnel follow, wouldn't that mean that the funnel had something we still miss?"* Checked, and he is right. `FOLLOW_ACTION_CLASS_PATH` resolves `BP_AIAction_OtomoFollow_C`; the funnel class is only a *fallback if the Otomo path fails to load*, and its fallback log line never appears in the run. **Otomo follow was tested; funnel follow was not.**
+
+The original reasoning was that `FunnelFollow` inherits from `OtomoFollow`, so the parent was the "common base". For this project that is backwards: the funnel is the one that follows the player **while not being the active Otomo**, which is precisely the situation a bonding wild Pal is in, and whatever makes that work without ownership would live in the subclass, not the parent. `BP_AIAction_FunnelFollow_C` is a real untried candidate and is the next thing to try — deliberately **not** combined with this pass's change.
+
+The log never recorded *which* class was built, so answering him required inferring it from the *absence* of a fallback line. That is a bad way to establish a fact, so `get_follow_action_class()` now logs the resolved class name unconditionally.
+
+**2. Petting is a confound, not just a setup step.** His words: *"petting and feeding have higher interaction, normally if a pal is fighting or moving around i can use the radial menu to pet and feed and they will drop everything they're doing and come to me — so you could say its a higher interaction, thus if pet got stuck, it would explain too why she didnt move at all."*
+
+This is domain knowledge the log could not have produced, and it is a complete alternative explanation for the frozen Petallia. If the petting pair-call sits above Logic and does not release, the follow action could be perfectly healthy and simply never get a turn. The readback supports it: `BP_AIActionPairCall_Petting_C` was still the current action **7 seconds after the last pet**, and she stayed still for ~48 seconds after that.
+
+What makes the hypothesis strong rather than merely possible: **every previous follow mechanism bypassed the action stack entirely** — move orders and the leash act on the controller and movement, not on actions. A stuck petting action would have been invisible in every run before this one. This was the first mechanism that depended on the action stack, and it is exactly when the symptom appeared.
+
+So the previous pass's "the action is inert" was stated with more confidence than the evidence supports. Two explanations are live, not one, and they are separable.
+
+**F9 — Dragón's idea, and a better experiment than the one being planned.** Every follow test so far installs the follow only as a *side effect* of crossing the bonding bar, which requires petting the Pal three times first. F9 removes that: aim at a Pal that has never been touched, press once, and it receives 50% of its own bonding bar with **no game action played at all** — no pair-call, no animation, nothing that can occupy the action stack. Whatever happens next is the follow mechanism alone.
+
+Implementation notes:
+- `INSTANT_BOND_KEY = "F9"`. Genuinely free — it used to be the manual Pet key, the radial menu replaced it, the bind was removed, and only the dead `PET_KEY` constant remained. `InputSpy` (which used to watch every F-key) is disabled.
+- Grants `math.ceil(Trust.GetBondingThreshold(pal) * 0.5)`, a fraction of *that Pal's own* bar rather than a hardcoded number, so it stays valid once the balance values return to their real settings. `ceil` and not `floor` because `Trust.lua` compares `ratio >= 0.5` — with an odd threshold, `floor` would land one point short and look exactly like another follow failure.
+- Routes through the existing `grant_wild_interaction`, so the hard ownership guard (never grants to an owned Pal) is unchanged. Unlike `do_play()` it does **not** require the player or the target to be idle, because nothing is played on either.
+- Logs the resulting ratio explicitly, so "the threshold was never crossed" and "it was crossed and nothing followed" can never again be confused.
+- On the release cleanup list with the other test keys.
+
+**Toggle state for this run:** `USE_REAL_FOLLOW_ACTION = true` (still Otomo, still priority 10), `USE_TERRITORY_FOLLOW = false`, nudge/orbit/move-to-actor off. One variable changed from the previous run: the petting is gone. The tight leash radii stay written in the file, merely disabled.
+
+All 11 files pass `luaparse`; deployed and md5-verified.
