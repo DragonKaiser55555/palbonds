@@ -1578,3 +1578,21 @@ Now pushed at **Logic (10)**, and that value is chosen for a reason rather than 
 - Following holds AND they fight back = the priority ordering achieved what the leash structurally could not.
 
 All 11 files verified with `luaparse`, deployed and md5-verified.
+
+## Two-hundred-and-twenty-sixth pass (2026-09-07): I have been measuring the follow action at the one moment it could never look successful
+
+**Dragón's report and the log agree, and together they say something the log alone did not.** He described the Petallia as *"clearly fighting her own ai that made her drift away, her following wasnt as good as the tight leash, but she did manage to fight back when attacked"*, and she eventually drifted out. The log shows the push at priority 10 reporting `SetAction returned ok`, and the readback again naming `BP_AIActionPairCall_Petting_C`.
+
+**The readback is the problem, not the mechanism — and that is my error.** It has now reported the Petting action twice, at priority 3 and again at priority 10, and both times it was taken microseconds after the push. That is necessarily DURING the pet interaction, because the 50% follow trigger fires from the interaction path itself. An interaction action sitting on top at that instant says nothing whatsoever about whether the follow action is installed underneath it at Logic priority.
+
+**I was one run away from declaring the mechanism dead on a measurement that could not have shown success even if it worked perfectly.** Twice.
+
+What Dragón observed is also consistent with a partial success rather than a total failure: the movement he describes ("following, but fighting her own AI") is what the move-to-actor nudge alone has always produced, so the follow action may be installed and simply losing to the wild AI's own actions — a different problem from not being installed at all, and one with different fixes.
+
+**Two proper checks added, both read-only:**
+1. `HasAction(followClass, priority)` — asks the component directly whether our action is PRESENT at Logic, independent of what happens to be on top. This is the line that actually distinguishes "the push was silently dropped" from "installed but queued below the interaction".
+2. A delayed re-read 6 seconds later, once the interaction has finished and the Pal is idle — the only moment at which a follow action could legitimately be the current one — reporting both the current action and whether ours is still present.
+
+No mechanism changed this pass. The point is to stop drawing conclusions from a measurement taken at the wrong instant, which has now cost two runs' worth of wrong inference.
+
+All 11 files verified with `luaparse`, deployed and md5-verified.

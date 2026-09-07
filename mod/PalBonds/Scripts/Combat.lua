@@ -1230,6 +1230,9 @@ local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/
 local FOLLOW_ACTION_PRIORITY = 10
 local FOLLOW_ACTION_MAX_PER_PAL = 1
 local FOLLOW_ACTION_MAX_TOTAL = 40
+-- How long after the push to re-read, so the check lands when the Pal is idle
+-- rather than mid-interaction. See the readback block for why this matters.
+local FOLLOW_ACTION_RECHECK_MS = 6000
 
 local followActionAttempts = {}
 local followActionTotal = 0
@@ -1316,14 +1319,56 @@ local function try_real_follow_action(pal, key, playerActor)
         return
     end
 
-    -- Read back what the component is actually running now. This is the line
-    -- that says whether it took: if the current action becomes the follow
-    -- action, the mechanism is genuinely installed.
+    -- Two-hundred-and-twenty-sixth pass (2026-09-07) — THE READBACK WAS
+    -- MEASURED AT THE WORST POSSIBLE MOMENT, and that is my error, not a
+    -- property of the mechanism.
+    --
+    -- The immediate readback below has now reported "BP_AIActionPairCall_
+    -- Petting_C" twice, at priority 3 and again at priority 10, and both times
+    -- it was taken microseconds after the push — which is necessarily DURING
+    -- the pet/feed interaction, because the 50% follow trigger fires from the
+    -- interaction path itself. An interaction action sitting on top at that
+    -- instant says nothing about whether the follow action is installed
+    -- underneath it at Logic priority. I have twice been on the verge of
+    -- declaring the mechanism dead on a measurement that could not have shown
+    -- success even if it had worked perfectly.
+    --
+    -- Two better checks, both read-only:
+    --   1. HasAction(class, priority) — asks the component directly whether
+    --      our action is PRESENT at Logic, regardless of what is currently on
+    --      top. This distinguishes "the push was silently dropped" from
+    --      "it is installed but queued below the interaction".
+    --   2. A delayed re-read several seconds later, once the interaction has
+    --      finished and the Pal is idle — the only moment at which a follow
+    --      action could legitimately be the current one.
     safe_call(function()
         local cur = actionComp:GetCurrentAction_BP()
         local curName = cur and safe_call(function() return cur:GetFullName() end)
         Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) ..
-            " — current action immediately after push = " .. tostring(curName))
+            " — current action IMMEDIATELY after push (expected to be the interaction) = " .. tostring(curName))
+    end)
+
+    safe_call(function()
+        local present = actionComp:HasAction(cls, FOLLOW_ACTION_PRIORITY)
+        Logger.log("[PalBonds/Combat] [FOLLOW-ACTION] " .. tostring(key) ..
+            " — HasAction(followClass, priority " .. FOLLOW_ACTION_PRIORITY .. ") = " .. tostring(present) ..
+            "  <-- this is the line that says whether the push actually stuck")
+    end)
+
+    pcall(function()
+        ExecuteInGameThreadWithDelay(FOLLOW_ACTION_RECHECK_MS, function()
+            safe_call(function()
+                if not (pal and pal:IsValid() and actionComp and actionComp:IsValid()) then return end
+                local cur2 = actionComp:GetCurrentAction_BP()
+                local cur2Name = cur2 and safe_call(function() return cur2:GetFullName() end)
+                local still = safe_call(function() return actionComp:HasAction(cls, FOLLOW_ACTION_PRIORITY) end)
+                Logger.log(string.format(
+                    "[PalBonds/Combat] [FOLLOW-ACTION] %s — RECHECK after %.0fs: current action = %s | still present at priority %d = %s",
+                    tostring(key), FOLLOW_ACTION_RECHECK_MS / 1000, tostring(cur2Name),
+                    FOLLOW_ACTION_PRIORITY, tostring(still)
+                ))
+            end)
+        end)
     end)
 end
 
