@@ -144,7 +144,14 @@ local TICK_INTERVAL_MS = 1500          -- how often the follower tick runs (move
 -- ===================================================================
 -- Paired with Interaction.lua's BALANCE_VERIFICATION_MODE — flip both back
 -- together. See Trust.ComputeLevelMultiplier for what the first one does.
-local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = true
+-- Two-hundred-and-thirty-ninth pass (2026-09-07) — RELEASE PREP. Dragón:
+-- "lets turn back up the balance mode once more and lets remove the f9 instant
+-- bond shortcut, also any other shortcut we are not using also remove it, just
+-- leave the play interaction shortcut for now ... this is already endgame".
+-- Level scaling back ON: a Pal far above the player's level should take
+-- meaningfully longer to win over. Re-enabling this also restores the passive
+-- gain below to its real 2 per tick.
+local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = false
 
 -- Passive gain is also silenced during the verification run, and this is
 -- NOT cosmetic — it would corrupt the test. At 100 per interaction against
@@ -169,7 +176,12 @@ local DAMAGE_FRIENDSHIP_PENALTY = -150
 -- Two-hundred-and-twenty-fifth pass: while a follow mechanism is unproven, a
 -- drift stops the following but does not destroy the bond. See the branch that
 -- uses this below.
-local EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = true
+-- Two-hundred-and-thirty-ninth pass: back to false for release. This was set
+-- true while following was broken, so that a Pal drifting away because of OUR
+-- bug did not also destroy the bond Dragón had just spent interactions
+-- building. Following works now, so drifting out of range is once again a real
+-- consequence the player is responsible for, which is the intended design.
+local EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = false
 local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following Pal loses all trust
 
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —

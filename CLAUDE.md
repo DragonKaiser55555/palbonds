@@ -95,6 +95,26 @@ Detalle técnico completo, con las citas exactas de Dragón y el razonamiento co
 5. Seguimiento real durante el vínculo (ANTES de la captura — no confundir con seguir ya siendo Otomo real, eso ya funciona confirmado por Dragón). Primer paso, costo cero: revisar el diagnóstico `[FOLLOW-DIAG]` que ya existe desde hace varias pasadas y nunca se leyó
 6. Que los Pals en vínculo ayuden en combate (depende de que el punto 5 tenga resultado primero)
 
+**Nombre público decidido (2026-09-07): PalBonds.** Dragón preguntó entre "PalBonds" y "PalTamers" pensando en marketing, y eligió PalBonds. El razonamiento que se le dio y que conviene conservar: "tamer" es una palabra de género que no distingue nada — Palworld ya tiene captura, así que un jugador que lee "PalTamers" no aprende nada nuevo; "bond" nombra justamente la mecánica que este mod agrega y que el juego base no tiene (acariciar/alimentar/jugar hasta que el Pal decide seguirte y unirse solo). Además "bonds" se lee como algo mutuo, mientras "tamers" es algo que se le hace al Pal. **Pendiente de Dragón: verificar en Nexus que el nombre esté libre.** Si estuviera tomado, la alternativa recomendada es "PalBefriend", no "PalTamers".
+
+**Nombres de personalidad para el jugador — DECIDIDOS E IMPLEMENTADOS (2026-09-07).** Los eligió Dragón; ya están en `Indicator.lua` (`PERSONALITY_DISPLAY_NAMES`), reemplazando los strings internos que se mostraban antes:
+
+| tier interno | nombre visible |
+|---|---|
+| normal / unknown | Normal |
+| friendly | Curious |
+| escape | Timid |
+| notinterested | Aloof |
+| warlike | Grumpy |
+| warlike_anyway | Hostile |
+| kill_all | Feral |
+
+Estados de vínculo, que TAPAN a la personalidad y se calculan desde la barra (no desde el string de disposition, porque un Pal ganado por vínculo y uno que simplemente sacó el tier "friendly" comparten el mismo valor y no se pueden distinguir de otro modo): **≥20% = "Friendly"**, **≥50% = "Bonding"**. Sin nombre para 100% — palabras de Dragón: "no necesitamos un nombre para 100% porque para entonces ya va a estar capturado".
+
+**Grumpy y Hostile se quedan SEPARADOS por decisión explícita de Dragón, y la razón conviene conservarla para que nadie los fusione después como "limpieza":** *"while grumpy doesnt attack inmediately, it can attack if it sees another pal of its same species attacking, so kind of like they join - its an interesting personality"*. Es un Pal que se suma a peleas ajenas de su especie, no un hostile debilitado.
+
+**Etiqueta de personalidad como opción para el jugador (pedido de Dragón, 2026-09-07).** Hoy la etiqueta de personalidad sobre cada Pal existe solo como herramienta de desarrollo, con los nombres internos crudos. Dragón quiere que en el producto final sea una **opción activable por el jugador** (no siempre visible, no siempre oculta), con **nombres pensados para jugadores, no los internos**. Él va a proponer los nombres; la lista completa de tiers que la etiqueta puede mostrar hoy está en la respuesta del 2026-09-07 y en `PERSONALITY_TIERS` (Personality.lua). Se ata al punto 10 (pantalla de configuración) — cuando esa exista, esta etiqueta es una de sus opciones.
+
 **Objetivo declarado por Dragón (2026-09-06): publicar el mod para otros jugadores.** Sus palabras al volver del servidor: "lets continue working to soon share this cool mod with other players, so they can tame pals too". Esto convierte varias cosas que hasta ahora eran "lindo tenerlo" en requisitos reales de lanzamiento, y conviene tenerlas anotadas desde ya aunque no se toquen todavía:
 - Sacar/apagar el modo de verificación de balance y volver a los números reales (`BALANCE_VERIFICATION_MODE`, `LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST`) — hoy Pet/Feed/Play están en 100 para pruebas, no son valores de lanzamiento.
 - Sacar las teclas y diagnósticos experimentales que quedan (CTRL+K, CTRL+H, **F9 (`[INSTANT-BOND]`, agregada 2026-09-07 solo para probar el seguimiento sin interacción previa)**, `[BALANCE-TEST]`, `[NAME-DIAG]`, `[CAGE-VFX]`, `[FOLLOW-ACTOR]`) — un jugador no debería ver nada de eso.

@@ -1341,6 +1341,238 @@ end
 -- a plain linear interpolation per channel (R/G/B), no extra libraries
 -- needed. Real visual-styling options exposed to Lua turned out to be
 -- narrow — `UProgressBar`'s own header dump (CXXHeaderDump/UMG.hpp) only
+-- ===================================================================
+-- PLAYER-FACING PERSONALITY NAMES (two-hundred-and-thirty-sixth pass, 2026-09-07)
+-- ===================================================================
+-- Until now the label printed this project's INTERNAL tier strings —
+-- "notinterested", "warlike_anyway", "companion_combat". Fine for development,
+-- unshippable. Dragón asked for player-friendly names and chose them himself;
+-- these are his, with one substitution of mine he accepted (Feral).
+--
+-- The rolled personalities:
+--   normal          -> Normal    (behaviour comes from the species, untouched)
+--   friendly        -> Curious   (stops and looks at the player as he approaches)
+--   escape          -> Timid     (runs away on approach)
+--   notinterested   -> Aloof     (ignores the player; deliberately distinct from Normal)
+--   warlike         -> Grumpy    (postures, rarely starts a fight)
+--   warlike_anyway  -> Hostile   (always attacks the player)
+--   kill_all        -> Feral     (attacks anything on sight)
+--
+-- Grumpy and Hostile stay SEPARATE, on Dragón's explicit call and for a reason
+-- worth recording so nobody merges them later as a tidy-up: "while grumpy
+-- doesnt attack inmediately, it can attack if it sees another pal of its same
+-- species attacking, so kind of like they join - its an interesting
+-- personality". It is a joiner, not a weaker hostile.
+--
+-- THE BONDING STATES OVERRIDE THE PERSONALITY, and are keyed off the bar
+-- directly rather than off the disposition string. That is deliberate: a Pal
+-- won over by bonding and a Pal that merely ROLLED the friendly tier both end up
+-- with disposition == "friendly", so the string alone cannot tell them apart and
+-- would show two different meanings under one name. The ratio can, exactly, and
+-- the thresholds are the same ones the systems themselves use.
+--
+--   >= 20% of the bar -> "Friendly"   (the friendly-trigger fraction)
+--   >= 50% of the bar -> "Bonding"    (the follow trigger)
+--
+-- No name for 100%, per Dragón: by then the Pal is already being captured.
+local USE_PLAYER_FACING_PERSONALITY_NAMES = true
+
+local PERSONALITY_DISPLAY_NAMES = {
+    normal = "Normal",
+    unknown = "Normal",
+    friendly = "Curious",
+    escape = "Timid",
+    notinterested = "Aloof",
+    warlike = "Grumpy",
+    warlike_anyway = "Hostile",
+    kill_all = "Feral",
+    -- Reached only if the ratio lookup fails; the thresholds below normally
+    -- catch this state first.
+    companion_combat = "Bonding",
+}
+
+local BOND_LABEL_FRIENDLY_RATIO = 0.2
+local BOND_LABEL_BONDING_RATIO = 0.5
+
+-- ===================================================================
+-- LABEL STYLING (two-hundred-and-thirty-seventh pass, 2026-09-07)
+-- ===================================================================
+-- Dragón's direction, after seeing it in game for the first time: "keep it
+-- white, capitalize it, smaller and dimmer, but not next to the name, below the
+-- friendship bar, more close and aligned to it, not with so much space around".
+-- Explicitly NO colour coding — he considered it and said no.
+--
+-- The screenshot showed why it read as part of the Pal's NAME rather than as a
+-- status: the text renders at the widget's default size, which is far larger
+-- than the 14px slot it sits in, so it overflowed its box and floated well below
+-- the bars with a lot of air around it.
+--
+-- Layout of the nameplate stack, so the numbers below are readable rather than
+-- magic. refY/refH are the HP bar's own slot position and height:
+--     HP bar      Y = refY                    height refH
+--     trust bar   Y = refY + refH + 2         height 6      (ends at +refH+8)
+--     label       Y = refY + refH + 9         height 12     (was +12, height 14)
+-- One pixel under the trust bar instead of four, and the same X and width as the
+-- bars so it lines up with them rather than with the name above.
+--
+-- Size and dimming are done with RenderScale and RenderOpacity rather than by
+-- setting a font: FSlateFontInfo is a struct this project has no confirmed-safe
+-- way to build from Lua, while these two are plain UWidget setters. Both are
+-- pcall-guarded and the result is logged once, so if either turns out not to
+-- exist on this build it shows up as a log line instead of an invisible no-op.
+-- Measured from the DIAG-GEOM dump rather than estimated, using the real slot
+-- numbers this build reports:
+--     ProgressBar_HP   pos=(64, 26)  size=(120, 4)   -> bottom edge at 30
+--     trust bar        pos=(64, 32)  size=(120, 6)   -> bottom edge at 38
+--     personality      pos=(64, 39)  size=(120, 18)
+-- So the SLOT was already sitting one pixel under the trust bar and the gap
+-- Dragón is seeing is not slot spacing at all — it is the copied name font being
+-- taller than the 18px box, so the glyphs render low inside it. Pulling the slot
+-- up by 3 closes the visible gap without moving the box into the bar: at 36 the
+-- slot top still sits below the HP bar and only overlaps the trust bar's last
+-- two pixels, which the text does not occupy anyway.
+local LABEL_GAP_BELOW_BAR = 6
+local LABEL_HEIGHT = 18   -- roomier than the previous 12: the copied name font is larger than the shrunken text it replaces, and a slot too short for it would clip the glyphs. The DIAG-GEOM dump reports the real numbers so this can be matched exactly next pass.
+
+-- Two-hundred-and-thirty-eighth pass (2026-09-07). The previous attempt shrank
+-- and faded the label with RenderScale/RenderOpacity, and Dragón's screenshot
+-- shows why that was the wrong tool: "still looks off ... the text looks too
+-- dim now, i asume you lowered the font-weight, raise it a bit or again, copy it
+-- from the name lol". He is right about the cause even if not the mechanism —
+-- RenderOpacity fades the whole widget, which reads as thin, washed-out text
+-- rather than as smaller text, and RenderScale resamples the glyphs instead of
+-- rendering them at a smaller size, which is what made it look soft.
+--
+-- His instruction is the better one and it is now what this does: COPY THE STYLE
+-- FROM THE PAL'S OWN NAME. WBP_EnemyGauge_C exposes Text_Name (a
+-- UBP_PalTextBlock_C — the exact same class our label already is, since the
+-- label class is taken from Text_WorkName:GetClass()), so its Font,
+-- ColorAndOpacity and shadow can be handed straight across as same-typed values.
+-- No struct is built and no struct is mutated: the font is read from one widget
+-- and passed to the other's SetFont, which is the safest possible form of this.
+-- Deliberately NOT modifying the copied FSlateFontInfo's Size field — that
+-- struct may well be a live reference to the name widget's own font, and
+-- shrinking it could shrink the Pal's actual NAME.
+--
+-- RenderScale and RenderOpacity are explicitly reset to 1, both because the font
+-- now carries the appearance and because leaving them would compound with it.
+--
+-- ALIGNMENT. Dragón also reported "it looks like if the name had an extra
+-- padding or something that is not letting it align correctly with the
+-- friendship bar". Rather than guess at an offset a third time, this dumps the
+-- real slot geometry of Text_Name, ProgressBar_HP and our own label once per
+-- session, so the next adjustment is made from measured numbers instead of from
+-- looking at a screenshot.
+local loggedLabelStyleOnce = false
+local loggedLabelGeometryOnce = false
+
+local function style_personality_label(labelObj, gaugeWidget)
+    if labelObj == nil then return end
+
+    -- Always neutralise the previous pass's render tricks, even if the font copy
+    -- below fails — otherwise a failed copy would leave the label dim AND
+    -- unstyled, which is worse than either.
+    local scaleOk = pcall(function() labelObj:SetRenderScale({X = 1.0, Y = 1.0}) end)
+    local opacityOk = pcall(function() labelObj:SetRenderOpacity(1.0) end)
+
+    local nameText = nil
+    pcall(function() nameText = gaugeWidget.WBP_EnemyGauge.Text_Name end)
+    local nameValid = nameText ~= nil and pcall(function() return nameText:IsValid() end) and nameText:IsValid()
+
+    local fontOk, colorOk, shadowOk, justifyOk = false, false, false, false
+    if nameValid then
+        fontOk = pcall(function() labelObj:SetFont(nameText.Font) end)
+        colorOk = pcall(function() labelObj:SetColorAndOpacity(nameText.ColorAndOpacity) end)
+        -- The name reads crisply against any background because it carries a
+        -- shadow/outline. Without copying this the label would be the right size
+        -- and weight but still hard to read over bright terrain.
+        shadowOk = pcall(function() labelObj:SetShadowColorAndOpacity(nameText.ShadowColorAndOpacity) end)
+        pcall(function() labelObj.ShadowOffset = nameText.ShadowOffset end)
+        justifyOk = pcall(function() labelObj:SetJustification(nameText.Justification) end)
+    end
+
+    if not loggedLabelStyleOnce then
+        loggedLabelStyleOnce = true
+        Logger.log(string.format(
+            "[PalBonds/Indicator] [DIAG-LABEL] copied style from Text_Name (logged once) — nameFound=%s font=%s color=%s shadow=%s justify=%s | render resets scale=%s opacity=%s",
+            tostring(nameValid), tostring(fontOk), tostring(colorOk),
+            tostring(shadowOk), tostring(justifyOk), tostring(scaleOk), tostring(opacityOk)
+        ))
+    end
+end
+
+-- One-shot, read-only. Prints where the name, the HP bar and our label actually
+-- sit, so the alignment complaint can be answered with numbers.
+local function dump_label_geometry(gaugeWidget, labelObj)
+    if loggedLabelGeometryOnce then return end
+    loggedLabelGeometryOnce = true
+    local function slotOf(w)
+        local sx, sy, sw, sh
+        pcall(function()
+            local sl = w.Slot
+            local pos = sl:GetPosition()
+            local size = sl:GetSize()
+            sx, sy = pos.X, pos.Y
+            sw, sh = size.X, size.Y
+        end)
+        return string.format("pos=(%s,%s) size=(%s,%s)", tostring(sx), tostring(sy), tostring(sw), tostring(sh))
+    end
+    pcall(function()
+        local eg = gaugeWidget.WBP_EnemyGauge
+        Logger.log("[PalBonds/Indicator] [DIAG-GEOM] Text_Name      " .. slotOf(eg.Text_Name))
+        Logger.log("[PalBonds/Indicator] [DIAG-GEOM] ProgressBar_HP " .. slotOf(eg.ProgressBar_HP))
+    end)
+    if labelObj ~= nil then
+        Logger.log("[PalBonds/Indicator] [DIAG-GEOM] personality    " .. slotOf(labelObj))
+    end
+end
+
+-- Two-hundred-and-fortieth pass (2026-09-07): player-facing on/off switch for
+-- the personality tags, bound to F9. Dragón's reasoning: the tags are a visible
+-- change to every nameplate in the game and some players will not want them.
+--
+-- Implemented as an empty-string write rather than by destroying and rebuilding
+-- the label widgets. Rebuilding is how this file caused a real crash before (the
+-- Control-reuse bug), and an empty string is indistinguishable from no tag on
+-- screen while leaving every widget in a known-good state. Flipping it back is
+-- immediate because update_trust_bars rewrites the text on its next pass.
+--
+-- labelLastText is cleared on every Pal at toggle time so the "only write when
+-- the text CHANGES" optimisation does not skip the very write that applies the
+-- toggle.
+local personalityLabelsVisible = true
+
+function Indicator.TogglePersonalityLabels()
+    personalityLabelsVisible = not personalityLabelsVisible
+    for _, entry in pairs(trackedBars) do
+        if type(entry) == "table" then entry.labelLastText = nil end
+    end
+    Logger.log("[PalBonds/Indicator] [TAG-TOGGLE] personality tags are now " ..
+        (personalityLabelsVisible and "VISIBLE" or "HIDDEN") ..
+        " (F9; session-only, resets to visible on the next launch)")
+end
+
+local function personality_display_text(actor, disposition)
+    if not personalityLabelsVisible then return "" end
+    if not USE_PLAYER_FACING_PERSONALITY_NAMES then
+        return disposition or "?"
+    end
+
+    -- Bonding progress wins over the rolled personality: once a Pal is being
+    -- won over, what it started as stops being the useful thing to show.
+    local ratio = get_friendship_ratio(actor)
+    if ratio ~= nil then
+        if ratio >= BOND_LABEL_BONDING_RATIO then return "Bonding" end
+        if ratio >= BOND_LABEL_FRIENDLY_RATIO then return "Friendly" end
+    end
+
+    if disposition == nil then return "?" end
+    -- An unmapped disposition falls back to the raw string rather than to a
+    -- wrong name: if a tier is ever added and this table is not updated, it
+    -- should look obviously unfinished instead of silently mislabelling a Pal.
+    return PERSONALITY_DISPLAY_NAMES[disposition] or disposition
+end
+
 -- exposes `SetPercent`, `SetIsMarquee`, and `SetFillColorAndOpacity` as
 -- callable functions; the brush/border imagery live inside `WidgetStyle`
 -- (an `FProgressBarStyle` struct holding `FSlateBrush` images), which
@@ -1454,8 +1686,10 @@ local function reparent_existing_bar(entry, newGaugeWidget)
         end)
         local labelAddOk, labelSlot = pcall(function() return targetPanel:AddChildToCanvas(entry.label) end)
         if labelAddOk and labelSlot ~= nil and labelSlot:IsValid() then
-            pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + 12}) end)
-            pcall(function() labelSlot:SetSize({X = refW or 80, Y = 14}) end)
+            pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + LABEL_GAP_BELOW_BAR}) end)
+            pcall(function() labelSlot:SetSize({X = refW or 80, Y = LABEL_HEIGHT}) end)
+            style_personality_label(entry.label, newGaugeWidget)
+            dump_label_geometry(newGaugeWidget, entry.label)
         end
     end
 
@@ -1694,13 +1928,15 @@ local function install_trust_bar(gaugeWidget)
             local labelAddOk, labelSlot = pcall(function() return targetPanel:AddChildToCanvas(labelObj) end)
             if labelAddOk and labelSlot ~= nil and labelSlot:IsValid() then
                 if refOk then
-                    pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + 12}) end)
-                    pcall(function() labelSlot:SetSize({X = refW or 80, Y = 14}) end)
+                    pcall(function() labelSlot:SetPosition({X = refX or 0, Y = (refY or 0) + (refH or 6) + LABEL_GAP_BELOW_BAR}) end)
+                    pcall(function() labelSlot:SetSize({X = refW or 80, Y = LABEL_HEIGHT}) end)
                 else
-                    pcall(function() labelSlot:SetPosition({X = 0, Y = 35}) end)
-                    pcall(function() labelSlot:SetSize({X = 80, Y = 14}) end)
+                    pcall(function() labelSlot:SetPosition({X = 0, Y = 32}) end)
+                    pcall(function() labelSlot:SetSize({X = 80, Y = LABEL_HEIGHT}) end)
                 end
                 pcall(function() labelObj:SetVisibility(0) end)
+                style_personality_label(labelObj, gaugeWidget)
+                dump_label_geometry(gaugeWidget, labelObj)
                 local setTextOk, setTextErr = pcall(function() labelObj:SetText_GDKInternal(true, "?") end)
                 Logger.log("[PalBonds/Indicator] [DIAG-LABEL] personality label created and positioned — initial text write = " .. (setTextOk and "OK" or ("FAILED: " .. tostring(setTextErr))))
                 newLabel = labelObj
@@ -1878,7 +2114,7 @@ local function update_trust_bars()
                         if labelOk and labelValid then
                             local palId = safe_call(Personality.GetStableId, entry.actor)
                             local disposition = palId and Personality.GetDisposition(palId)
-                            local text = disposition or "?"
+                            local text = personality_display_text(entry.actor, disposition)
                             if entry.labelLastText ~= text then
                                 entry.labelLastText = text
                                 -- Hundred-and-fifty-second pass FIX: same
@@ -2317,10 +2553,41 @@ local function scan_for_gauge_widgets()
     -- Pal actor, every tick, so they actually move.
     update_trust_bars()
 
-    -- Sixty-third pass: one-shot screen-projection probe (see its own
-    -- comment above) — needs a valid player controller, so this keeps
-    -- retrying each tick until one exists, then runs once.
-    probe_screen_projection()
+    -- Two-hundred-and-thirty-seventh pass (2026-09-07) — REMOVED FROM THE
+    -- TICK, and this is a real crash suspect, not just cleanup.
+    --
+    -- Dragón hit an EXCEPTION_ACCESS_VIOLATION reading address 0x338 (a null
+    -- pointer plus a field offset) with UE4SS frames interleaved in the stack,
+    -- on a game launched IMMEDIATELY after closing a previous session. This
+    -- probe is the only place in the entire mod that calls engine screen-
+    -- projection functions — ProjectWorldToScreen / ProjectWorldLocationToScreen
+    -- — on a PlayerController, and by its own design it "keeps retrying each
+    -- tick until one exists", which means it fires repeatedly during world load
+    -- against a controller that may be half-constructed. That is exactly how a
+    -- null-plus-offset read happens.
+    --
+    -- It also already threw this session: UE4SS.log carries a live stack
+    -- traceback through ProjectWorldLocationToScreen at Indicator.lua:2261. That
+    -- one was caught, but pcall only catches LUA errors — a native access
+    -- violation inside the engine call takes the process down regardless of how
+    -- many pcalls wrap it. So "it is guarded" was never protection here.
+    --
+    -- And it feeds nothing. Its only consumer is posmatch_log: it writes log
+    -- lines and no code reads a projected coordinate anywhere. The labels are
+    -- positioned from ProgressBar_HP's real parent panel, not from projection —
+    -- that question was settled passes ago and this probe outlived it.
+    --
+    -- The function is left DEFINED but uncalled, matching what this file already
+    -- does with poll_prism_class/poll_prism_bullet_state, so the research is
+    -- preserved rather than deleted if a future pass wants to run it on demand.
+    --
+    -- Stated honestly: this is not proven to be the crash. There is no dump from
+    -- that launch and the live log ends normally, because the crash happened
+    -- before the mod's logger reopened the file. But it is the only null-deref
+    -- vector this mod has against a loading player controller, it is known to
+    -- have thrown, it matches the signature and the timing, and it has no
+    -- reason to exist any more. Removing it costs nothing.
+    -- probe_screen_projection()
 
     -- Two-hundred-and-sixth pass (2026-09-06) — poll_prism_state() REMOVED
     -- from this tick. It ran TWO full-world FindAllOf scans

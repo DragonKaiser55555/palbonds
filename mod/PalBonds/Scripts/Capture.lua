@@ -374,17 +374,62 @@ end
 -- normal trust bookkeeping silently doesn't run for one Pal on one
 -- interaction — a minor, invisible miss. A false positive is exactly
 -- what caused the real incident above. The asymmetry is deliberate.
+-- Two-hundred-and-forty-first pass (2026-09-07) — REAL BUG, caught by Dragón:
+-- one of his own BASE WORKERS was petted and then captured by this mod.
+--
+-- From the log, unmistakable: `BP_Monkey_Fire_C` ("Tanzee Ignis"), running
+-- `BP_AIAction_BaseCampWorker_Approach_C`, at real friendship rank 3 with 21000
+-- points, was granted +30 by a radial Pet and captured seconds later.
+--
+-- The guard below was checking exactly one thing: SaveParameter.OwnerPlayerUId.
+-- That is correct for a Pal in the player's own party or Palbox, and WRONG for a
+-- base-camp worker, which belongs to the BASE (and, through it, the guild)
+-- rather than to a player UId — so its OwnerPlayerUId is a zero GUID and this
+-- function cheerfully reported "wild".
+--
+-- Two things then compounded it into a capture rather than a harmless pet. The
+-- Pal's real vanilla friendship (21000) is measured against this mod's own
+-- bonding threshold, which is 500 scaled by the level gap — and at pal level 12
+-- versus player level 52 the multiplier was 0.2x, giving a threshold of 125.
+-- 21000 against 125 is a ratio of 168, so the bar was not merely crossed, it was
+-- never in play. That scale collision is only safe as long as owned Pals never
+-- reach this code at all, which is precisely what this guard is for.
+--
+-- Two extra tests, both real functions on UPalCharacterParameterComponent (the
+-- component this file already reads), confirmed in the SDK header rather than
+-- guessed:
+--   * IsOtomo()        — true for an active companion
+--   * GetBaseCampId()  — a non-zero GUID for anything assigned to a base camp
+--
+-- Each is evaluated in its own pcall so that an older or newer build missing one
+-- of them degrades to the remaining checks instead of failing the whole guard.
+-- Every ambiguous outcome still resolves to "owned", which is the safe direction
+-- here: refusing to bond with a wild Pal is a disappointment, capturing someone's
+-- base worker is data loss.
+local function guid_is_zero(g)
+    if g == nil then return true end
+    return (g.A == 0) and (g.B == 0) and (g.C == 0) and (g.D == 0)
+end
+
 function Capture.IsAlreadyOwned(pal)
     local ok, result = pcall(function()
         if pal == nil or not pal:IsValid() then return true end
         local comp = pal.CharacterParameterComponent
         if comp == nil or not comp:IsValid() then return true end
+
+        -- An active companion. Cheapest test, so it goes first.
+        local isOtomoOk, isOtomo = pcall(function() return comp:IsOtomo() end)
+        if isOtomoOk and isOtomo == true then return true end
+
+        -- Assigned to a base camp: the case that produced the bug.
+        local campOk, campId = pcall(function() return comp:GetBaseCampId() end)
+        if campOk and not guid_is_zero(campId) then return true end
+
         local param = comp:GetIndividualParameter()
         if param == nil or not param:IsValid() then return true end
         local ownerId = param.SaveParameter and param.SaveParameter.OwnerPlayerUId
         if ownerId == nil then return true end
-        local isZeroGuid = (ownerId.A == 0) and (ownerId.B == 0) and (ownerId.C == 0) and (ownerId.D == 0)
-        return not isZeroGuid
+        return not guid_is_zero(ownerId)
     end)
     if ok then return result end
     return true -- pcall itself failed -> safe default: treat as owned
@@ -865,6 +910,21 @@ local function play_join_celebration_then(pal, continueFn)
     end
 end
 
+-- Friendship a Pal gains for joining by choice. Dragón's correction: a flat
+-- GRANT of 50000 points, not a raise TO a particular rank.
+--
+-- The difference is real, not cosmetic. Targeting rank 5 meant "end up at 40000
+-- however you got here", so a Pal that already had friendship gained less than
+-- one that had none, and a Pal already above 40000 gained nothing at all. A flat
+-- grant means every Pal that chooses to join is rewarded the same amount on top
+-- of whatever it already had, which is the fairer reading of what the bonus is
+-- for.
+--
+-- For scale, against the real DT_FriendshipRankTable decoded earlier
+-- (1->6000, 2->13000, 3->21000, 4->30000, 5->40000, 6->55000): a Pal starting
+-- from zero lands at rank 5, just short of 6.
+local JOIN_FRIENDSHIP_POINT_GRANT = 50000
+
 function Capture.OnTrustMaxed(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
@@ -890,6 +950,32 @@ function Capture.OnTrustMaxed(pal)
     -- last run proved this: the toast fell through to its generic fallback
     -- because both name routes failed post-capture.
     local preResolvedDisplayName = resolve_pal_display_name(pal, player)
+
+    -- Two-hundred-and-fortieth pass (2026-09-07): a Pal that JOINS by choice
+    -- should not arrive as a stranger, so joining carries a flat friendship
+    -- grant on top of whatever the Pal already had.
+    --
+    -- The mod's own bonding bar tops out around 500 while vanilla's owned-Pal
+    -- friendship runs to 200000 — two entirely separate scales. This call is the
+    -- single point where the mod hands over from one to the other.
+    --
+    -- Done BEFORE the capture, on purpose and for the same reason the handle and
+    -- the display name above are: once PalCaptureSuccess runs the actor is
+    -- mid-teardown and every read or write off it fails. That mistake has
+    -- already cost this project two bugs.
+    safe_call(function()
+        local comp = pal.CharacterParameterComponent
+        if comp == nil or not comp:IsValid() then return end
+        local param = comp:GetIndividualParameter()
+        if param == nil or not param:IsValid() then return end
+        local before = safe_call(function() return param:GetFriendshipPoint() end)
+        local ok = pcall(function() param:AddFriendShip(JOIN_FRIENDSHIP_POINT_GRANT, false) end)
+        local after = safe_call(function() return param:GetFriendshipPoint() end)
+        Logger.log(string.format(
+            "[PalBonds/Capture] [JOIN-BONUS] joining Pal granted +%d friendship for bonding — %s -> %s (call=%s)",
+            JOIN_FRIENDSHIP_POINT_GRANT, tostring(before), tostring(after), ok and "ok" or "FAILED"
+        ))
+    end)
 
     play_join_celebration_then(pal, function()
         local stillValid = safe_call(function() return pal:IsValid() end)

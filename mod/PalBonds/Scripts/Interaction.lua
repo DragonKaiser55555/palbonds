@@ -402,7 +402,7 @@ local INTERACTION_FRIENDSHIP_GAIN = 25
 -- [BALANCE-DIAG] (FloatValue1 on each item's static data) — genuinely
 -- vanilla, no scaling needed.
 -- Two-hundred-and-first pass (2026-09-06): 60 -> 50, Dragon's balance ask.
-local FEED_FRIENDSHIP_BASE = 50
+local FEED_FRIENDSHIP_BASE = 60   -- 50 -> 60 (two-hundred-and-fortieth pass); still 2x Pet, per Dragón's original "feed requires an item" ratio
 
 -- Two-hundred-and-first pass (2026-09-06): the comment three passes above
 -- (this same block) assumed Pet's real vanilla Happy-triggered grant just
@@ -429,7 +429,10 @@ local FEED_FRIENDSHIP_BASE = 50
 -- vanilla's real amount turns out to be. This first live use also finally
 -- gives a clean, isolated read of that real number, closing the question
 -- either way.
-local PET_FRIENDSHIP_GAIN = 25
+-- Two-hundred-and-fortieth pass (2026-09-07): 25 -> 30, Dragón's call after
+-- playing the restored real values. Feed keeps its 2x ratio at 60, Play matches
+-- Pet at 30.
+local PET_FRIENDSHIP_GAIN = 30
 local PET_GRANT_CHECK_DELAY_MS = 3000
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón moved off the raw
 -- real vanilla FloatValue1 numbers (2000/20000) to clean values sized
@@ -459,7 +462,15 @@ local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     -- AffectionFruit_01
 --   Pet 25, Feed 50, Play 25, Kinship Peach 250/500 (peaches are NOT
 --   overridden below — they are already confirmed correct, and leaving
 --   them real keeps the one-shot peach behaviour testable too).
-local BALANCE_VERIFICATION_MODE = true
+-- Two-hundred-and-thirty-ninth pass (2026-09-07) — RELEASE PREP. Dragón:
+-- "lets turn back up the balance mode once more and lets remove the f9 instant
+-- bond shortcut, also any other shortcut we are not using also remove it, just
+-- leave the play interaction shortcut for now ... this is already endgame".
+-- Verification is finished: the 5-interactions-per-Pal runs confirmed Pet, Feed
+-- and Play all grant exactly what they intend. Back to the real values —
+-- Pet 25 (self-correcting: it measures vanilla's own grant around the
+-- interaction and adjusts so the net is exactly 25), Feed 50, Play 25.
+local BALANCE_VERIFICATION_MODE = false
 
 -- Two-hundred-and-eighth pass: set true to restore the very verbose
 -- per-menu-hook trace ([RADIAL-WATCH]/[WORKER-WATCH] "X fired — self=... "
@@ -471,7 +482,7 @@ if BALANCE_VERIFICATION_MODE then
     PET_FRIENDSHIP_GAIN  = 100
     FEED_FRIENDSHIP_BASE = 100
 end
-local PLAY_FRIENDSHIP_GAIN = BALANCE_VERIFICATION_MODE and 100 or 25
+local PLAY_FRIENDSHIP_GAIN = BALANCE_VERIFICATION_MODE and 100 or 30
 
 -- Forward declaration. The real definition lives next to
 -- closeRadialMenuActionWindow (it needs the radial-menu state), but do_play
@@ -3072,9 +3083,11 @@ function Interaction.Init()
     -- use RegisterKeyBindAsync and have never missed a press in this
     -- project's history — worth trying the same mechanism here instead of
     -- assuming the miss is unfixable.
-    RegisterKeyBindAsync(Key.FOUR, {}, function()
-        Logger.log("[PalBonds/Interaction] [FOUR-KEY-SPY] \"4\" pressed")
-    end)
+    -- "4" spy UNBOUND for release. It only ever wrote a log line — the radial
+    -- menu integration is driven by hooks on the menu widget itself, not by this
+    -- bind, so nothing functional depended on it. Worth removing rather than
+    -- merely quietening: "4" is a REAL gameplay key, and a shipped mod claiming
+    -- a bind on it is a needless way to interfere with a player's own controls.
 
     -- Hundred-and-eighty-first pass: one-shot, read-only balance research
     -- (real vanilla Petting/AutoIncrement/penalty values + Kinship Peach's
@@ -3111,15 +3124,17 @@ function Interaction.Init()
     -- Rather than spend one whole test run per candidate, this lets him judge
     -- all seven in a single session and just say which index looks right.
     -- Temporary, already listed under the release cleanup.
-    RegisterKeyBindAsync(Key.V, {ModifierKey.CONTROL}, function()
-        safe_call(do_preview_join_vfx)
-    end)
-    RegisterKeyBindAsync(TEST_CAPTURE_KEY, TEST_CAPTURE_MODIFIERS, function()
-        safe_call(do_test_capture)
-    end)
-    RegisterKeyBindAsync(TEST_SELECTED_FEEDING_KEY, TEST_SELECTED_FEEDING_MODIFIERS, function()
-        safe_call(do_test_multiply_kinship_peach)
-    end)
+    -- CTRL+V / CTRL+K / CTRL+H UNBOUND for release, all three test-only:
+    --   CTRL+V  cycled the join-VFX candidates. Answered — NS_PalCatch_Success
+    --           is the one, confirmed by Dragón and already wired in.
+    --   CTRL+K  forced a capture without earning it.
+    --   CTRL+H  multiplied a Kinship Peach's value to reach the threshold fast.
+    -- The last two are outright cheats and the first has nothing left to ask.
+    -- Their handlers stay defined but unbound.
+    --
+    -- F8 (Play) is deliberately KEPT — Dragón's explicit instruction, "just leave
+    -- the play interaction shortcut for now". It is a real interaction, not a
+    -- test key, and it has no home in the radial menu yet.
     --[[ CTRL+H's PREVIOUS job (hundred-and-sixty-fifth through seventy-
     fifth passes): proving the direct OnSelectedOrderWorkerRadialMenu(Feed)
     dispatch mechanism, standalone. CONFIRMED and now wired permanently
@@ -3159,13 +3174,34 @@ function Interaction.Init()
     end)
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(PLAY_KEY) returned — still alive")
 
-    -- Two-hundred-and-twenty-ninth pass: F9 = instant bond, no interaction.
-    -- Same plain RegisterKeyBind shape as PLAY_KEY (a single unmodified key).
-    Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBind(INSTANT_BOND_KEY=%s) NOW", tostring(INSTANT_BOND_KEY)))
-    RegisterKeyBind(Key[INSTANT_BOND_KEY], function()
-        safe_call(do_instant_bond)
+    -- F9 (instant bond) unbound for release — it existed to test following
+    -- without a petting interaction confounding the result, and it did its job:
+    -- it is what proved the follow action installs, runs, and was losing its
+    -- Trainer pointer. A player must earn the bond through real interactions, so
+    -- a key that fills half the bar instantly cannot ship. do_instant_bond is
+    -- left defined but unbound so it can be re-bound in one line for a test.
+    --
+    -- F9 is REUSED as the personality-tag toggle, per Dragón: "maybe we should
+    -- add a toggle for that, perhaps the same f9, a switcher to turn the tags on
+    -- / off so it doesnt bother some players". Reusing the key rather than
+    -- claiming a new one is his own standing preference.
+    --
+    -- Stated plainly as a known limitation: this is a session toggle, not a
+    -- saved setting. It resets to on every launch, because the mod has no
+    -- settings storage yet — that is the settings-screen item on the release
+    -- list, and this toggle should move into it when that exists.
+    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBind(F9 personality-tag toggle) NOW")
+    RegisterKeyBind(Key.F9, function()
+        safe_call(function()
+            local okI, IndicatorMod = pcall(require, "Indicator")
+            if not (okI and IndicatorMod and IndicatorMod.TogglePersonalityLabels) then
+                Logger.log("[PalBonds/Interaction] [TAG-TOGGLE] Indicator.TogglePersonalityLabels is unavailable — nothing toggled")
+                return
+            end
+            IndicatorMod.TogglePersonalityLabels()
+        end)
     end)
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(INSTANT_BOND_KEY) returned — still alive")
+    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(F9 personality-tag toggle) returned — still alive")
 
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to run log_emote_index_mapping (static EMOTE-DIAG scan) NOW")
     safe_call(log_emote_index_mapping)

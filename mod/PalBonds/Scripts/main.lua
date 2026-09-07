@@ -138,6 +138,11 @@ function PalBonds.Init()
     Interaction.Init()
     Trust.Init()
     Combat.Init()
+    -- Two-hundred-and-thirty-second pass: one global fast loop that keeps the
+    -- follow action's Trainer pointer populated. Started once, here, rather than
+    -- per Pal or per event. It returns immediately whenever no Pal has a follow
+    -- action installed, which is almost always.
+    pcall(Combat.StartTrainerReassertLoop)
     Capture.Init()
     -- OtomoWatch.Init() -- DISABLED two-hundred-and-sixth pass (2026-09-06),
     -- see the require() note above. Same removal reasoning as InputSpy: it
