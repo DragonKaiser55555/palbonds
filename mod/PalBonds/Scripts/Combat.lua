@@ -169,6 +169,8 @@ local ORBIT_RADIUS = 180.0
 local ORBIT_ACCEPTANCE_RADIUS = 60.0
 local ORBIT_STEP_RADIANS = 0.9 -- ~52 degrees per tick, so a full circle takes ~7 ticks (~10s)
 local orbitPhase = 0.0
+-- Two-hundred-and-twenty-third pass: see the block in IssueFollowMoveOrder.
+local USE_ORBIT_WHEN_AT_GOAL = false
 
 -- Two-hundred-and-eleventh pass: try the continuous move-to-actor follow
 -- first (see IssueFollowMoveOrder). Set false to go back to pure
@@ -1523,7 +1525,25 @@ function Combat.IssueFollowMoveOrder(pal, playerLoc, playerActor)
     --     this never happens, because they never get an idle time enough for
     --     their AI to kick again." This just gives them that same condition
     --     while he stands still.
-    if (not usedActorMove) and ok and tonumber(resultOrErr) == MOVE_RESULT_ALREADY_AT_GOAL then
+    -- Two-hundred-and-twenty-third pass (2026-09-07) — ORBIT TURNED OFF, at
+    -- Dragón's observation. He noticed it still firing and asked whether it is
+    -- still needed: "having multiple followers makes them tend to sort of like
+    -- push the player over and over trying to take its spot... i can see it
+    -- being a problem with several pals following."
+    --
+    -- He is right, and it is the direct cause. The orbit sent every follower to
+    -- a rotating point 180 units from the player with a tight 60-unit
+    -- acceptance radius — literally "chase a spot right next to me, forever".
+    -- With one follower that reads as milling about; with several they all
+    -- converge on nearly the same spot and shove each other, and the player,
+    -- out of the way.
+    --
+    -- It was only ever a workaround for the idle window that let the wild AI
+    -- take over, and following is now holding without needing it. Turning it
+    -- off is also a clean single-variable test of exactly that claim: if
+    -- following stays good, the orbit was doing nothing except the crowding.
+    -- The move order itself is untouched and still runs.
+    if USE_ORBIT_WHEN_AT_GOAL and (not usedActorMove) and ok and tonumber(resultOrErr) == MOVE_RESULT_ALREADY_AT_GOAL then
         safe_call(function()
             -- Let a fighting companion fight. FindMostHateTarget is the real
             -- confirmed function on UPalHate, the same system combat assist

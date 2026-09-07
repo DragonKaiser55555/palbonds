@@ -1502,3 +1502,28 @@ BP_AIAction_OtomoFollow_C  : public UPalAIActionBase
 **Fallback built in:** if the OtomoFollow class path does not resolve on this build, it falls back to `BP_AIAction_FunnelFollow_C`, which is certainly loaded whenever Dragón has a Daedream out (his last run proved three of them live in the world).
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-twenty-third pass (2026-09-07): following is holding — but NOT for the reason it looks like, and the orbit is removed
+
+**Game updated this session.** Palworld build went `24575825` -> `25094871`. Dragón flagged it himself and checked the patch notes against what this mod touches; nothing we hook appears to have changed, and this run behaved normally. Recorded because it is exactly the kind of thing that later explains a sudden inexplicable break.
+
+**Important correction, and it goes against the good news.** Every step of the new follow action reported success — `construct returned valid=true`, `Trainer/SelfActor write ok`, `SetAction returned ok`. But the readback added specifically to avoid inferring success from behaviour says otherwise:
+
+```
+current action immediately after push = BP_AIActionPairCall_Petting_C ...
+current action immediately after push = BP_AIActionPairCall_FeedItem_C ...
+```
+
+**The follow action never became the running action.** In all three installs the component was still running the Pet/Feed interaction action a moment later. So the follow action was accepted and then immediately superseded (or queued below the current action's priority).
+
+That readback is a single instant taken while the Pal was mid-interaction, so it does not prove the action never ran later — but it does mean **the follow action cannot be credited for this run's improvement.** The honest ranking of causes: the territory anchor (`SetupLeash` pointed at the player) has now been live for the two runs Dragón describes as good, and is the more likely explanation. Claiming the new mechanism worked would have been the easy read and the wrong one.
+
+**Orbit removed, at Dragón's observation.** He noticed it still firing and asked whether it was still needed: *"having multiple followers makes them tend to sort of like push the player over and over trying to take its spot... if 3 were already enough to push me i imagine that having maybe 6 or 7 followers could end up in the player being surrounded by pals not able to move."*
+
+He is right, and it is the direct cause. The orbit sent every follower to a rotating point 180 units away with a 60-unit acceptance radius — literally "chase a spot right next to me, forever". One follower reads as milling about; several converge on nearly the same point and shove each other and the player. It was only ever a workaround for the idle window that let the wild AI take over, and following is holding without it.
+
+Turning it off is also a **clean single-variable test**: if following stays good, the orbit was contributing nothing except the crowding. The plain move order is untouched and still runs.
+
+**Combat status, answering his "they still dont fight but thats to be expected?":** partly. They fight back when hit (confirmed working several passes ago). What still does not work is joining a fight the player started — `[RETARGET]` has never fired once, because `GetCurrentAction_BP()` does not return an object that accepts `SetTargetAndNextAction`. That is a known, recorded negative rather than an unknown, and it is the next thing to pick up once following is settled.
+
+All 11 files verified with `luaparse`, deployed and md5-verified.
