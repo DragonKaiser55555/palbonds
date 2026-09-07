@@ -1028,8 +1028,38 @@ end
 -- used.
 local USE_TERRITORY_FOLLOW = true
 local TERRITORY_LEASH_TYPE = 0
-local TERRITORY_INNER_RANGE = 500.0
-local TERRITORY_OUTER_RANGE = 1200.0
+-- Two-hundred-and-twenty-fourth pass (2026-09-07) — WIDENED, and this is the
+-- change being tested. Dragón's two symptoms from the last run point at the
+-- same cause, and it is this:
+--
+--   1. "they still managed to push me... its simply that they try to get as
+--      close as me as posible" — every follower is anchored to the SAME point
+--      with a 500-unit inner radius, so they all converge on the player and
+--      shove. Removing the orbit did not fix it because the orbit was not the
+--      cause; the leash is.
+--   2. "now they dont fight back, not even after being hit by an attack, seems
+--      the following mechanic is now too strong" — a Pal that wants to chase
+--      its attacker cannot, because the leash pulls it back inside 500 units
+--      of the player. It is not that they refuse to fight; they are physically
+--      tethered too tightly to reach anything.
+--
+-- His own framing is exactly right: "funny how we went from too soft so they
+-- could escape, to too strong that they cant do anything but follow now."
+-- The leash was tuned to stop drifting and overshot into a cage.
+--
+-- Inner 500 -> 1100 and outer 1200 -> 2800 gives room to close on an attacker
+-- and fight, while still being far inside the 3000-unit leash-break distance
+-- that ends a bond. Per-follower stagger (below) additionally stops them all
+-- wanting the identical spot.
+local TERRITORY_INNER_RANGE = 1100.0
+local TERRITORY_OUTER_RANGE = 2800.0
+-- Each follower gets its own slightly different inner radius, so three of them
+-- do not all target the same distance from the player and fight over it. Keyed
+-- off a per-Pal counter rather than anything random, so a given Pal keeps a
+-- consistent spot instead of jittering between refreshes.
+local TERRITORY_STAGGER_PER_PAL = 260.0
+local territoryStaggerIndex = {}
+local territoryStaggerNext = 0
 local TERRITORY_EVERY_N_TICKS = 3          -- ~4.5s, same cadence as the re-sense
 local TERRITORY_MAX_TOTAL_CALLS = 400      -- hard budget for a whole session
 local TERRITORY_LEASH_ACTOR_CEILING = 8    -- if leash actors ever exceed this, stop
@@ -1072,8 +1102,19 @@ local function update_territory_anchor(pal, playerLoc)
     if not (controller and safe_call(function() return controller:IsValid() end)) then return end
 
     territoryTotalCalls = territoryTotalCalls + 1
+
+    -- Per-follower spacing: give each Pal its own inner radius so they spread
+    -- out instead of all crowding the same point (see the constants above).
+    local key = safe_call(function() return pal:GetFullName() end)
+    if key ~= nil and territoryStaggerIndex[key] == nil then
+        territoryStaggerIndex[key] = territoryStaggerNext
+        territoryStaggerNext = (territoryStaggerNext + 1) % 4
+    end
+    local inner = TERRITORY_INNER_RANGE + ((territoryStaggerIndex[key] or 0) * TERRITORY_STAGGER_PER_PAL)
+    local outer = TERRITORY_OUTER_RANGE
+
     local ok = pcall(function()
-        controller:SetupLeash(TERRITORY_LEASH_TYPE, playerLoc, TERRITORY_INNER_RANGE, TERRITORY_OUTER_RANGE)
+        controller:SetupLeash(TERRITORY_LEASH_TYPE, playerLoc, inner, outer)
     end)
 
     if not loggedTerritoryOnce then
@@ -1140,7 +1181,29 @@ end
 --     still leaves a trail on disk (Logger flushes per line).
 --   * The existing follow mechanisms stay running underneath, so a failure
 --     here is a no-op rather than a regression.
-local USE_REAL_FOLLOW_ACTION = true
+-- Two-hundred-and-twenty-fourth pass (2026-09-07) — TURNED OFF, to isolate.
+-- Answering Dragón's question ("what did you find on the new follow you were
+-- trying?") honestly: it never became the running action. The readback showed
+-- the component still on BP_AIActionPairCall_Petting_C right after every push,
+-- and following works identically with the orbit removed, so nothing observed
+-- so far is attributable to it.
+--
+-- Worse, a real error was found in it this pass. It pushed at priority 3, and
+-- 3 IS NOT A VALID EAIRequestPriority VALUE. The real enum, from this build's
+-- AIModule_enums.hpp:
+--     SoftScript = 0, SoftScriptInterrupt = 1, Logic = 10,
+--     HardScript = 11, Reaction = 12, Ultimate = 13
+-- The project's own AI_REQUEST_PRIORITY_LOGIC = 3 constant, inherited from the
+-- two-hundred-and-second pass and never checked, claimed 3 meant "Logic". It
+-- does not; Logic is 10. So every composite/action push this project has made
+-- went in at an undefined priority slot.
+--
+-- It is switched off rather than corrected, deliberately: Dragón is now
+-- reporting that followers cannot fight at all, and changing two things at
+-- once would make that untestable. This pass changes exactly one thing (the
+-- leash radii below). If the fighting comes back, this was innocent and can be
+-- retried at a real priority; if it does not, this was never the cause either.
+local USE_REAL_FOLLOW_ACTION = false
 local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/BP_AIAction_OtomoFollow.BP_AIAction_OtomoFollow_C"
 -- EAIRequestPriority: Ultimate=3 is what this project already used for the
 -- composite attempt (AI_REQUEST_PRIORITY_LOGIC=3). Same value kept for

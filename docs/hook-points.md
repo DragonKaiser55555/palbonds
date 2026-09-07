@@ -1527,3 +1527,26 @@ Turning it off is also a **clean single-variable test**: if following stays good
 **Combat status, answering his "they still dont fight but thats to be expected?":** partly. They fight back when hit (confirmed working several passes ago). What still does not work is joining a fight the player started — `[RETARGET]` has never fired once, because `GetCurrentAction_BP()` does not return an object that accepts `SetTargetAndNextAction`. That is a known, recorded negative rather than an unknown, and it is the next thing to pick up once following is settled.
 
 All 11 files verified with `luaparse`, deployed and md5-verified.
+
+## Two-hundred-and-twenty-fourth pass (2026-09-07): the leash was tuned into a cage — and a long-standing priority constant is simply wrong
+
+**Two results from Dragón's run, and they share one cause.**
+
+1. *"confirmed that the following works just as strong"* with the orbit removed — so the orbit was contributing nothing but the crowding. Clean negative, exactly what that single-variable test was for.
+2. *"they still managed to push me... its simply that they try to get as close as me as posible"* and *"now they dont fight back, not even after being hit by an attack, seems the following mechanic is now too strong."*
+
+**Both symptoms are the leash radius.** Every follower is anchored to the SAME point with a 500-unit inner radius, so they all converge on the player and shove — removing the orbit could never have fixed that. And a Pal that wants to chase its attacker is pulled back inside 500 units before it can reach anything: they are not refusing to fight, they are tethered too tightly to fight. Dragón's own framing is precisely correct: *"funny how we went from too soft so they could escape, to too strong that they cant do anything but follow now."* The leash was tuned to stop drifting and overshot into a cage.
+
+Inner 500 -> 1100, outer 1200 -> 2800 (still far inside the 3000-unit leash-break that ends a bond), plus a per-follower stagger of 260 units so several followers do not all want the identical spot.
+
+**A real error found this pass, and it is older than this feature.** The follow action was pushed at priority `3`, and **3 is not a valid `EAIRequestPriority`**. From this build's `AIModule_enums.hpp`:
+
+```
+SoftScript = 0, SoftScriptInterrupt = 1, Logic = 10, HardScript = 11, Reaction = 12, Ultimate = 13
+```
+
+The project's own `AI_REQUEST_PRIORITY_LOGIC = 3`, inherited from the two-hundred-and-second pass and never verified, claims 3 means "Logic". It does not — Logic is 10. **Every composite and action push this project has ever made went in at an undefined priority slot**, which may well be part of why the composite attempts appeared to succeed and then did nothing.
+
+**Answering Dragón's question about the new follow action directly: it never became the running action.** The readback showed the component still on `BP_AIActionPairCall_Petting_C` right after every push, and following behaves identically now that the orbit is gone — so nothing observed is attributable to it. It is switched OFF this pass rather than corrected to a real priority, deliberately: with fighting currently broken, changing two things at once would make the result unreadable. This pass changes exactly one behaviour (the leash radii). If fighting returns, the follow action was innocent and can be retried at a genuine priority; if it does not, it was never the cause either.
+
+**On funnel Pals:** no longer needed for testing. Their comparison did its job — it produced the controller/action hierarchy that redirected this whole line of work. They can stay in the base.
