@@ -1252,3 +1252,30 @@ Fixed the way that pass predicted, not by reverting to permanent aggression (whi
 **Also confirmed good this run, from Dragón:** following holds much better with move-to-actor (occasional drift remains, "not as bad as before"), companions fight back without losing friendship now that third-party damage costs nothing, and three simultaneous followers "didn't feel as laggy as that previous time" — the per-follower logging removal held up.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-fourteenth pass (2026-09-06): the Pal name SOLVED, VFX pipeline confirmed but wrong effect, friendly fire root-caused, and four real lag sources cut
+
+**Pal name — SOLVED, and Dragón confirmed it in game.** The `[NAME-DIAG]` probe answered it cleanly on three separate captures:
+
+```
+candidate 1 (Monkey_Fire)          -> Monkey_Fire     <- the id echoed straight back
+candidate 3 (PAL_NAME_Monkey_Fire) -> Tanzee Ignis    <- the real name
+```
+
+The localisation key is `"PAL_NAME_" .. CharacterID`. Note WHY the earlier attempts looked like they half-worked: the bare CharacterID does not fail, it returns itself, so the code happily accepted "FlowerDoll" as a successful lookup. Hard-coded now and the candidate loop removed — it cost three `GetLocalizedText` round-trips per capture to re-derive a settled answer. **This item is closed.**
+
+**Join VFX — the pipeline is CONFIRMED working, the asset was just wrong.** The log shows `spawned ... component=true` on all four captures and Dragón saw an effect play, so `SpawnSystemAtLocation`, the asset resolution and the timing are all correct. He described "something that looked like a vanish sphere animation but it wasn't fitting", which is exactly what `NS_PalDisappear` is — the recall-into-sphere effect.
+
+Rather than spend one whole test run per candidate, the seven candidates are now a list cyclable in-game with **CTRL+V**, which plays the next one on the aimed Pal and logs its index. All of them can be judged in a single session; then `JOIN_VFX_INDEX` gets set and the key goes away. Default moved to `NS_PalCatch_Success` (index 1) as the most likely fit now that the recall-vanish is ruled out.
+
+**Friendly fire, root-caused from Dragón's report.** His words: *"one of my followers accidentally hit another of my followers and they ended up fighting among everyone, it was chaos... they all died except one"*. This is the direct cost of `Discover_* = Battle` during the combat window — to a companion, another companion is just another Pal it noticed, so one stray hit starts a war. Fixed at the source: if BOTH sides of a damage event are Pals we are bonding with, `Combat.ClearMutualHate` pushes a large NEGATIVE hate each way so neither keeps the other as its most-hated target. (`UPalHate::ResetHateAll` exists but belongs to the Arena classes, not this one — checked in the dump rather than assumed — so negative `ChangeHate` is the available route.)
+
+**Lag — four real sources cut, measured from the log rather than guessed:**
+1. **430 startup lines of hook-retry failures** (282 `[WORKER-WATCH]` + 170 `[RADIAL-WATCH]`) — the same handful of dead function names failing once per retry round, each flushed to disk. Now each failing name logs ONCE; successes still always log.
+2. **`find_targeted_pal` still costs 42-70ms per scan**, with 126 scans over 15ms in one run. The GetFullName-per-Pal waste was already removed and the remainder (FindAllOf + a location read per Pal) has no cheaper route, so the recompute interval went 0.25s -> 0.5s. The menu is only open a second or two and the player aims before opening it, so this halves the worst hitch in the mod with no behavioural change.
+3. **`[INTERRUPT]` produced 222 lines for 37 real calls** (six each, all flushed). The before/after pattern earned its keep during the crash-hunting era, but these three calls are long proven safe — now behind `INTERRUPT_VERBOSE`, off by default, with failures still always logged.
+4. Combined, the three above account for well over half of a 2379-line session.
+
+**Still open, and honestly stated:** companions fought the enemy Pal but did not defend Dragón, and drifted off again. His own observation is the most useful lead — *"i could make noise nearby to make them focus on me again... probably what makes them drift away is that they forget im there"* — which points at the sensor/sight system losing track of the player rather than at the movement order. `RequestSightCheckAsync` is already used in `interrupt_and_resense` and would be the natural thing to re-trigger periodically on followers. Not implemented this pass; recorded as the next concrete lead rather than guessed at.
+
+All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.

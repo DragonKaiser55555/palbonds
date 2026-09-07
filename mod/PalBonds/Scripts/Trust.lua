@@ -886,6 +886,33 @@ function Trust.Init()
             -- polling, no new scan — the information is already in hand.
             -- Combat.OnPlayerCombatTarget then pushes that actor onto every
             -- following companion's real UPalHate system.
+            -- Two-hundred-and-fourteenth pass (2026-09-06) — FRIENDLY FIRE.
+            -- Dragón's run: "at some point i think one of my followers
+            -- accidentally hit another of my followers and they ended up
+            -- fighting among everyone, it was chaos... they all died except
+            -- one". That is the direct cost of Discover_* = Battle during the
+            -- combat window: to a companion, another companion is just another
+            -- Pal it noticed, so a stray AoE hit starts a war.
+            --
+            -- Fix at the source: if BOTH sides of a damage event are Pals we
+            -- are bonding with, cancel the grudge immediately by pushing a
+            -- large NEGATIVE hate both ways. (UPalHate::ResetHateAll exists but
+            -- belongs to the Arena classes, not this one — checked, not
+            -- guessed — so ChangeHate with a negative value is the available
+            -- route, and negative AddFriendShip is already long-proven safe in
+            -- this project, so a negative float here is the same shape.)
+            do
+                local aIsFollower = attackerName ~= nil and State[attackerName] ~= nil and State[attackerName].isFollowing
+                local dIsFollower = defenderName ~= nil and State[defenderName] ~= nil and State[defenderName].isFollowing
+                if aIsFollower and dIsFollower and attackerName ~= defenderName then
+                    Logger.log("[PalBonds/Trust] [FRIENDLY-FIRE] two bonded companions hit each other — clearing the grudge both ways so they do not start a war")
+                    local okC, CombatMod = pcall(require, "Combat")
+                    if okC and CombatMod and CombatMod.ClearMutualHate then
+                        safe_call(function() CombatMod.ClearMutualHate(attacker, defender) end)
+                    end
+                end
+            end
+
             do
                 local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
                 local playerName = player and safe_call(function() return player:GetFullName() end)

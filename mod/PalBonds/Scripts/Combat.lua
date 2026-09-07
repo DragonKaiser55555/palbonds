@@ -305,6 +305,24 @@ local loggedFollowTickOnce = {}
 -- enough, the next step is to allow Battle on discovery only while a
 -- player-target is active, rather than permanently. The [HATE-ASSIST] log
 -- lines below are what will tell us which of those is true.
+-- Two-hundred-and-fourteenth pass: undo a grudge between two bonded
+-- companions (see Trust.lua's [FRIENDLY-FIRE] block for why). Pushes a large
+-- negative hate each way so neither keeps the other as its most-hated target.
+function Combat.ClearMutualHate(a, b)
+    local function clear(fromPal, towardActor)
+        if fromPal == nil or towardActor == nil then return end
+        safe_call(function()
+            local controller = fromPal.Controller
+            if not (controller and controller:IsValid()) then return end
+            local hate = controller:GetHateSystem()
+            if not (hate and hate:IsValid()) then return end
+            hate:ChangeHate(towardActor, -COMBAT_ASSIST_HATE_AMOUNT * 10)
+        end)
+    end
+    clear(a, b)
+    clear(b, a)
+end
+
 function Combat.OnPlayerCombatTarget(enemyActor)
     if enemyActor == nil then return end
     local enemyValid = safe_call(function() return enemyActor:IsValid() end)

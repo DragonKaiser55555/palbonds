@@ -275,45 +275,35 @@ local function resolve_pal_display_name(pal, player)
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         local masterData = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility") end)
         if textLibrary ~= nil and masterData ~= nil then
-            -- Two-hundred-and-thirteenth pass: Dragón's run showed the toast
-            -- working but printing the internal ids ("FlowerDoll",
-            -- "FlowerRabbit") instead of the names he sees in game
-            -- ("Petallia", "Flopie"), which means GetLocalizedText returned
-            -- nothing and the CharacterID fallback took over.
+            -- Two-hundred-and-fourteenth pass (2026-09-06) — SOLVED, format
+            -- confirmed from Dragón's run. The [NAME-DIAG] probe answered it
+            -- cleanly on three separate captures:
+            --     candidate 1 (Monkey_Fire)          -> Monkey_Fire      (the id echoed back)
+            --     candidate 3 (PAL_NAME_Monkey_Fire) -> Tanzee Ignis     (the real name)
+            -- So the localisation key is "PAL_NAME_" .. CharacterID, and the
+            -- bare CharacterID returns itself rather than failing, which is
+            -- why the earlier attempts looked like they "worked" while
+            -- printing internal ids.
             --
-            -- The category is right (EPalLocalizeTextCategory::PalMonsterName
-            -- = 4, read from this build's enum dump), so the remaining unknown
-            -- is the TEXT ID format — the localisation table may key names by
-            -- something other than the bare CharacterID. Rather than guess a
-            -- third time, this tries the plausible formats in order and logs
-            -- what each one returns. One run settles it, and the winner can
-            -- then be hard-coded.
+            -- Hard-coded now and the candidate loop removed: it cost three
+            -- GetLocalizedText round-trips per capture to re-derive a settled
+            -- answer every time.
             local rawId = to_lua_string(safe_call(function() return charId:ToString() end))
-            local candidates = { charId }
             if rawId then
-                for _, form in ipairs({ rawId, "PAL_NAME_" .. rawId, "NAME_" .. rawId, rawId .. "_NAME" }) do
-                    local asName = safe_call(function() return UEHelpers.FindOrAddFName(form) end)
-                    if asName ~= nil then candidates[#candidates + 1] = asName end
-                end
-            end
-
-            for i, candidate in ipairs(candidates) do
-                local localized = safe_call(function()
-                    return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, candidate)
-                end)
-                local asFString = localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end)
-                local asString = to_lua_string(asFString)
-                Logger.log(string.format(
-                    "[PalBonds/Capture] [NAME-DIAG] candidate %d (%s) -> %s",
-                    i, tostring(to_lua_string(safe_call(function() return candidate:ToString() end)) or candidate),
-                    tostring(asString)
-                ))
-                if asString ~= nil and asString ~= "" and asString ~= rawId then
-                    palName = asString
-                    return
+                local key = safe_call(function() return UEHelpers.FindOrAddFName("PAL_NAME_" .. rawId) end)
+                if key ~= nil then
+                    local localized = safe_call(function()
+                        return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, key)
+                    end)
+                    local asString = to_lua_string(localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end))
+                    if asString ~= nil and asString ~= "" and asString ~= rawId then
+                        palName = asString
+                        return
+                    end
                 end
             end
         end
+
         -- Fallback: the raw internal id, still better than "A wild Pal".
         local raw = to_lua_string(safe_call(function() return charId:ToString() end))
         if raw ~= nil and raw ~= "" then palName = raw end
@@ -575,22 +565,46 @@ end
 --
 -- Fully pcall-guarded and purely cosmetic: if any step fails the capture
 -- itself is completely unaffected.
-local JOIN_VFX_ASSET_PATH = "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear.NS_PalDisappear"
+-- Two-hundred-and-fourteenth pass (2026-09-06): the pipeline is CONFIRMED
+-- working — Dragón's log shows "spawned ... component=true" on all four
+-- captures, and he saw an effect play. It was just the wrong one: he
+-- described "something that looked like a vanish sphere animation but it
+-- wasn't fitting", which fits NS_PalDisappear exactly (that is the recall-
+-- into-sphere effect).
+--
+-- Rather than burn one whole test run per candidate, the list below is now
+-- cyclable in-game with CTRL+V (see Interaction.lua). Each press plays the
+-- next one on the Pal being aimed at and logs which index it was, so all of
+-- them can be judged in a single session. Once Dragón says which index looks
+-- right, JOIN_VFX_INDEX gets set to it and the key goes away.
+local JOIN_VFX_CANDIDATES = {
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success.NS_PalCatch_Success",
+    "/Game/Pal/Effect/Common/Return/NS_Return.NS_Return",
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalAppear.NS_PalAppear",
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear01.NS_PalDisappear01",
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear02.NS_PalDisappear02",
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalCatch.NS_PalCatch",
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear.NS_PalDisappear", -- the one already rejected, kept last for comparison
+}
+-- Which candidate the real capture uses. 1 = NS_PalCatch_Success, the most
+-- likely fit for "the Pal joined you" now that the recall-vanish is ruled out.
+local JOIN_VFX_INDEX = 1
+local JOIN_VFX_ASSET_PATH = JOIN_VFX_CANDIDATES[JOIN_VFX_INDEX]
 -- Alternatives, if the above reads wrong in game (swap the path, nothing else):
 --   /Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success.NS_PalCatch_Success
 --   /Game/Pal/Effect/Common/Return/NS_Return.NS_Return
 --   /Game/Pal/Effect/Common/PalCatch/NS_PalDisappear01.NS_PalDisappear01
 local loggedJoinVfxOnce = false
 
-local function play_join_vfx(pal)
+local function spawn_niagara_at(pal, assetPath)
     safe_call(function()
         if pal == nil or not pal:IsValid() then return end
 
-        local system = StaticFindObject(JOIN_VFX_ASSET_PATH)
+        local system = StaticFindObject(assetPath)
         if system == nil then
             if not loggedJoinVfxOnce then
                 loggedJoinVfxOnce = true
-                Logger.log("[PalBonds/Capture] [JOIN-VFX] could not resolve " .. JOIN_VFX_ASSET_PATH ..
+                Logger.log("[PalBonds/Capture] [JOIN-VFX] could not resolve " .. assetPath ..
                     " — the asset may not be loaded yet (it loads when the game first plays it). Try again after a normal sphere capture, or switch to one of the alternates listed in the source.")
             end
             return
@@ -618,9 +632,26 @@ local function play_join_vfx(pal)
                 true                              -- bPreCullCheck
             )
         end)
-        Logger.log("[PalBonds/Capture] [JOIN-VFX] spawned " .. JOIN_VFX_ASSET_PATH ..
+        Logger.log("[PalBonds/Capture] [JOIN-VFX] spawned " .. assetPath ..
             " at the joining Pal — component=" .. tostring(comp ~= nil))
     end)
+end
+
+-- Two-hundred-and-fourteenth pass: CTRL+V preview. Plays the next candidate
+-- effect on a given Pal and says which index it was, so Dragón can judge every
+-- option in one session instead of one per test run. Temporary, and already on
+-- the release-cleanup list.
+local vfxPreviewIndex = 0
+function Capture.PreviewNextJoinVfx(pal)
+    if pal == nil or not pal:IsValid() then
+        Logger.log("[PalBonds/Capture] [VFX-PREVIEW] no Pal aimed at — point at a Pal and press again")
+        return
+    end
+    vfxPreviewIndex = (vfxPreviewIndex % #JOIN_VFX_CANDIDATES) + 1
+    local path = JOIN_VFX_CANDIDATES[vfxPreviewIndex]
+    Logger.log(string.format("[PalBonds/Capture] [VFX-PREVIEW] playing candidate %d of %d: %s",
+        vfxPreviewIndex, #JOIN_VFX_CANDIDATES, path))
+    spawn_niagara_at(pal, path)
 end
 
 local function install_cage_effect_hook()
@@ -824,7 +855,7 @@ local function play_join_celebration_then(pal, continueFn)
     -- been pointing at.
     local scheduled = pcall(function()
         ExecuteInGameThreadWithDelay(JOIN_CELEBRATION_DELAY_MS, function()
-            play_join_vfx(pal)
+            spawn_niagara_at(pal, JOIN_VFX_ASSET_PATH)
             continueFn()
         end)
     end)

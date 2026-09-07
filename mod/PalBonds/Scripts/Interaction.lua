@@ -1802,6 +1802,22 @@ end
 -- reaction, no friendship math. Just: find what you're looking at, hand
 -- it to Capture.TryDirectCapture, done. See Capture.lua for the actual
 -- risky call and its full reasoning.
+-- Two-hundred-and-fourteenth pass: see the CTRL+V binding in Init for why.
+local function do_preview_join_vfx()
+    local player = FindFirstOf("PalPlayerCharacter")
+    if not player or not player:IsValid() then return end
+    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
+        or safe_call(function() return player:K2_GetActorLocation() end)
+    if not originLoc then return end
+    local controlRot = safe_call(function() return player:GetControlRotation() end)
+    if not controlRot then return end
+    local pal = find_targeted_pal(originLoc, rotator_to_forward(controlRot), player)
+    local okReq, Capture = pcall(require, "Capture")
+    if okReq and Capture and Capture.PreviewNextJoinVfx then
+        Capture.PreviewNextJoinVfx(pal)
+    end
+end
+
 local function do_test_capture()
     Logger.log("[PalBonds/Interaction] CTRL+K pressed — starting Capture.TryDirectCapture experiment")
 
@@ -2548,7 +2564,14 @@ local lastDecidedInstruction = nil
 -- less common, less expensive case).
 local cachedRedirectWildPal = nil
 local lastRedirectComputeClock = nil
-local REDIRECT_RECOMPUTE_INTERVAL_S = 0.25
+-- Two-hundred-and-fourteenth pass: 0.25 -> 0.5. find_targeted_pal still costs
+-- 42-70ms per scan even after removing the GetFullName-per-Pal waste (the
+-- remainder is FindAllOf plus a location read per Pal, with no cheaper route
+-- available), and Dragón's last log had 126 scans over 15ms. The radial menu
+-- is only open for a second or two and the player aims before opening it, so
+-- recomputing twice a second instead of four times is not noticeable in
+-- behaviour and halves the worst hitch in the mod.
+local REDIRECT_RECOMPUTE_INTERVAL_S = 0.5
 
 -- Hundred-and-twenty-third pass (2026-09-03): remembers the actual live
 -- WBP_PlayerRadialMenu_C widget instance for the currently-open window —
@@ -2955,6 +2978,16 @@ function Interaction.Init()
     -- diagnosis: several passes reasoned about "F9's grant" as though it
     -- were the number Dragón was seeing in game, when he was never
     -- pressing F9 at all.
+    -- Two-hundred-and-fourteenth pass (2026-09-06): CTRL+V cycles the join-VFX
+    -- candidates on the Pal being aimed at. Dragón confirmed the VFX pipeline
+    -- works but that NS_PalDisappear was the wrong effect ("a vanish sphere
+    -- animation, but it wasn't fitting" — that is the recall-into-sphere one).
+    -- Rather than spend one whole test run per candidate, this lets him judge
+    -- all seven in a single session and just say which index looks right.
+    -- Temporary, already listed under the release cleanup.
+    RegisterKeyBindAsync(Key.V, {ModifierKey.CONTROL}, function()
+        safe_call(do_preview_join_vfx)
+    end)
     RegisterKeyBindAsync(TEST_CAPTURE_KEY, TEST_CAPTURE_MODIFIERS, function()
         safe_call(do_test_capture)
     end)
@@ -3733,6 +3766,7 @@ function Interaction.Init()
         { tag = "OnPushedStackableUI", candidates = {"OnPushedStackableUI"} },
     }
 
+    local loggedHookFailureOnce = {}
     local function make_hook_handler(logTag, tag, onFire)
         return function(Context, A, B, C)
             local self_ = hook_get(Context)
@@ -3817,10 +3851,23 @@ function Interaction.Init()
                         if not ok then
                             errFirstLine = tostring(err):match("^[^\n]*") or tostring(err)
                         end
-                        Logger.log(string.format(
-                            "[PalBonds/Interaction] [%s] round %d: RegisterHook(%s) = %s",
-                            logTag, round, path, ok and "OK" or ("FAILED: " .. errFirstLine)
-                        ))
+                        -- Two-hundred-and-fourteenth pass: log each SUCCESS,
+                        -- but each failing name only ONCE instead of once per
+                        -- retry round. Dragón's last run had 430 of these
+                        -- lines at startup (282 WORKER-WATCH + 170
+                        -- RADIAL-WATCH) — all of them the same handful of
+                        -- dead function names failing over and over, each one
+                        -- forced to disk by Logger's flush-per-line design.
+                        -- The names that never resolve are already known and
+                        -- documented; repeating them dozens of times adds
+                        -- nothing and costs real startup time.
+                        if ok or not loggedHookFailureOnce[path] then
+                            if not ok then loggedHookFailureOnce[path] = true end
+                            Logger.log(string.format(
+                                "[PalBonds/Interaction] [%s] round %d: RegisterHook(%s) = %s",
+                                logTag, round, path, ok and "OK" or ("FAILED (logged once for this name): " .. errFirstLine)
+                            ))
+                        end
                         if ok then
                             target.hooked = true
                             break

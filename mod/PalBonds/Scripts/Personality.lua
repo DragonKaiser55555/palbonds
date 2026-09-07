@@ -1222,6 +1222,14 @@ end
 -- discipline (the only method that's ever actually found a real crash's
 -- cause here). Best-effort only: any failure here still leaves the
 -- tracked disposition/preset swap intact, just without the interrupt.
+-- Two-hundred-and-fourteenth pass: the before/after chatter here produced 222
+-- lines for only 37 real calls in Dragón's run (six lines each), every one
+-- forced to disk. The before/after pattern exists for crash forensics and has
+-- earned its keep historically, but these three calls are long proven safe, so
+-- it is off by default now and failures still always log. Flip to true if this
+-- ever needs crash-tracing again.
+local INTERRUPT_VERBOSE = false
+
 local function interrupt_and_resense(palActor, sensor, palId)
     local controller = safe_call(function() return palActor.Controller end)
     local controllerValid = controller ~= nil and safe_call(function() return controller:IsValid() end)
@@ -1229,9 +1237,9 @@ local function interrupt_and_resense(palActor, sensor, palId)
         local actionComp = safe_call(function() return controller:GetAIActionComponent() end)
         local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
         if actionCompValid then
-            Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call AllCancelAction_Logic_HardScript_Reaction NOW")
+            if INTERRUPT_VERBOSE then Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call AllCancelAction_Logic_HardScript_Reaction NOW") end
             local ok, err = pcall(function() actionComp:AllCancelAction_Logic_HardScript_Reaction(palActor) end)
-            Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — AllCancelAction_Logic_HardScript_Reaction returned: " .. (ok and "ok" or ("FAILED: " .. tostring(err))))
+            if INTERRUPT_VERBOSE or not ok then Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — AllCancelAction_Logic_HardScript_Reaction returned: " .. (ok and "ok" or ("FAILED: " .. tostring(err)))) end
         else
             Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — no usable AIActionComponent, skipping the action-cancel step (tracked disposition/preset swap still applied)")
         end
@@ -1258,13 +1266,13 @@ local function interrupt_and_resense(palActor, sensor, palId)
         -- function almost literally. Calling it right alongside the
         -- existing cancel+resense, before the fresh sight check runs, so
         -- the next real decision isn't silently discarded by this guard.
-        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call ResetResponsedMaxBiologicalGrade NOW")
+        if INTERRUPT_VERBOSE then Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call ResetResponsedMaxBiologicalGrade NOW") end
         local ok3, err3 = pcall(function() sensor:ResetResponsedMaxBiologicalGrade() end)
-        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — ResetResponsedMaxBiologicalGrade returned: " .. (ok3 and "ok" or ("FAILED: " .. tostring(err3))))
+        if INTERRUPT_VERBOSE or not ok3 then Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — ResetResponsedMaxBiologicalGrade returned: " .. (ok3 and "ok" or ("FAILED: " .. tostring(err3)))) end
 
-        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call RequestSightCheckAsync NOW")
+        if INTERRUPT_VERBOSE then Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — about to call RequestSightCheckAsync NOW") end
         local ok2, err2 = pcall(function() sensor:RequestSightCheckAsync(true, true, false, 1.0, false) end)
-        Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — RequestSightCheckAsync returned: " .. (ok2 and "ok" or ("FAILED: " .. tostring(err2))))
+        if INTERRUPT_VERBOSE or not ok2 then Logger.log("[PalBonds/Personality] [INTERRUPT] " .. tostring(palId) .. " — RequestSightCheckAsync returned: " .. (ok2 and "ok" or ("FAILED: " .. tostring(err2)))) end
     end
 end
 
