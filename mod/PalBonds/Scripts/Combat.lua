@@ -625,19 +625,69 @@ end
 -- this way for a wild Pal is exactly what the next run tests. Every step is
 -- pcall-guarded and the previous follow mechanism is left running underneath,
 -- so a total failure here is a no-op rather than a regression.
-local USE_NATIVE_LEASH_FOLLOW = true
+-- ⚠️ TWO-HUNDRED-AND-EIGHTEENTH PASS (2026-09-06) — TURNED OFF, AND WHY.
+-- This is my bug and it caused a real regression in Dragón's run: "the lag
+-- felt much more this time, in fact it felt like the longer the run the more
+-- that the lag was increasing."
+--
+-- What happened. SpawnLeash returned something the validity check rejected, so
+-- ensure_leash_for never cached anything — and because it is called from the
+-- follow tick, it RETRIED THE SPAWN EVERY 1.5 SECONDS, FOR EVERY FOLLOWER.
+-- The log shows the failure line exactly once (it is throttled by
+-- loggedLeashOnce) which hid the retry completely: one quiet line, roughly two
+-- hundred spawn attempts behind it in a nine-minute session.
+--
+-- Why that is a leak and not merely wasted work: SpawnLeash is a SPAWN
+-- function. Whether or not the returned handle validated in Lua, the engine
+-- very likely created a leash actor in the world on each call. Hundreds of
+-- orphaned actors accumulating over a session is precisely the "gets worse the
+-- longer I play" shape Dragón described, and it would not have shown up in any
+-- log-volume analysis because it produced almost no log lines at all.
+--
+-- Three separate mistakes on my part, worth naming so they are not repeated:
+--   1. A failing operation was retried forever with no attempt cap.
+--   2. The retry was of a SPAWN, the one category where a failed retry can
+--      accumulate side effects rather than just burning time.
+--   3. The throttled log made a loud problem look like a single quiet line —
+--      the same "throttle hides the cost, not the cost itself" mistake already
+--      made twice in this project (the SetHPPercent hook, the prism poll).
+--
+-- The mechanism is off by default now. The idea is still sound and the API is
+-- still real; if it is revisited, it must be through a route that does not
+-- call a spawn function repeatedly — most likely by finding a Pal's EXISTING
+-- leash actor (wild Pals plausibly already have one anchoring them to their
+-- spawn area) and just moving that, rather than creating new ones.
+local USE_NATIVE_LEASH_FOLLOW = false
+
+-- Hard safety rails, so this can never loop again even if switched back on.
+local LEASH_MAX_ATTEMPTS_PER_PAL = 1
+local LEASH_MAX_TOTAL_FAILURES = 3
+local leashAttemptsByKey = {}
+local leashTotalFailures = 0
+local leashDisabledBySafety = false
 local LEASH_INNER_RADIUS = 400.0   -- comfortable "stay around here" distance
 local LEASH_OUTER_RADIUS = 900.0   -- past this the Pal is pulled back by its own AI
 local LEASH_INVOKER_EXTENT = 900.0
 local LeashByKey = {}
 local loggedLeashOnce = false
 
+local LeashCDO = nil
 local function get_leash_cdo()
-    return safe_call(function() return StaticFindObject("/Script/Pal.Default__PalAILeashActor") end)
+    -- Cached: the previous version resolved this on every single call, which
+    -- was another per-tick cost hidden behind the same throttled log line.
+    if LeashCDO ~= nil then return LeashCDO end
+    LeashCDO = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalAILeashActor") end)
+    return LeashCDO
 end
 
 local function ensure_leash_for(pal, key)
-    if not USE_NATIVE_LEASH_FOLLOW or key == nil then return nil end
+    if not USE_NATIVE_LEASH_FOLLOW or leashDisabledBySafety or key == nil then return nil end
+
+    -- Attempt caps: one spawn attempt per Pal, ever, and the whole mechanism
+    -- self-disables after a few failures. See the block at the top of this
+    -- section for why an uncapped retry of a spawn call was so damaging.
+    local attempts = leashAttemptsByKey[key] or 0
+    if attempts >= LEASH_MAX_ATTEMPTS_PER_PAL then return nil end
     local existing = LeashByKey[key]
     if existing ~= nil and safe_call(function() return existing:IsValid() end) then
         return existing
@@ -655,11 +705,17 @@ local function ensure_leash_for(pal, key)
     local controller = safe_call(function() return pal.Controller end)
     if not (controller and safe_call(function() return controller:IsValid() end)) then return nil end
 
+    leashAttemptsByKey[key] = attempts + 1
     local leash = safe_call(function()
         return cdo:SpawnLeash(controller, LEASH_INNER_RADIUS, LEASH_OUTER_RADIUS, LEASH_INVOKER_EXTENT, true)
     end)
     local leashValid = leash ~= nil and safe_call(function() return leash:IsValid() end)
     if not leashValid then
+        leashTotalFailures = leashTotalFailures + 1
+        if leashTotalFailures >= LEASH_MAX_TOTAL_FAILURES then
+            leashDisabledBySafety = true
+            Logger.log("[PalBonds/Combat] [LEASH] disabling the leash mechanism entirely after " .. leashTotalFailures .. " failed spawns — it will not be attempted again this session")
+        end
         if not loggedLeashOnce then
             loggedLeashOnce = true
             Logger.log("[PalBonds/Combat] [LEASH] SpawnLeash returned nothing usable — native leash follow not available this way, move order still active (logged once)")

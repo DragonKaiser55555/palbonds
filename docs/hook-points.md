@@ -1351,3 +1351,24 @@ It is also exactly the "something like SetActiveAI but less total" he asked for 
 **Log evidence this run:** 7 follow starts, 7 ends, 5 leash breaks and 5 forced escapes — so most follows still end by drifting out of range. `[FOLLOW-ACTOR]` confirms `SimpleMoveToActorWithLineTraceGround` is being accepted, so move-to-actor IS active and is still being out-voted; that is the strongest evidence yet that no command-based approach will hold, and the reason the leash is worth trying. `[HATE-ASSIST]` dropped to 3 (from 8) confirming the no-followers gate works. `[FRIENDLY-FIRE]` 11, unchanged in mechanism.
 
 All 11 files verified with `luaparse`, deployed and md5-verified. Not confirmed live.
+
+## Two-hundred-and-eighteenth pass (2026-09-06): the leash caused a real actor leak — my bug, turned off and capped
+
+**Dragón's report was accurate and the cause is mine.** His words: *"the lag felt much more this time, in fact it felt like the longer the run the more that the lag was increasing."* That shape — worsening with session length — is a leak, and the previous pass introduced one.
+
+**What happened.** `SpawnLeash` returned something the validity check rejected, so `ensure_leash_for` never cached anything. Because it is called from the follow tick, it **retried the spawn every 1.5 seconds, for every follower** — roughly two hundred attempts in a nine-minute session. `SpawnLeash` is a SPAWN function: whether or not the returned handle validated in Lua, the engine very likely created a leash actor in the world on each call. Hundreds of orphaned actors accumulating is exactly the reported symptom.
+
+**The log hid it almost perfectly**, which is the part worth learning from. `[LEASH]` appears exactly ONCE in the whole 1112-line log, because the failure message was throttled by `loggedLeashOnce`. One quiet line, two hundred spawn attempts behind it. No log-volume analysis would ever have found this.
+
+**Three distinct mistakes, named so they are not repeated:**
+1. A failing operation was retried forever with no attempt cap.
+2. The retried call was a SPAWN — the one category where a failed retry accumulates side effects in the world rather than merely burning time. Retry logic that is harmless for a read is dangerous for a spawn, and that distinction was not considered.
+3. The throttled log made a loud problem look like a single quiet line. **This is the third time this project has hit "the throttle hides the cost, not the cost itself"** — the same shape as the `SetHPPercent` diagnostic hook and the prism poll, both found earlier in this same session. The pattern is now unmistakable: throttling output is not throttling work.
+
+**Fixed:** `USE_NATIVE_LEASH_FOLLOW = false`, plus hard rails so it can never loop again even if re-enabled — one spawn attempt per Pal ever (`LEASH_MAX_ATTEMPTS_PER_PAL`), the whole mechanism self-disabling after 3 failures (`LEASH_MAX_TOTAL_FAILURES`), and the CDO lookup cached (it too was resolving on every call). **Dragón should restart the game** — orphaned actors from the last session only clear on restart.
+
+**The leash idea itself is not dead, and the API is real.** But the route was wrong: creating a new leash per Pal is the wrong shape. If revisited, it should be by finding a Pal's EXISTING leash actor — wild Pals plausibly already have one anchoring them to their spawn area, which would explain both why they return to a fixed region and why every command-based follow gets out-voted — and simply moving that, rather than spawning anything.
+
+**On Dragón's question "how come we didn't find this before":** honest answer, search vocabulary. Every previous hunt used follow/move/otomo/wander/composite terms. "Leash" was never searched against the game's API — despite this project using that exact word for its OWN distance check for many passes (`MAX_FOLLOW_DISTANCE`, described in comments as "approximates a leash break"). The concept was in our vocabulary and never turned into a query.
+
+All 11 files verified with `luaparse`, deployed and md5-verified.
