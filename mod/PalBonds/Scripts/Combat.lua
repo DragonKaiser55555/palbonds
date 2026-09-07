@@ -284,7 +284,7 @@ local COMBAT_WINDOW_MS = 12000 -- how long after the last hit the fight counts a
 -- declaration silently resolves as a nil global instead of the intended
 -- upvalue, and the failure gets swallowed by whatever pcall/safe_call
 -- wraps the call site).
-local AI_REQUEST_PRIORITY_LOGIC = 3
+local AI_REQUEST_PRIORITY_LOGIC = 10 -- two-hundred-and-twenty-fifth pass: was 3, which is not a valid EAIRequestPriority; Logic is 10
 
 -- Two-hundred-and-second pass: key (GetFullName()) -> { actionComp, composite }.
 -- The cached composite is rebuilt automatically if either half goes
@@ -1026,7 +1026,16 @@ end
 -- enum dump (NewEnumerator0/1/2), so the type argument is a guess. If type 0
 -- misbehaves the other two are one constant away, and the log says which was
 -- used.
-local USE_TERRITORY_FOLLOW = true
+-- Two-hundred-and-twenty-fifth pass (2026-09-07) — OFF, and the reason is a
+-- confirmed structural result rather than a guess. Dragón ran both ends of the
+-- tuning range and the log agrees with him exactly:
+--   tight (inner 500):  no drifting, but caged — could not reach an attacker
+--   loose (inner 1100): fought back (4 real damage events), but 4 leash breaks
+--                       and 2 forced escapes; both Petallias got away
+-- So the leash cannot do both. It is a fence, not following: a radius small
+-- enough to keep them is small enough to trap them. That is structural, so
+-- further tuning is not worth another run.
+local USE_TERRITORY_FOLLOW = false
 local TERRITORY_LEASH_TYPE = 0
 -- Two-hundred-and-twenty-fourth pass (2026-09-07) — WIDENED, and this is the
 -- change being tested. Dragón's two symptoms from the last run point at the
@@ -1203,12 +1212,22 @@ end
 -- once would make that untestable. This pass changes exactly one thing (the
 -- leash radii below). If the fighting comes back, this was innocent and can be
 -- retried at a real priority; if it does not, this was never the cause either.
-local USE_REAL_FOLLOW_ACTION = false
+local USE_REAL_FOLLOW_ACTION = true
 local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/BP_AIAction_OtomoFollow.BP_AIAction_OtomoFollow_C"
 -- EAIRequestPriority: Ultimate=3 is what this project already used for the
 -- composite attempt (AI_REQUEST_PRIORITY_LOGIC=3). Same value kept for
 -- consistency; the log records it either way.
-local FOLLOW_ACTION_PRIORITY = 3
+-- Two-hundred-and-twenty-fifth pass: corrected from 3, which is not a valid
+-- EAIRequestPriority at all. Real values from AIModule_enums.hpp:
+--   SoftScript=0, SoftScriptInterrupt=1, Logic=10, HardScript=11,
+--   Reaction=12, Ultimate=13
+-- Logic (10) is chosen deliberately, not just because it is valid: it makes
+-- following the Pal's default behaviour while leaving HardScript (11) and
+-- Reaction (12) ABOVE it, so combat and damage reactions can still pre-empt
+-- following. That is exactly the balance the leash could never strike — the
+-- previous run proved a fence cannot both hold them and let them fight, but a
+-- priority ordering can.
+local FOLLOW_ACTION_PRIORITY = 10
 local FOLLOW_ACTION_MAX_PER_PAL = 1
 local FOLLOW_ACTION_MAX_TOTAL = 40
 

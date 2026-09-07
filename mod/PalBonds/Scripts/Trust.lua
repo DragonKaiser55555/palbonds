@@ -166,6 +166,10 @@ local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST a
 -- a full reset to 0 ("betrayal") — see OnFollowerDamaged below — not
 -- scaled by this constant at all.
 local DAMAGE_FRIENDSHIP_PENALTY = -150
+-- Two-hundred-and-twenty-fifth pass: while a follow mechanism is unproven, a
+-- drift stops the following but does not destroy the bond. See the branch that
+-- uses this below.
+local EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = true
 local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following Pal loses all trust
 
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
@@ -787,11 +791,29 @@ local function tick_followers()
                                 "[PalBonds/Trust] %s is %.0f units away (limit %.0f) — losing all trust",
                                 key, dist, MAX_FOLLOW_DISTANCE
                             ))
-                            local param = get_individual_parameter(st.pal)
-                            if param and param:IsValid() then
-                                local point = safe_call(function() return param:GetFriendshipPoint() end)
-                                if point and point > 0 then
-                                    safe_call(function() param:AddFriendShip(-point, false) end)
+                            -- Two-hundred-and-twenty-fifth pass (2026-09-07):
+                            -- while an experimental follow mechanism is being
+                            -- tested, a drift should NOT cost Dragón the bond.
+                            -- He has now lost Pals to this twice (both
+                            -- Petallias last run), and punishing him for a
+                            -- mechanism that is still being proven is the
+                            -- wrong trade — especially when the drift is the
+                            -- experiment's result, not his mistake.
+                            --
+                            -- The distance check itself is untouched, so the
+                            -- log line above still reports drift exactly as
+                            -- before and the test signal is preserved. Only
+                            -- the punishment is suspended. Set this back to
+                            -- false once a follow mechanism is settled.
+                            if EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS then
+                                Logger.log("[PalBonds/Trust] drift recorded but trust NOT wiped — experimental follow mode (see the two-hundred-and-twenty-fifth pass)")
+                            else
+                                local param = get_individual_parameter(st.pal)
+                                if param and param:IsValid() then
+                                    local point = safe_call(function() return param:GetFriendshipPoint() end)
+                                    if point and point > 0 then
+                                        safe_call(function() param:AddFriendShip(-point, false) end)
+                                    end
                                 end
                             end
                             lostAllTrust = true

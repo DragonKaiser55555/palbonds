@@ -1550,3 +1550,31 @@ The project's own `AI_REQUEST_PRIORITY_LOGIC = 3`, inherited from the two-hundre
 **Answering Dragón's question about the new follow action directly: it never became the running action.** The readback showed the component still on `BP_AIActionPairCall_Petting_C` right after every push, and following behaves identically now that the orbit is gone — so nothing observed is attributable to it. It is switched OFF this pass rather than corrected to a real priority, deliberately: with fighting currently broken, changing two things at once would make the result unreadable. This pass changes exactly one behaviour (the leash radii). If fighting returns, the follow action was innocent and can be retried at a genuine priority; if it does not, it was never the cause either.
 
 **On funnel Pals:** no longer needed for testing. Their comparison did its job — it produced the controller/action hierarchy that redirected this whole line of work. They can stay in the base.
+
+## Two-hundred-and-twenty-fifth pass (2026-09-07): the leash is retired on a confirmed structural result, and the follow action gets its real first test
+
+**Dragón ran both ends of the leash tuning range, and the log matches his report exactly:**
+
+| leash inner radius | fighting | staying |
+|---|---|---|
+| 500 (tight) | ❌ caged, could not reach an attacker | ✅ no drifting |
+| 1100 (loose) | ✅ 4 real damage events | ❌ 4 leash breaks, 2 forced escapes, both Petallias gone |
+
+**The leash cannot do both, and that is structural rather than a tuning failure.** It is a fence, not following: a radius small enough to hold them is small enough to trap them. Two runs bracketed the range from both directions, so further tuning would not be new information. `USE_TERRITORY_FOLLOW = false`.
+
+**The follow action now gets its first genuine test**, with the reason it never ran before corrected. It was pushed at priority `3`, which is not a valid `EAIRequestPriority` at all:
+
+```
+SoftScript=0, SoftScriptInterrupt=1, Logic=10, HardScript=11, Reaction=12, Ultimate=13
+```
+
+Now pushed at **Logic (10)**, and that value is chosen for a reason rather than just for being valid: it makes following the Pal's default behaviour while leaving **HardScript (11) and Reaction (12) above it**, so combat and damage reactions can still pre-empt following. **That is precisely the balance the leash could never strike** — a fence cannot both hold them and let them fight, but a priority ordering can. The old `AI_REQUEST_PRIORITY_LOGIC = 3` constant, inherited from the two-hundred-and-second pass and never verified, is corrected to 10 as well; every composite push this project ever made went in at an undefined slot.
+
+**A drift no longer costs Dragón the bond during this test.** He has now lost Pals to failed follow experiments twice, including both Petallias last run. Punishing him for a mechanism that is still being proven is the wrong trade, especially when the drift IS the experiment's result rather than his mistake. `EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = true` suspends only the punishment — the distance check and its log line are untouched, so the test signal is fully preserved. It goes back to false once a follow mechanism is settled.
+
+**What the next run distinguishes**, cleanly, because the leash is off and only one mechanism is live:
+- `[FOLLOW-ACTION] ... current action immediately after push` naming the follow action = it finally installed, and the invalid priority was the whole problem.
+- Still naming a Petting/Feed action = the push is being rejected for a different reason, and the follow action is a dead end after two attempts.
+- Following holds AND they fight back = the priority ordering achieved what the leash structurally could not.
+
+All 11 files verified with `luaparse`, deployed and md5-verified.
