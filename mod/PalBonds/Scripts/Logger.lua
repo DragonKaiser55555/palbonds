@@ -174,6 +174,20 @@ local function is_diagnostic(msg)
     return false
 end
 
+-- Two-hundred-and-eighty-eighth pass (2026-09-09). Logger.log already discards
+-- diagnostic lines in a release build, but Lua evaluates a call's ARGUMENTS
+-- before the call -- so anything expensive built to produce those lines still
+-- runs in full, every time, and is then thrown away. This project has now paid
+-- for that three separate times (the SetHPPercent hook, the OTOMO-GETTER-WATCH
+-- logging, and the sensor hook's GetFullName dedup).
+--
+-- Call sites doing real work purely to log can ask first and skip the work
+-- outright. This is only worth using where the work is a world scan or
+-- reflection -- an ordinary string concat is cheaper than the check.
+function Logger.DiagnosticsEnabled()
+    return DEBUG_LOGGING and SHOW_DIAGNOSTICS
+end
+
 function Logger.log(msg)
     -- First line on purpose: everything below is development-only.
     if not DEBUG_LOGGING then return end

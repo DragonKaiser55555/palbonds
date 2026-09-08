@@ -1829,3 +1829,176 @@ The fix is architectural, not another patch:
 ### Severity
 
 Needs a bonded follower AND a world change. A player who plays a session and closes the game normally never sees it. Currently undocumented on the Workshop page, deliberately — Dragón's call was not to publish a workaround for something that might be fixable.
+
+---
+
+## Pass 278 (2026-09-09): the world-change crash — the previous pass's conclusion was wrong, and the real hook exists
+
+**Read this instead of the "WHERE WE STOPPED" section above.** That section's central
+claim — *"This build exposes no world-lifecycle callbacks to Lua"* — is false. It was
+reached by guessing an API name for the fourth time.
+
+### How it got found
+
+Dragón came back with two upstream threads and asked whether either applied to us:
+the `ForEachUObject_Chunked` analysis in [#1328](https://github.com/UE4SS-RE/RE-UE4SS/issues/1328),
+and [#1345](https://github.com/UE4SS-RE/RE-UE4SS/issues/1345). Chasing them properly meant
+first pinning down **which UE4SS build is actually installed**, which had never been done:
+
+```
+UE4SS - v3.0.1 Beta #0 - Git SHA #ba2efd55      (2026-08-28)
+```
+
+Listing that exact commit's `docs/lua-api/global-functions/` gives the authoritative,
+complete Lua surface for this build. It contains `registerinitgamestateprehook.md` and
+`registerinitgamestateposthook.md`.
+
+```
+guessed, does not exist:   RegisterInitGameStatePostCallback
+real, documented, present: RegisterInitGameStatePostHook
+```
+
+One word — "Callback" where it should have said "Hook". Every *"attempt to call a nil
+value"* in this file's history is that same substitution.
+
+**The DLL string search that seemed to confirm the old names was a red herring.**
+`RegisterLoadMapPreCallback` really is present as a string inside `UE4SS.dll` — as a C++
+symbol with no Lua binding. Grepping the binary proves a name exists *somewhere*; it does
+not prove Lua can call it. The only authoritative source is the api docs at the installed
+commit. Not memory, not a strings grep, not the other mods that happen to ship alongside.
+
+### Why the crash actually happens
+
+The damage is done on **resume**, not during teardown — which is why every timer-driven
+guard failed and why every log ends at the quit-menu widget push:
+
+1. Bond a Pal in world A. Our tables hold pointers to A's actors and to the follow
+   actions we constructed.
+2. Quit to the menu. World A unloads, those actors are destroyed, and our
+   `ExecuteInGameThreadWithDelay` loops stop being serviced. Nothing of ours can run here.
+3. Load world B. The game thread starts servicing our loops again, and the first pass
+   reads a follower belonging to world A. Access violation.
+
+`InitGameState` fires as world B comes up — after the old actors are gone, before our
+loops run again. That is the one moment that can clear the tables in time, and it is now
+wired to the `ResetForNewWorld` machinery that was written in pass 275 and has been inert
+ever since (it was registered against a function name that did not exist).
+
+Both ends are registered, each in a pcall and logged either way. The player-identity poll
+stays as a third net.
+
+### The two upstream threads, judged honestly
+
+**#1328 — `ForEachUObject_Chunked` reads out of bounds.** Real, and it does touch us:
+the chunked iterators bound their loop with `NumElementsPerChunk` rather than
+`GetNumElements()`, so the tail of the last chunk is memory that never held an
+`FUObjectItem`, and `FindFirstOf` dereferences whatever is there — it lacks the null guard
+`FindAllOf` has. We call `FindFirstOf("PalPlayerCharacter")` constantly.
+
+But it is a **contributing risk, not our crash**. The reporter's signature is a pointer
+holding *text* — a huge UTF-16-shaped address. Ours faults reading `0x338`, a small fixed
+offset, which is the shape of a field read off a null or freed base. Different failure.
+Unfixed upstream, and not something a Lua mod can patch. If the crash survives the fix
+above, the follow-up is to cut `FindFirstOf` frequency and prefer `FindAllOf`.
+
+**#1345 — two LuaMod threading bugs.**
+- *Shared hook thread GC'd while in use*: needs a `NotifyOnNewObject` callback teardown to
+  release the anchor. We never call `NotifyOnNewObject`. PR #1346 is closed unmerged, so
+  our build does not have the fix — but the trigger is not present in this mod.
+- *Concurrent Lua from the async and game threads*: **applies to us, and is now fixed.**
+  `main_lua`, `hook_lua` and `async_lua` are coroutines off one `lua_State`, sharing one
+  `global_State` and one GC, with no lock. narknon (UE4SS collaborator) in that thread:
+  *"You shouldn't be using any of our async lua functions, they're inherently unsafe and
+  it's recommended to use the executeingamethreadwithdelay type functions instead."*
+  Trust.lua and Indicator.lua each carried a `LoopAsync` fallback for a scheduling failure
+  that has never occurred — dead code that was unsafe precisely in the emergency it existed
+  for. Both removed; the `IsInGameThread()` guard they used does not help, because by the
+  time the callback checks, the unsynchronised Lua execution has already happened.
+
+### What to test
+
+Bond a Pal until it follows, quit to the menu, load a **different** save without closing
+the game. Then check `palbonds-live.log` for:
+
+```
+[WORLD-RESET] RegisterInitGameStatePreHook = OK
+[WORLD-RESET] RegisterInitGameStatePostHook = OK
+[WORLD-RESET] ... dropped every reference to the old world (N follower(s), N follow action(s))
+```
+
+If either registration logs `FAILED`, the name is wrong again and the log says so in one
+line instead of costing a whole test cycle.
+
+---
+
+## Pass 285 (2026-09-09): the world-change crash — SOLVED, and what the earlier sections got wrong
+
+**Everything above about this crash is superseded. Read this.**
+
+### The cause
+
+`construct_worker_menu_parameter()` in Interaction.lua built the
+`PalHUDDispatchParameter_WorkerRadialMenu` with the **player character** as its Outer:
+
+```lua
+local player = FindFirstOf("PalPlayerCharacter")
+local outer = (player and player:IsValid()) and player or paramClass
+```
+
+That object is handed to `OnSelectedOrderWorkerRadialMenu` and the game keeps it. The thing
+keeping it is the HUD, which lives under the **GameInstance and survives a world change**.
+The player character does not. One feed was enough: quit to the menu, the world dies and
+everything outered to the player dies with it, and the surviving HUD is left pointing at a
+destroyed object. Load anything afterwards and it faults —
+`EXCEPTION_ACCESS_VIOLATION reading 0x338`, in game code, beneath a UE4SS hook.
+
+**Fix:** outer it to the GameInstance, and build it once per session and reuse it. One line
+of real change. Feeding is otherwise untouched — same picker, same item cost, same 75/250/500.
+
+### Why four earlier attempts missed
+
+All four assumed the dangling reference was something the mod was *holding*. It was not:
+it was an object the mod **made and gave away**. Nothing in Lua could reach it, which is
+why clearing our own tables three separate times changed nothing while the logs showed the
+cleanup running perfectly.
+
+Retired as wrong or unnecessary — do not resurrect these:
+
+- The `InitGameState` table wipe. It fires correctly and is genuinely harmless, but it never
+  addressed the cause. **It also caused a severe performance regression**: it reset
+  `trainerReassertLoopStarted` and restarted the 100ms loop without stopping the old one, and
+  `InitGameState` fires on every menu and level transition — 42 times in one observed session.
+  That is up to 42 overlapping 10Hz loops doing per-follower reflection. Dragón reported the
+  game becoming unplayable with a follower; that was this.
+- The `PalPlayerState:LoadTitleLevel` pre-exit hook. Registers fine, never fires on the
+  quit-to-menu path.
+- Opening the picker directly via `OpenOtomoFeedInventory()`. It does open with no Pal
+  argument, but it binds to whatever `TryGetSpawnedOtomo` returns and needs a real deployed
+  Otomo. Dragón killed this immediately and correctly: a new player has no Pal, so they could
+  never feed, never bond, and never get a first Pal.
+- Disabling the native feed call. Fixes the crash completely and is how the cause was proven,
+  but it removes item consumption and Kinship Peach amounts. Not shippable — the item picker
+  is a hard requirement.
+
+### Genuine findings set aside, worth revisiting on their own merits
+
+Real latent bugs, none of which caused this crash, all reverted to keep the shipping change
+minimal (the working files are kept in the session scratchpad):
+
+- `Indicator.trackedBars` holds `{ bar, gaugeWidget, actor, label }` per entry, is re-read on
+  a timer, and is never cleared on a world change.
+- `Interaction` writes `lastOpenMenuWidget.SpawnedOtomo = wildPal` into a GameInstance-lived
+  widget and never clears it. `pendingWildFeedTarget` is likewise "set, never cleared".
+- The `LoopAsync` fallbacks in Trust and Indicator use UE4SS's async Lua path, which a UE4SS
+  collaborator states plainly is unsafe (issue #1345); they are dead code that would only run
+  in the emergency they are unsafe for.
+- **Pre-existing, not from this work:** a radial feed that fails still grants friendship, via
+  the `"Feed (radial fallback)"` branch. Dragón hit this when a Pal fled mid-menu — the
+  picker correctly failed and the Pal gained trust anyway. Present in v1.0.
+
+### Method note
+
+The crash was found by varying behaviour, not by reasoning about mechanisms. Dragón isolated
+it: feeding crashed, petting never did, and a single feed with no bond and no follower still
+crashed. Four mechanism-first theories cost a test run each. The behavioural difference cost
+one and pointed straight at the feed path.

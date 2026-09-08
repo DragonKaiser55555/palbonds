@@ -1575,6 +1575,11 @@ function Indicator.TogglePersonalityLabels()
     Logger.log("[PalBonds/Indicator] [TAG-TOGGLE] personality tags are now " ..
         (personalityLabelsVisible and "VISIBLE" or "HIDDEN") ..
         " (F9; session-only, resets to visible on the next launch)")
+    -- Two-hundred-and-eighty-seventh pass: returned so the key handler can put
+    -- the new state on screen. Both toggles are invisible otherwise -- with the
+    -- tags hidden there is nothing left to look at, so without a toast the only
+    -- feedback that F9 did anything is the thing it just removed.
+    return personalityLabelsVisible
 end
 
 -- Two-hundred-and-forty-sixth pass (2026-09-07) — Dragón: "the label of the
@@ -2591,8 +2596,28 @@ local function scan_for_gauge_widgets()
         end
     end)
 
-    local gaugeInstances = safe_call(function() return FindAllOf("PalUICharacterHPGaugeBase") end)
-    local canvasInstances = safe_call(function() return FindAllOf("PalUINPCHPGaugeCanvasBase") end)
+    -- Two-hundred-and-eighty-eighth pass (2026-09-09) -- PERFORMANCE.
+    --
+    -- These two are FULL UObject-array walks, and this sweep runs every 2
+    -- seconds for the whole session. Neither result reaches gameplay:
+    -- gaugeInstances is used only to print [DIAG-SCAN] lines, and
+    -- canvasInstances only to capture liveCanvasInstance, whose sole consumer
+    -- is check_panel_children -- which also just logs. In a release build every
+    -- one of those lines is discarded by Logger, so this was two array walks a
+    -- second spent building strings nobody ever reads.
+    --
+    -- The third scan in this sweep, FindAllOf("WBP_PalNPCHPGauge_C") above, is
+    -- load-bearing (it installs the trust bars) and is untouched.
+    local diagnosticsOn = true
+    do
+        local okD, LoggerMod = pcall(require, "Logger")
+        if okD and LoggerMod and LoggerMod.DiagnosticsEnabled then
+            diagnosticsOn = LoggerMod.DiagnosticsEnabled()
+        end
+    end
+
+    local gaugeInstances = diagnosticsOn and safe_call(function() return FindAllOf("PalUICharacterHPGaugeBase") end) or nil
+    local canvasInstances = diagnosticsOn and safe_call(function() return FindAllOf("PalUINPCHPGaugeCanvasBase") end) or nil
     local gaugeCount = gaugeInstances and #gaugeInstances or 0
     local canvasCount = canvasInstances and #canvasInstances or 0
 
@@ -2650,7 +2675,9 @@ local function scan_for_gauge_widgets()
     -- have a handle to the canvas. Fifty-ninth pass: this (and the line
     -- below) now run unconditionally every tick, no matter how much
     -- DIAG-SCAN logging has happened — see the big comment above.
-    check_all_panels()
+    -- Reads live widget fields and calls GetChildrenCount purely to log the
+    -- result, so it is skipped for the same reason as the scans above.
+    if diagnosticsOn then check_all_panels() end
 
     -- Fifty-seventh pass: refresh every trust bar that resolved a real
     -- Pal actor, every tick, so they actually move.

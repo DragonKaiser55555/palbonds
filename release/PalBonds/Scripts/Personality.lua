@@ -1526,11 +1526,42 @@ end
 find_cached_sensor_fwd = find_cached_sensor
 
 local handledSensorKeys = {}
+local handledSensorAddresses = {}
+
+-- Two-hundred-and-eighty-eighth pass (2026-09-09) -- ORDER OF OPERATIONS FIX.
+--
+-- This runs on EVERY sense evaluation of EVERY Pal in the world, continuously.
+-- It used to call GetFullName() -- a reflection round-trip that builds a full
+-- object path -- and then GetOuter(), and then cache_sensor_for_pal() (which
+-- calls GetOrInitState and resolves the Pal's individual ID) BEFORE reaching
+-- the handledSensorKeys dedup that makes the whole thing a once-per-Pal
+-- operation. So the dedup only ever skipped the last step; all the expensive
+-- work ran on every evaluation, forever.
+--
+-- That is the third time this exact shape has cost this project real frames:
+-- the SetHPPercent diagnostic hook and the OTOMO-GETTER-WATCH logging were both
+-- removed for it. A throttle placed after the expensive call throttles nothing.
+--
+-- GetAddress() is the fix: it returns the object's raw memory address with no
+-- name or path construction, so the common case is now one table lookup.
+--
+-- Known and accepted limitation: an address can be reused after the original
+-- object is collected, so a recycled address could skip enforcement for a new
+-- Pal. The consequence is that one Pal behaves with vanilla AI instead of its
+-- rolled personality, and the proactive scan (PERSONALITY_SCAN_INTERVAL_MS)
+-- already exists as the backstop for exactly this -- it is the documented
+-- fallback for when this hook cannot be registered at all.
 local function on_sensor_select_response(Context)
     local sensor = safe_call(function() return Context:get() end)
     if not sensor then return end
+
+    -- Cheap identity first. Everything below this line is expensive.
+    local addr = safe_call(function() return sensor:GetAddress() end)
+    if addr ~= nil and handledSensorAddresses[addr] then return end
+
     local sensorKey = safe_call(function() return sensor:GetFullName() end)
     if not sensorKey then return end
+    if addr ~= nil then handledSensorAddresses[addr] = true end
 
     local owner = safe_call(function() return sensor:GetOuter() end)
     local pawn = owner and safe_call(function() return owner.Pawn end)

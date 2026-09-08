@@ -161,6 +161,16 @@ local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = false
 -- from passive drip alone, so a capture at "5" would prove nothing and a
 -- capture at 4 would look like a grant bug that isn't one. Restore to 2
 -- when BALANCE_VERIFICATION_MODE goes off.
+-- Two-hundred-and-eighty-sixth pass (2026-09-09), Dragon's request: an F10
+-- on/off switch for the passive drip, so a player can deliberately keep a pile
+-- of followers instead of watching them bond their way into the party one by
+-- one. His words: "not that is recommended but sounds like a fun availability".
+--
+-- Session-only and starts ON, matching how the F9 tag toggle already behaves --
+-- nothing about it is written to the save, so a player who forgets they left it
+-- off just gets the normal behaviour back on the next launch.
+local passiveGainEnabled = true
+
 local REAL_PASSIVE_FRIENDSHIP_PER_TICK = 2
 local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST and 0 or REAL_PASSIVE_FRIENDSHIP_PER_TICK
 -- Hundred-and-eighty-fifth pass (2026-09-05): rescaled after Dragón's
@@ -709,6 +719,19 @@ function Trust.ResetForNewWorld()
     Logger.log("[PalBonds/Trust] [WORLD-RESET] dropped " .. n .. " bonding record(s) from the old world")
 end
 
+-- Returns the new state so the caller can tell the player which way it went.
+function Trust.TogglePassiveFriendshipGain()
+    passiveGainEnabled = not passiveGainEnabled
+    Logger.log("[PalBonds/Trust] [PASSIVE-TOGGLE] passive friendship gain is now " ..
+        (passiveGainEnabled and "ON" or "OFF") ..
+        " (F10; session-only, back to ON on the next launch)")
+    return passiveGainEnabled
+end
+
+function Trust.IsPassiveGainEnabled()
+    return passiveGainEnabled
+end
+
 function Trust.GetFollowingSnapshot()
     local snapshot = {}
     for _, st in pairs(State) do
@@ -1129,6 +1152,14 @@ local function tick_followers()
 
                 if lostAllTrust then
                     on_follower_lost_all_trust(st.pal, "too far from player")
+                elseif not passiveGainEnabled then
+                    -- Switched off with F10. Deliberately skips the capture
+                    -- check as well as the gain: that check lives here to catch
+                    -- a Pal crossing the join threshold on passive drip alone,
+                    -- and leaving it running while the drip is off would still
+                    -- convert a follower the player is trying to keep.
+                    -- Interaction-driven joins (petting or feeding a Pal over
+                    -- the line) are untouched.
                 else
                     -- Hundred-and-eighty-fifth pass: applied every tick
                     -- (not every Nth), a flat real vanilla-scale amount —

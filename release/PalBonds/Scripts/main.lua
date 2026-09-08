@@ -142,6 +142,7 @@ function PalBonds.Init()
     -- follow action's Trainer pointer populated. Started once, here, rather than
     -- per Pal or per event. It returns immediately whenever no Pal has a follow
     -- action installed, which is almost always.
+    pcall(Combat.StartShutdownWatch)
     pcall(Combat.StartTrainerReassertLoop)
     Capture.Init()
     -- OtomoWatch.Init() -- DISABLED two-hundred-and-sixth pass (2026-09-06),

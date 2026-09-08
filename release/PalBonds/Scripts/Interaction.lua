@@ -2402,22 +2402,79 @@ end
 -- exists to reuse (reuse still wins when available — free, zero
 -- construction risk) — so on a brand new save, with zero real base workers
 -- ever interacted with, this should still work standalone.
+-- ===========================================================================
+-- THE WORLD-CHANGE CRASH FIX (two-hundred-and-eighty-fifth pass, 2026-09-09)
+-- ===========================================================================
+-- This function built the object that was crashing the game, and the bug was
+-- one line: the Outer.
+--
+--     local player = FindFirstOf("PalPlayerCharacter")
+--     local outer = (player and player:IsValid()) and player or paramClass
+--
+-- The parameter was outered to the PLAYER CHARACTER -- a world actor. We then
+-- hand the object to OnSelectedOrderWorkerRadialMenu and the game keeps it,
+-- because that is how the picker knows what it is doing. But the thing holding
+-- it is the HUD, and the HUD lives under the GameInstance, which SURVIVES a
+-- world change. The player character does not.
+--
+-- So one feed is enough: quit to the menu, the world dies, the player actor and
+-- everything outered to it goes with it -- and the surviving HUD is still
+-- pointing at our parameter. Load anything afterwards and the HUD touches it.
+-- EXCEPTION_ACCESS_VIOLATION, in game code, underneath a UE4SS hook.
+--
+-- That accounts for every observation Dragon collected, which no earlier theory
+-- did: it needs a FEED and never petting (only this path constructs one), it
+-- survives capture, it needs no bond and no follower, and it was untouched by
+-- three separate rounds of clearing the mod's own Lua tables -- because the
+-- dangling pointer was never in Lua. It was an object we made and gave away.
+--
+-- The fix is to give it a lifetime that matches the thing that stores it. The
+-- GameInstance outlives worlds exactly as the HUD does, so an object outered
+-- there is still alive whenever the HUD looks at it.
+--
+-- It is also cached and reused for the whole session rather than rebuilt per
+-- feed. Now that these objects outlive worlds, constructing a fresh one every
+-- time would pile them up for the life of the process; one reused object also
+-- means exactly one thing is ever handed to native code, no matter how much
+-- the player feeds.
+--
+-- Deliberately NOT cleared by ResetForNewWorld: surviving the world change is
+-- the entire point.
+local cachedWorkerMenuParameter = nil
+
 local function construct_worker_menu_parameter()
+    if cachedWorkerMenuParameter ~= nil
+       and safe_call(function() return cachedWorkerMenuParameter:IsValid() end) then
+        return cachedWorkerMenuParameter
+    end
+
     local classOk, paramClass = pcall(function() return StaticFindObject("/Script/Pal.PalHUDDispatchParameter_WorkerRadialMenu") end)
     if not classOk or not paramClass or not paramClass:IsValid() then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] StaticFindObject('/Script/Pal.PalHUDDispatchParameter_WorkerRadialMenu') failed: " .. tostring(paramClass))
+        Logger.log("[PalBonds/Interaction] [FEED-PARAM] StaticFindObject('/Script/Pal.PalHUDDispatchParameter_WorkerRadialMenu') failed: " .. tostring(paramClass))
         return nil
     end
-    local player = FindFirstOf("PalPlayerCharacter")
-    local outer = (player and player:IsValid()) and player or paramClass
+
+    -- The GameInstance is the correct owner: same lifetime as the HUD that will
+    -- hold this object. Falling back to the class object rather than to the
+    -- player, because the player is precisely the lifetime that caused the bug.
+    local outer = safe_call(function() return UEHelpers.GetGameInstance() end)
+    local outerLabel = "GameInstance"
+    if outer == nil or not safe_call(function() return outer:IsValid() end) then
+        outer = paramClass
+        outerLabel = "the parameter class (GameInstance unavailable)"
+    end
+
     local constructOk, newParam = pcall(function()
         return StaticConstructObject(paramClass, outer, 0, 0, 0x0E000000, false, false, nil, nil, nil)
     end)
     if not (constructOk and newParam ~= nil and newParam:IsValid()) then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] StaticConstructObject(WorkerRadialMenu parameter) FAILED (caught, non-fatal): " .. tostring(newParam))
+        Logger.log("[PalBonds/Interaction] [FEED-PARAM] StaticConstructObject(WorkerRadialMenu parameter) FAILED (caught, non-fatal): " .. tostring(newParam))
         return nil
     end
-    Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] constructed a fresh WorkerRadialMenu parameter from scratch (no real worker interaction needed)")
+
+    cachedWorkerMenuParameter = newParam
+    Logger.log("[PalBonds/Interaction] [FEED-PARAM] built the WorkerRadialMenu parameter once for this session, outered to " ..
+        outerLabel .. " so it outlives a world change like the HUD that stores it")
     return newParam
 end
 
@@ -3028,19 +3085,27 @@ local function closeRadialMenuActionWindow()
         elseif lastDecidedInstruction == "feed" then
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
             if not realFeedOk then
-                -- Two-hundred-and-seventh pass: the real feed path grants
-                -- on its own, from the RequestUseToCharacter post-hook
-                -- (which reads the actual item consumed, so Kinship Peaches
-                -- get their own amounts) — that path is untouched and stays
-                -- the primary one. This is only the fallback for when the
-                -- real worker-menu dispatch fails, and it had the exact same
-                -- swallowed-by-the-busy-gate problem Pet had: do_feed()
-                -- routes into do_interaction, which bails before granting.
-                -- Bookkeeping-only here too, so a fallback feed is no longer
-                -- silently worth zero.
-                safe_call(function()
-                    grant_wild_interaction(lastRedirectedWildPalActor, FEED_FRIENDSHIP_BASE, "Feed (radial fallback)")
-                end)
+                -- Two-hundred-and-eighty-sixth pass (2026-09-09) -- REMOVED, and
+                -- Dragon found why it had to go. He walked up to a Pal, opened
+                -- the radial menu, and the Pal fled before the item picker could
+                -- open. The feed correctly failed. The Pal gained trust anyway.
+                --
+                -- What used to be here was a fallback grant of
+                -- FEED_FRIENDSHIP_BASE, added in the two-hundred-and-seventh
+                -- pass for a narrower case: the dispatch failing to SET UP while
+                -- the Pal was still standing there, where granting nothing
+                -- looked like a silent bug. The problem is that this branch
+                -- cannot tell that apart from the Pal simply leaving, and the
+                -- real feed path grants on its own from the
+                -- RequestUseToCharacter post-hook (which reads the item actually
+                -- consumed, so Kinship Peaches get their own amounts). So the
+                -- only thing this branch reliably did was pay out for a feed
+                -- that never happened -- free trust for walking up to a Pal and
+                -- pressing 4, with no item spent.
+                --
+                -- Granting nothing is the correct outcome: no item left the
+                -- inventory and no interaction reached the Pal.
+                Logger.log("[PalBonds/Interaction] the wild feed did not go through (the Pal moved away, or the picker never opened) - granting nothing, since no item was spent and no interaction happened")
             end
         end
     end
@@ -3307,10 +3372,46 @@ function Interaction.Init()
                 Logger.log("[PalBonds/Interaction] [TAG-TOGGLE] Indicator.TogglePersonalityLabels is unavailable — nothing toggled")
                 return
             end
-            IndicatorMod.TogglePersonalityLabels()
+            local nowVisible = IndicatorMod.TogglePersonalityLabels()
+            safe_call(function()
+                local okC, CaptureMod = pcall(require, "Capture")
+                if okC and CaptureMod and CaptureMod.ShowToast then
+                    CaptureMod.ShowToast(nowVisible
+                        and "Personality tags: ON"
+                        or "Personality tags: OFF")
+                end
+            end)
         end)
     end)
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(F9 personality-tag toggle) returned — still alive")
+
+    -- Two-hundred-and-eighty-sixth pass: F10 toggles the followers' passive
+    -- friendship drip. F10 was the old Feed key back when interactions were on
+    -- bare function keys; nothing has been bound to it since the radial menu
+    -- took over, so it is free.
+    RegisterKeyBind(Key.F10, function()
+        safe_call(function()
+            local okT, TrustMod = pcall(require, "Trust")
+            if not (okT and TrustMod and TrustMod.TogglePassiveFriendshipGain) then
+                Logger.log("[PalBonds/Interaction] [PASSIVE-TOGGLE] Trust.TogglePassiveFriendshipGain is unavailable — nothing toggled")
+                return
+            end
+            local nowOn = TrustMod.TogglePassiveFriendshipGain()
+            safe_call(function()
+                local okC, CaptureMod = pcall(require, "Capture")
+                if okC and CaptureMod and CaptureMod.ShowToast then
+                    -- Says the state first, then what it means. The state is
+                    -- the part being asked for; the sentence after it is there
+                    -- because "OFF" alone does not tell a player whether they
+                    -- just lost the trust their followers had already earned.
+                    CaptureMod.ShowToast(nowOn
+                        and "Passive bonding: ON - your Pals grow closer over time."
+                        or "Passive bonding: OFF - your Pals keep the trust they have.")
+                end
+            end)
+        end)
+    end)
+    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(F10 passive-gain toggle) returned — still alive")
 
     Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to run log_emote_index_mapping (static EMOTE-DIAG scan) NOW")
     safe_call(log_emote_index_mapping)

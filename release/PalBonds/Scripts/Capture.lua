@@ -1076,6 +1076,30 @@ end
 -- would be invisible: a player clipping their own follower mid-fight would watch
 -- a bond they spent minutes building quietly shrink, with nothing on screen
 -- connecting the two. Deliberately worded as a warning rather than a loss.
+-- Two-hundred-and-eighty-sixth pass: the same on-screen log line the bond
+-- messages use, exposed for any message that is not about a specific Pal.
+-- Written as its own function rather than by refactoring the notify helpers
+-- above -- those are working, shipped code and there is nothing to gain from
+-- reshaping them for a toggle.
+function Capture.ShowToast(message)
+    pcall(function()
+        local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+        if player == nil or not safe_call(function() return player:IsValid() end) then return end
+        local utility = get_pal_utility()
+        if utility == nil then return end
+        local manager = safe_call(function() return utility:GetLogManager(player) end)
+        if manager == nil then return end
+        local widgetClass = resolve_toast_widget_class(manager)
+        if widgetClass == nil then return end
+        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
+        if textLibrary == nil then return end
+        local text = safe_call(function() return textLibrary:Conv_StringToText(tostring(message)) end)
+        if text == nil then return end
+        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 1 })
+        Logger.log("[PalBonds/Capture] [NOTIFY] " .. tostring(message))
+    end)
+end
+
 function Capture.NotifyTrustShaken(pal)
     pcall(function()
         local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
@@ -1244,6 +1268,15 @@ end
 --
 -- Tests for PRESENCE now, so it cannot break again the next time the stored
 -- shape changes.
+-- Two-hundred-and-seventy-fifth pass: keyed by actor name, so every entry
+-- refers to an actor that no longer exists once the world changes.
+function Capture.ResetForNewWorld()
+    local n = 0
+    for _ in pairs(PermanentlyFled) do n = n + 1 end
+    PermanentlyFled = {}
+    Logger.log("[PalBonds/Capture] [WORLD-RESET] dropped " .. n .. " permanently-fled record(s) from the old world")
+end
+
 function Capture.HasPermanentlyFled(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     return name ~= nil and PermanentlyFled[name] ~= nil

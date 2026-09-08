@@ -2317,7 +2317,6 @@ function Combat.StartTrainerReassertLoop()
     ))
 
     local playerPollCounter = 0
-    local worldWatchCounter = 0
     local playerMissingStreak = 0
 
     local function step()
@@ -2359,23 +2358,22 @@ function Combat.StartTrainerReassertLoop()
             -- Runs BEFORE the follower early-out on purpose: once a reset has
             -- emptied the tables there would be no followers left to trigger the
             -- next check, and the loop would go blind.
-            worldWatchCounter = worldWatchCounter + 1
-            if worldWatchCounter % 5 == 0 then
-                local watchPlayer = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
-                local watchName = watchPlayer and safe_call(function() return watchPlayer:GetFullName() end)
-                if watchName == nil then
-                    if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
-                        Combat.ResetForNewWorld("no player character in the world any more")
-                    end
-                    lastSeenPlayerName = nil
-                elseif lastSeenPlayerName ~= nil and watchName ~= lastSeenPlayerName then
-                    Combat.ResetForNewWorld("the player actor changed — a different world is loaded")
-                    lastSeenPlayerName = watchName
-                else
-                    lastSeenPlayerName = watchName
-                end
-            end
-
+            -- Two-hundred-and-eighty-eighth pass (2026-09-09) -- WORLD WATCH
+            -- REMOVED, and it was the single most expensive thing in this mod.
+            --
+            -- What used to be here ran every 5th pass of a 100ms loop -- twice a
+            -- second, forever, follower or not, because it sat ABOVE the
+            -- early-out below. Each run did FindFirstOf("PalPlayerCharacter"),
+            -- which walks the ENTIRE UObject array (Palworld carries hundreds of
+            -- thousands of objects), and then GetFullName() on the result, which
+            -- builds a full path string. Two array walks and two path builds per
+            -- second, from the moment the mod loaded until the game closed.
+            --
+            -- It existed to notice a world change and drop stale references,
+            -- which was the wrong theory about the crash from start to finish.
+            -- The real cause was a dispatch parameter outered to the player
+            -- character (see construct_worker_menu_parameter in Interaction.lua),
+            -- and it is fixed at the source. Nothing here was ever needed.
             if next(followActionObjects) == nil then return end
 
             -- Age check FIRST: an actor destroyed by death or a loading screen
@@ -2410,7 +2408,27 @@ function Combat.StartTrainerReassertLoop()
             -- at all -- far cheaper than the world sweeps this mod already does,
             -- and the correctness is not negotiable at this cost. If the lookup
             -- comes back empty the world is going away and every loop stops.
-            local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+            -- Two-hundred-and-eighty-eighth pass: this called FindFirstOf --
+            -- another full UObject-array walk -- on EVERY pass, ten times a
+            -- second, for as long as any Pal was following. That is the lag
+            -- Dragon reported as "unplayable when having a follower", and it is
+            -- entirely avoidable: lastKnownPlayerActor and
+            -- PLAYER_CACHE_MAX_AGE_PASSES were both already here, and the loop
+            -- simply never read them. The cache was written and never used.
+            --
+            -- Now the array is walked at most once every PLAYER_CACHE_MAX_AGE_PASSES
+            -- (40 passes, ~4s) instead of ten times a second, and IsValid() --
+            -- a cheap direct call, not a scan -- catches a dead actor in between.
+            local player = lastKnownPlayerActor
+            if player == nil
+               or playerCacheAgePasses > PLAYER_CACHE_MAX_AGE_PASSES
+               or not safe_call(function() return player:IsValid() end) then
+                player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                if player ~= nil then
+                    lastKnownPlayerActor = player
+                    playerCacheAgePasses = 0
+                end
+            end
 
             -- Two-hundred-and-seventy-seventh pass (2026-09-08) — RELEASE, not
             -- merely stop. The previous version halted the loop when the player
@@ -2432,25 +2450,20 @@ function Combat.StartTrainerReassertLoop()
                 if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
                     Combat.ResetForNewWorld("the player left the world")
                 end
-                lastSeenPlayerName = nil
                 return
             end
             if not safe_call(function() return player:IsValid() end) then
                 if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
                     Combat.ResetForNewWorld("the player actor went invalid")
                 end
-                lastSeenPlayerName = nil
                 return
             end
-            local thisPlayerName = safe_call(function() return player:GetFullName() end)
-            if thisPlayerName ~= nil and lastSeenPlayerName ~= nil and thisPlayerName ~= lastSeenPlayerName then
-                Combat.ResetForNewWorld("a different player actor exists now — this is a new world")
-            end
-            lastSeenPlayerName = thisPlayerName
-            -- Keep the cache in step so anything else reading it sees the live
-            -- actor rather than the one from before a respawn.
-            lastKnownPlayerActor = player
-            playerCacheAgePasses = 0
+            -- Two-hundred-and-eighty-eighth pass: a GetFullName() on every
+            -- pass -- ten full path-string builds a second -- purely to compare
+            -- it against the previous one and notice a world change. Same dead
+            -- theory as the world watch above, same cost profile, removed for
+            -- the same reason. The cache is maintained by the block above now,
+            -- so re-assigning it here would only defeat its max-age refresh.
 
             didWork = true
 
