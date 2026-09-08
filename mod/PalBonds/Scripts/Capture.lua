@@ -1244,6 +1244,15 @@ end
 --
 -- Tests for PRESENCE now, so it cannot break again the next time the stored
 -- shape changes.
+-- Two-hundred-and-seventy-fifth pass: keyed by actor name, so every entry
+-- refers to an actor that no longer exists once the world changes.
+function Capture.ResetForNewWorld()
+    local n = 0
+    for _ in pairs(PermanentlyFled) do n = n + 1 end
+    PermanentlyFled = {}
+    Logger.log("[PalBonds/Capture] [WORLD-RESET] dropped " .. n .. " permanently-fled record(s) from the old world")
+end
+
 function Capture.HasPermanentlyFled(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     return name ~= nil and PermanentlyFled[name] ~= nil

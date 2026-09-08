@@ -1273,7 +1273,32 @@ local function resolve_pal_actor_from_gauge(gaugeWidget)
         return nil, "no hooked handle yet, and bindedHandle unreadable: " .. tostring(handle)
     end
 
-    inspect_bindedHandle_shape(handle)
+    -- Two-hundred-and-seventy-fourth pass (2026-09-08) — REMOVED, and it is the
+    -- best crash suspect this project has had.
+    --
+    -- Dragon's crash log ends on this probe's own output: five DIAG-HANDLE lines
+    -- reporting GetFullName FAILED, LoadSynchronous FAILED, Get FAILED,
+    -- TryGetIndividualActor FAILED, AssetPathName nil -- and then the process
+    -- died with an access violation. It ran, everything it tried failed, and the
+    -- game fell over immediately after.
+    --
+    -- Its question was ANSWERED in the fifty-ninth pass, in this file's own
+    -- words: the raw bindedHandle is a TSoftObjectPtrUserdata that "does not
+    -- support ANY of the accessors tried ... a genuine UE4SS Lua binding gap".
+    -- It has kept running once per session ever since, calling four accessors on
+    -- an object it already knows it cannot touch, to re-learn a fact written
+    -- down long ago.
+    --
+    -- pcall is no defence here, for the third time in this project: it catches
+    -- Lua errors, not a native access violation inside the engine call. An
+    -- unsupported binding poking at a wrapped pointer is exactly how you read
+    -- from a bad address.
+    --
+    -- Not proven -- correlation and a plausible mechanism, not a confession. But
+    -- it costs nothing to remove: no code reads its output, and the answer it
+    -- produces is already in the comments above. The function stays defined and
+    -- unbound, the same convention used for the other retired probes here.
+    -- inspect_bindedHandle_shape(handle)
 
     local directOk, actor = pcall(function() return handle:TryGetIndividualActor() end)
     if directOk and actor ~= nil then
@@ -2531,6 +2556,41 @@ local function probe_screen_projection()
 end
 
 local function scan_for_gauge_widgets()
+    -- Two-hundred-and-seventy-second pass: this sweep touches live UI widgets,
+    -- which are destroyed early in teardown. Stop as soon as the world is going.
+    local okShut, CombatShut = pcall(require, "Combat")
+    if okShut and CombatShut and CombatShut.IsShuttingDown and CombatShut.IsShuttingDown() then
+        return
+    end
+    -- Two-hundred-and-seventy-first pass (2026-09-08) — Dragon went to take
+    -- screenshots and found "a lot of pals didnt show their personality tags".
+    --
+    -- The cause is in the startup timing, and his own UE4SS log shows it: the
+    -- mod loads at 00:00:43, but the WBP_PalNPCHPGauge:BindFromHandle hook --
+    -- the thing that creates a label when a nameplate attaches to a Pal -- only
+    -- registers at 00:01:38. That is fifty-five seconds, because the widget
+    -- class is not loaded yet and the registration has to keep retrying until it
+    -- is. Every nameplate that binds inside that window never gets a tag, and it
+    -- never gets one later either, because nothing revisits an existing gauge.
+    --
+    -- That window is exactly when a player loads in and looks around, which is
+    -- why it looks like "a lot" rather than "occasionally one".
+    --
+    -- This sweep closes it. install_trust_bar is idempotent per widget (it has
+    -- been since the fifty-first pass, and the [DIAG-CREATE] "REUSED existing
+    -- widget(s)" line is it declining to rebuild), so calling it on every live
+    -- gauge every couple of seconds costs nothing for gauges that already have
+    -- their label and fixes the ones that missed the hook.
+    safe_call(function()
+        local gauges = FindAllOf("WBP_PalNPCHPGauge_C")
+        if gauges == nil then return end
+        for _, g in ipairs(gauges) do
+            if g ~= nil and safe_call(function() return g:IsValid() end) then
+                safe_call(function() install_trust_bar(g) end)
+            end
+        end
+    end)
+
     local gaugeInstances = safe_call(function() return FindAllOf("PalUICharacterHPGaugeBase") end)
     local canvasInstances = safe_call(function() return FindAllOf("PalUINPCHPGaugeCanvasBase") end)
     local gaugeCount = gaugeInstances and #gaugeInstances or 0

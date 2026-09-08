@@ -699,6 +699,16 @@ function Trust.ForgetBonding(pal)
     Logger.log("[PalBonds/Trust] " .. tostring(key) .. " joined the party — dropping its bonding state so the follower tick stops tracking it")
 end
 
+-- Two-hundred-and-seventy-fifth pass: every entry in State points at an actor
+-- from the world that is going away. See Combat's WORLD CHANGE RESET comment.
+function Trust.ResetForNewWorld()
+    local n = 0
+    for _ in pairs(State) do n = n + 1 end
+    State = {}
+    LevelMultiplierCache = {}
+    Logger.log("[PalBonds/Trust] [WORLD-RESET] dropped " .. n .. " bonding record(s) from the old world")
+end
+
 function Trust.GetFollowingSnapshot()
     local snapshot = {}
     for _, st in pairs(State) do
@@ -959,6 +969,13 @@ end
 -- order (Combat.lua), applies passive trust gain every few ticks, and
 -- checks distance from the player (leash break).
 local function tick_followers()
+    -- Two-hundred-and-seventy-second pass: this tick touches every follower's
+    -- actor, so it stops dead once the world is going away. See Combat's
+    -- SHUTDOWN GUARD comment for why validity checks are not enough here.
+    local okShut, CombatShut = pcall(require, "Combat")
+    if okShut and CombatShut and CombatShut.IsShuttingDown and CombatShut.IsShuttingDown() then
+        return
+    end
     local player = FindFirstOf("PalPlayerCharacter")
     local playerLoc = player and safe_call(function() return player:K2_GetActorLocation() end)
     local okReq, Combat = pcall(require, "Combat")

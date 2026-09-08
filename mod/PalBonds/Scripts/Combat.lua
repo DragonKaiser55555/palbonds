@@ -2141,7 +2141,172 @@ function Combat.FreezeBetrayedPal(pal)
         "). Re-applied every ~2s up to " .. INERT_MAX_PUSHES .. " times purely as insurance in case something turns it back on.")
 end
 
+-- ===================================================================
+-- SHUTDOWN GUARD (two-hundred-and-seventy-second pass, 2026-09-08)
+-- ===================================================================
+-- Dragon isolated this cleanly, and the isolation is what made it findable:
+-- relaunching the game quickly is FINE with no bonded Pal, across several
+-- attempts, and crashes reliably if one Pal was following. That is the exact
+-- difference between this loop doing nothing and this loop doing real work.
+--
+-- With no follower the fast loop early-outs on an empty table. With one, it
+-- reads actor fields and writes to the follow action TEN TIMES A SECOND -- and
+-- it keeps doing that while the game is shutting down, because nothing here has
+-- ever known the difference between a live world and one being torn apart.
+--
+-- IsValid() does not protect against this. During teardown an object can answer
+-- "yes" while its memory is already being reclaimed, and safe_call cannot help
+-- either: pcall catches Lua errors, not a native access violation. That is the
+-- same lesson the screen-projection probe taught earlier in this project.
+--
+-- The crash lands on the SECOND launch rather than the first because a process
+-- that did not shut down cleanly is still holding on when the next one starts.
+-- Dragon's log ends on the quit menu opening, which is precisely where our loops
+-- should have stopped and did not.
+--
+-- Two independent detectors, because one of them depends on an API surface I
+-- cannot verify from here and the other cannot fail:
+--
+--   1. A hook on PalPlayerCharacter:EndPlay -- the player leaving the world is
+--      the clearest possible "this is over" signal. Registered in a pcall and
+--      logged, so if the name is wrong on this build we find out in one line
+--      instead of silently losing the guard.
+--   2. A poll. Every tenth pass (about a second) the loop checks whether a
+--      player character can still be found at all. Once it cannot, twice in a
+--      row, the world is gone. No API guessing, and it catches every path --
+--      quit, level change, anything.
+--
+-- Once set, every loop stops RESCHEDULING rather than merely skipping work, so
+-- nothing of ours is left queued against a dying world.
+local shuttingDown = false
+local lastSeenPlayerName = nil
+
+function Combat.IsShuttingDown()
+    return shuttingDown
+end
+
+function Combat.MarkShuttingDown(why)
+    if shuttingDown then return end
+    shuttingDown = true
+    Logger.log("[PalBonds/Combat] [SHUTDOWN] the world is going away (" .. tostring(why) ..
+        ") — stopping every PalBonds loop so nothing of ours touches actors while they are being destroyed")
+end
+
 local trainerReassertLoopStarted = false
+
+-- Registered once at Init. Player leaves the world -> everything stops.
+-- The EndPlay hook attempt is gone: Dragon's log answered it outright with
+-- "no UFunction with the specified name was found", so that detector never
+-- existed. Kept as a note rather than a retry, because guessing at a second
+-- name would be the same mistake again. The per-pass player check below does
+-- the whole job and cannot fail.
+-- ===================================================================
+-- WORLD CHANGE RESET (two-hundred-and-seventy-fifth pass, 2026-09-08)
+-- ===================================================================
+-- Dragon designed the experiment that found this, and it is the one that
+-- actually isolates the bug: he bonded a Pal in one save, went back to the
+-- menu, and loaded a DIFFERENT save -- without ever closing the game -- and it
+-- crashed exactly the same way, same 0x338, same stack.
+--
+-- So it was never the save file (a different world crashed), and never a
+-- relaunch race (nothing relaunched). It is the WORLD CHANGE.
+--
+-- Every table in this mod outlives a world. When a world unloads, every actor
+-- in it is destroyed -- Pals, the player, the follow actions we constructed --
+-- but followActionObjects, BondingState, FollowerActors and the rest still hold
+-- pointers to all of them, and the 100ms loop is still running on its own timer.
+-- Load anything afterwards and that loop starts touching objects belonging to a
+-- world that no longer exists.
+--
+-- This also explains the two crashes I never managed to pin down. Quitting
+-- unloads the world. Dying destroys the player actor. Same cause, three
+-- symptoms, and my earlier "shutdown guard" missed all of them because it
+-- watched for the GAME CLOSING when the real event is the world going away --
+-- which happens far more often and far earlier.
+--
+-- UE4SS hooks LoadMap itself (it is in the startup log as
+-- UE4SS.LoadMap.LuaModImpl), so the callback exists. Registered in a pcall and
+-- logged either way: the EndPlay attempt earlier tonight failed silently until
+-- the log told us the UFunction did not exist, and that is not a mistake worth
+-- repeating.
+function Combat.ResetForNewWorld(why)
+    local followers, actions = 0, 0
+    for _ in pairs(BondingState) do followers = followers + 1 end
+    for _ in pairs(followActionObjects) do actions = actions + 1 end
+
+    BondingState = {}
+    FollowerActors = {}
+    OtomoCompositeCache = {}
+    loggedFollowTickOnce = {}
+    followActionObjects = {}
+    followActionAttempts = {}
+    followActionCapLogged = {}
+    trainerReassertCounter = {}
+    trainerClearedCount = {}
+    stuckZeroStreak = {}
+    stuckWarned = {}
+    followSlotIndex = {}
+    aimFrozen = {}
+    recallActive = {}
+    frozenPals = {}
+    assistHateTargets = {}
+    LeashByKey = {}
+    lastKnownPlayerActor = nil
+    playerCacheAgePasses = 9999
+    playerCombatActive = false
+    shuttingDown = false
+
+    Logger.log(string.format(
+        "[PalBonds/Combat] [WORLD-RESET] %s — dropped every reference to the old world (%d follower(s), %d follow action(s)). Nothing of ours points at destroyed actors any more.",
+        tostring(why), followers, actions
+    ))
+
+    safe_call(function()
+        local okT, TrustMod = pcall(require, "Trust")
+        if okT and TrustMod and TrustMod.ResetForNewWorld then TrustMod.ResetForNewWorld() end
+    end)
+    safe_call(function()
+        local okC, CaptureMod = pcall(require, "Capture")
+        if okC and CaptureMod and CaptureMod.ResetForNewWorld then CaptureMod.ResetForNewWorld() end
+    end)
+end
+
+function Combat.StartShutdownWatch()
+    Logger.log("[PalBonds/Combat] [SHUTDOWN] watch active — the player is re-resolved on every pass, so a destroyed player stops all loops immediately")
+
+    -- Two-hundred-and-seventy-sixth pass: the LoadMap callbacks were my second
+    -- guessed API name in one night, and Dragon's log answered it the same way
+    -- as the first -- "attempt to call a nil value". They do not exist in this
+    -- build.
+    --
+    -- So this time the names come out of UE4SS.dll itself rather than memory.
+    -- RegisterLoadMap*Callback is genuinely absent; these two are present:
+    --
+    --   RegisterEndPlayPreCallback      -- an actor is leaving the world
+    --   RegisterInitGameStatePostCallback -- a new world's game state is up
+    --
+    -- EndPlay fires for every actor, including routine despawns, so acting on
+    -- all of them would reset constantly. The filter is the PLAYER: a player
+    -- character only ends play when the world is being torn down or when the
+    -- player themselves is destroyed -- and both of those are exactly when our
+    -- references go stale. That single filter covers quitting, switching saves
+    -- AND dying, which is all three symptoms.
+    --
+    -- InitGameState is the other end: a new world coming up. Belt and braces,
+    -- in case a path reaches a new world without the player ever ending play.
+    -- No lifecycle callback is used here, and that is deliberate rather than a
+    -- third guess. Two attempts failed with "attempt to call a nil value"
+    -- (RegisterLoadMap*, then RegisterEndPlay*/RegisterInitGameState*), and
+    -- grepping the UE4SS mods that ship with this build settles it: the only
+    -- Lua entry points any of them use are RegisterHook, the key binds,
+    -- ExecuteInGameThread* and LoopAsync. This build exposes no world-lifecycle
+    -- callbacks to Lua at all -- the names I found in the DLL are C++ symbols.
+    --
+    -- So the world change is DETECTED instead, from the loop already running,
+    -- using only calls known to work here. See the player-identity check in the
+    -- fast loop.
+    Logger.log("[PalBonds/Combat] [WORLD-RESET] armed via player-identity polling (this UE4SS build exposes no world-lifecycle callbacks to Lua)")
+end
 
 function Combat.StartTrainerReassertLoop()
     if trainerReassertLoopStarted or not USE_TRAINER_REASSERT then return end
@@ -2151,7 +2316,17 @@ function Combat.StartTrainerReassertLoop()
         TRAINER_REASSERT_INTERVAL_MS
     ))
 
+    local playerPollCounter = 0
+    local worldWatchCounter = 0
+    local playerMissingStreak = 0
+
     local function step()
+        -- Nothing below is safe once the world is being destroyed, and the
+        -- reschedule at the bottom is skipped too, so this chain ends here.
+        -- Deliberately NOT latching on shuttingDown any more: halting the loop is
+        -- what let the stale references survive. The loop keeps running so it can
+        -- notice the world change and RELEASE them.
+
         local didWork = false
         safe_call(function()
             -- The cheap early-out, checked first and before anything else is
@@ -2181,6 +2356,26 @@ function Combat.StartTrainerReassertLoop()
                 end
             end
 
+            -- Runs BEFORE the follower early-out on purpose: once a reset has
+            -- emptied the tables there would be no followers left to trigger the
+            -- next check, and the loop would go blind.
+            worldWatchCounter = worldWatchCounter + 1
+            if worldWatchCounter % 5 == 0 then
+                local watchPlayer = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                local watchName = watchPlayer and safe_call(function() return watchPlayer:GetFullName() end)
+                if watchName == nil then
+                    if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
+                        Combat.ResetForNewWorld("no player character in the world any more")
+                    end
+                    lastSeenPlayerName = nil
+                elseif lastSeenPlayerName ~= nil and watchName ~= lastSeenPlayerName then
+                    Combat.ResetForNewWorld("the player actor changed — a different world is loaded")
+                    lastSeenPlayerName = watchName
+                else
+                    lastSeenPlayerName = watchName
+                end
+            end
+
             if next(followActionObjects) == nil then return end
 
             -- Age check FIRST: an actor destroyed by death or a loading screen
@@ -2188,15 +2383,74 @@ function Combat.StartTrainerReassertLoop()
             -- the next field read, so freshness is the real guard here and
             -- validity is only the second line.
             playerCacheAgePasses = playerCacheAgePasses + 1
-            local player = lastKnownPlayerActor
-            if player == nil or playerCacheAgePasses > PLAYER_CACHE_MAX_AGE_PASSES then
-                lastKnownPlayerActor = nil
+            -- Two-hundred-and-seventy-third pass (2026-09-08) — Dragon's theory,
+            -- and it unifies both crashes where mine only explained one:
+            --
+            --   "its probably related to the player's location - remember when i
+            --    told you i died from the scarred pal's vengeance and then at
+            --    respawn the game crashed?"
+            --
+            -- Quitting and dying have the same shape: the player's actor is
+            -- DESTROYED while a follower still exists. And the single most
+            -- dangerous thing this mod does is one line below --
+            --     action.Trainer = playerActor
+            -- -- writing a pointer INTO a live UObject field, ten times a second.
+            --
+            -- If that pointer is stale we are not merely reading freed memory,
+            -- we are storing it inside an object the engine still uses. That is
+            -- a corruption vector rather than a crash-on-read, which is exactly
+            -- why it kills the process later and elsewhere instead of here.
+            --
+            -- The cache made it worse. It was only re-validated every 40 passes,
+            -- so a player destroyed by death or by quitting left up to FOUR
+            -- SECONDS of writing a dangling pointer into the follow action.
+            --
+            -- So the player is resolved FRESH on every pass that writes. One
+            -- targeted class lookup per 100ms, and only while a follower exists
+            -- at all -- far cheaper than the world sweeps this mod already does,
+            -- and the correctness is not negotiable at this cost. If the lookup
+            -- comes back empty the world is going away and every loop stops.
+            local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+
+            -- Two-hundred-and-seventy-seventh pass (2026-09-08) — RELEASE, not
+            -- merely stop. The previous version halted the loop when the player
+            -- vanished, and halting changes nothing: the tables still hold Lua
+            -- references to the follow actions we constructed, and a Lua
+            -- reference KEEPS A UOBJECT ALIVE. Those objects therefore survive
+            -- the world unloading, still bound to the action component of a Pal
+            -- that no longer exists, and the engine walks them in the next
+            -- world. That is a far better fit for a crash inside game code
+            -- reached through UE4SS's Blueprint hooks than anything our Lua does
+            -- directly, and it explains why the fault is always the same 0x338.
+            --
+            -- So the world change is detected by the PLAYER'S IDENTITY, and the
+            -- response is to drop every reference so the engine can collect the
+            -- objects normally:
+            --   player gone      -> the world is unloading
+            --   player different -> a different world is up
+            if player == nil then
+                if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
+                    Combat.ResetForNewWorld("the player left the world")
+                end
+                lastSeenPlayerName = nil
                 return
             end
             if not safe_call(function() return player:IsValid() end) then
-                lastKnownPlayerActor = nil
+                if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
+                    Combat.ResetForNewWorld("the player actor went invalid")
+                end
+                lastSeenPlayerName = nil
                 return
             end
+            local thisPlayerName = safe_call(function() return player:GetFullName() end)
+            if thisPlayerName ~= nil and lastSeenPlayerName ~= nil and thisPlayerName ~= lastSeenPlayerName then
+                Combat.ResetForNewWorld("a different player actor exists now — this is a new world")
+            end
+            lastSeenPlayerName = thisPlayerName
+            -- Keep the cache in step so anything else reading it sees the live
+            -- actor rather than the one from before a respawn.
+            lastKnownPlayerActor = player
+            playerCacheAgePasses = 0
 
             didWork = true
 
@@ -2251,7 +2505,12 @@ function Combat.StartTrainerReassertLoop()
         local nextDelay = didWork and TRAINER_REASSERT_INTERVAL_MS or TRAINER_REASSERT_IDLE_INTERVAL_MS
 
         -- Reschedule unconditionally, including after an error above, so one bad
-        -- frame cannot silently end the loop for the rest of the session.
+        -- frame cannot silently end the loop for the rest of the session -- but
+        -- NOT once the world is going away, which is the whole point of the
+        -- guard. Checked again here because the flag can be set mid-pass.
+        -- Deliberately NOT latching on shuttingDown any more: halting the loop is
+        -- what let the stale references survive. The loop keeps running so it can
+        -- notice the world change and RELEASE them.
         pcall(function()
             ExecuteInGameThreadWithDelay(nextDelay, step)
         end)

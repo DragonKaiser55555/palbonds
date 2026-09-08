@@ -1,0 +1,93 @@
+Ever wanted to just... pet a wild Pal?
+
+Not knock it out first. Not throw a sphere at it. Just walk up to the little
+guy, scratch its head, give it a berry, and see what happens.
+
+That's the whole mod.
+
+
+[h2]How it goes[/h2]
+
+You find a Pal. You pet it. It's suspicious. You feed it something. It's less
+suspicious. You keep at it, and at some point it decides you're alright and
+starts trailing after you.
+
+Then it follows you around. It fights for you when something jumps you. And if
+you keep it happy long enough, it joins your party on its own - no sphere, no
+fight, it just decides it's going with you.
+
+Yes, you can have a whole entourage. No, that is not always a good idea. Six
+Pals swinging at the same Chikipi is exactly as chaotic as it sounds, and if
+they clip each other in the process, that's between them and you.
+
+
+[h2]Every wild Pal has a personality now[/h2]
+
+There's a tag above their head telling you who you're dealing with before you
+walk over:
+
+[list]
+[*][b]Normal[/b] - whatever its species normally does
+[*][b]Curious[/b] - stops and looks at you as you come closer
+[*][b]Timid[/b] - nope, gone
+[*][b]Aloof[/b] - you do not exist
+[*][b]Grumpy[/b] - all posturing, until you look like easy prey
+[*][b]Hostile[/b] - straight for you
+[*][b]Feral[/b] - straight for anything
+[/list]
+
+Some Pals are simply not going to be your friend today, and that's fine. Find
+another one.
+
+Tags bother you? F9 turns them off.
+
+
+[h2]They remember what you do[/h2]
+
+Hit a Pal that trusts you and it flinches. Do it again and that's it - it's
+done with you. It won't follow you, won't let you feed it, won't come back. And
+it might decide it has something to say about it.
+
+Wander too far and leave one behind, and it gives up on you too. Less dramatic,
+but you still lost it.
+
+
+[h2]Controls[/h2]
+
+[list]
+[*][b]4[/b] - the usual radial menu. Pet, feed.
+[*][b]F8[/b] - play with it
+[*][b]F9[/b] - hide/show the personality tags
+[/list]
+
+Get close, look right at it. About five metres.
+
+
+[h2]Requirements[/h2]
+
+UE4SS - it's listed as required, so Steam grabs it for you.
+
+
+[h2]A few things[/h2]
+
+[list]
+[*]Bonding takes a while. That's the point. Interactions do most of the work,
+but a Pal walking with you slowly warms up to you anyway.
+[*]Don't leave a bonded Pal behind. Distance costs you trust.
+[*]High-level Pals take longer. Low-level ones come around fast.
+[*]A Pal that joins you this way shows up already fond of you. You earned it.
+[/list]
+
+
+[h2]Bugs, ideas, complaints[/h2]
+
+Drop a comment. It's a young mod and I'd rather hear about it.
+
+Source is on GitHub under MIT if you want to poke at it or build on it:
+https://github.com/DragonKaiser55555/palbonds
+
+The repo also has the full development notes - a lot of digging into how
+Palworld's following, AI presets and friendship system actually work under the
+hood. Might save another modder some time.
+
+Unofficial fan mod. Palworld belongs to Pocketpair, Inc.

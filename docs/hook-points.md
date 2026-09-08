@@ -1790,3 +1790,42 @@ Everything from the pass-231 breakthrough to a state Dragón confirmed with "exc
 *A base worker was petted and captured.* `Capture.IsAlreadyOwned` checked only `OwnerPlayerUId`, which is correct for party and Palbox Pals and empty for a base-camp worker — it belongs to the base, not to a player id. Its real friendship (21000, rank 3) was then measured against this mod's own bonding threshold, which the level gap (pal 12 vs player 52, 0.2x) had scaled to 125, for a ratio of 168: the bar was full before he touched it. That scale collision is only safe as long as owned Pals never reach the code at all, which is what the guard is for. Now also checks `IsOtomo()` and `GetBaseCampId()`, both real functions on `UPalCharacterParameterComponent`, each in its own pcall so a build missing one degrades to the others, with every ambiguous case resolving to "owned".
 
 *Followers never returned after combat.* The log settles it: the Petallia re-asserted its Trainer 801 consecutive times up to 14:41:14, combat began at 14:41:18, and there is not one re-assert line afterwards — and the only path that stops them is the action going invalid. **A combat action destroys the follow action rather than outranking it**, and installation was capped at one attempt per Pal for the whole session, so nothing rebuilt it. The Pal kept the bond, kept the companion preset, and had no follow behaviour left at all. The action is now rebuilt when it is gone; the safety is the "only install when no live action exists" check rather than the cap, so a healthy follower never reaches the counter and normal play costs one install per Pal plus one per fight survived.
+
+## Passes 272-277 (2026-09-08, late): the world-change crash — WHERE WE STOPPED
+
+**Not solved. Read this before touching Combat.lua's loops.**
+
+### The bug
+
+`EXCEPTION_ACCESS_VIOLATION reading address 0x338`, on the GameThread, with two UE4SS frames sitting inside the call chain — the game calls into a UE4SS hook and crashes in game code below it. Always the identical stack and fault address.
+
+**Trigger, isolated by Dragón and this is the experiment that matters:** bond a Pal so it follows, then go back to the menu and load a *different* save — **without closing the game** — and it crashes. That single test killed two theories at once: it is not the save file (a different world crashed) and not a relaunch race (nothing relaunched).
+
+Same cause, three symptoms: quitting, switching worlds, and dying all destroy the world or the player.
+
+### The cause, confirmed upstream
+
+From UE4SS's own documentation and issue tracker: **UE4SS Lua bindings hand out raw UObject pointers with no engine GC registration, so any mod storing a reference across a load or map transition will cause problems.** There is also an open issue (UE4SS-RE/RE-UE4SS#1328) for a reproducible access violation reached through `ForEachUObject`/`FindFirstOf`.
+
+This mod stores UObject references everywhere and for the whole session: `followActionObjects` (the `BP_AIAction_OtomoFollow_C` objects we construct), `FollowerActors`, `Trust.State[key].pal`, `lastKnownPlayerActor`. It also calls `FindFirstOf`/`FindAllOf` constantly — the player lookup ten times a second, the nameplate sweep every two seconds, the aim scan on every radial recompute.
+
+### What was tried and why each failed
+
+1. **Shutdown guard on a "game closing" flag** — our loops run on `ExecuteInGameThreadWithDelay`, and those callbacks STOP BEING SERVICED the moment the world starts unloading. The log ends at the quit-menu widget push every single time. Nothing timer-driven can react during teardown. This is structural.
+2. **`RegisterHook("/Script/Pal.PalPlayerCharacter:EndPlay")`** — "no UFunction with the specified name was found".
+3. **`RegisterLoadMapPreCallback` / `PostCallback`** — "attempt to call a nil value".
+4. **`RegisterEndPlayPreCallback` / `RegisterInitGameStatePostCallback`** — also nil. The names exist as strings in UE4SS.dll but they are C++ symbols; grepping the UE4SS mods shipped with this build confirms the only Lua entry points available are `RegisterHook`, the key binds, `ExecuteInGameThread*` and `LoopAsync`. **This build exposes no world-lifecycle callbacks to Lua.**
+5. **Player-identity polling to detect the change and release the references** — never fires, for the same reason as 1: the loop is already dead by then.
+
+Three API names were guessed from memory and all three were wrong. The one time the binary and headers were read first (`TerminateCurrentActionByClass`), it was right immediately.
+
+### What to do next
+
+The fix is architectural, not another patch:
+
+- **Stop storing UObject pointers across time.** Store an identifier and re-resolve on demand. This is the documented-safe pattern and it is what the upstream note is telling us.
+- **Cut `FindAllOf`/`FindFirstOf` frequency hard.** Ten player lookups a second is a lot of exposure to a path with an open crash issue against it.
+
+### Severity
+
+Needs a bonded follower AND a world change. A player who plays a session and closes the game normally never sees it. Currently undocumented on the Workshop page, deliberately — Dragón's call was not to publish a workaround for something that might be fixable.
