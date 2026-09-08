@@ -127,6 +127,11 @@ local FRIENDLY_TRIGGER_RATIO = 0.2
 -- so the move order (and the distance/leash check) refresh much more
 -- often; paired with Combat.lua's new SetActiveAI(false) suppression
 -- while bonding (see that file's seventeenth-pass note).
+-- Two-hundred-and-ninety-third pass: the HP watch no longer decides betrayal,
+-- so its per-drop line is off by default. It would otherwise print on every
+-- enemy hit a follower takes in a fight, which is most of a fight.
+local HP_WATCH_VERBOSE = false
+
 local TICK_INTERVAL_MS = 1500          -- how often the follower tick runs (move order + distance check)
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
 -- 10/tick "seems too high," dropped to 5 per tick (~1.5s) for now.
@@ -239,6 +244,43 @@ local function safe_call(fn, ...)
     return nil, result
 end
 
+-- ===========================================================================
+-- SAFER PLAYER LOOKUP (two-hundred-and-ninety-second pass, 2026-09-09)
+-- ===========================================================================
+-- Dragon crashed on death and respawn, and this one is NOT the world-change
+-- crash that was fixed earlier -- different fault address, different stack:
+--
+--     EXCEPTION_ACCESS_VIOLATION reading address 0x10
+--     31 consecutive UE4SS frames, then Palworld
+--
+-- 0x10 is UObjectBase::ClassPrivate -- his own UE4SS startup log prints exactly
+-- that offset. So something read Object->ClassPrivate on a NULL object, deep
+-- inside UE4SS itself rather than in game code.
+--
+-- That is the signature described in UE4SS issue #1328, by the same person who
+-- found the out-of-bounds iteration bug:
+--
+--     "FindFirstOf also derefs Object/Class before validating, while FindAllOf
+--      already guards, so that's worth a null check too."
+--
+-- FindFirstOf calls IsA on whatever the iteration hands back, without checking
+-- it first. FindAllOf performs that check. Death is a bad moment to be walking
+-- the object array -- the player actor is being destroyed while we look for it.
+--
+-- This cannot be fixed from Lua, so it is avoided instead: same lookup, via the
+-- path that guards. Honest about the limits -- the upstream bug is unfixed and
+-- this reduces exposure rather than removing it, and the deep UE4SS recursion
+-- in that stack is not something a mod can reach at all.
+local function find_player()
+    local list = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
+    if type(list) ~= "table" then return nil end
+    for _, p in ipairs(list) do
+        if p ~= nil and safe_call(function() return p:IsValid() end) then return p end
+    end
+    return nil
+end
+
+
 local function hook_get(param)
     if param == nil then return nil end
     local ok, value = pcall(function() return param:get() end)
@@ -318,7 +360,7 @@ local EASY_TEST_SPEEDUP = 10
 -- get_friendship_ratio, called from update_trust_bars, itself called
 -- every scan tick for every tracked bar), not just Pals actually being
 -- bonded with. Each call did a real component lookup + field read on
--- the Pal AND a fresh FindFirstOf("PalPlayerCharacter") + another
+-- the Pal AND a fresh find_player() + another
 -- component lookup on the PLAYER, every time — cost that scales
 -- directly with how many Pals are on screen, exactly the kind of
 -- per-frame/per-tick-real-work-instead-of-a-cached-read mistake this
@@ -362,7 +404,7 @@ function Trust.ComputeLevelMultiplier(palActor)
     local palParam = get_individual_parameter(palActor)
     local palLevel = palParam and safe_call(function() return palParam.SaveParameter.Level end)
 
-    local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+    local player = find_player()
     local playerParam = player and get_individual_parameter(player)
     local playerLevel = playerParam and safe_call(function() return playerParam.SaveParameter.Level end)
 
@@ -999,7 +1041,7 @@ local function tick_followers()
     if okShut and CombatShut and CombatShut.IsShuttingDown and CombatShut.IsShuttingDown() then
         return
     end
-    local player = FindFirstOf("PalPlayerCharacter")
+    local player = find_player()
     local playerLoc = player and safe_call(function() return player:K2_GetActorLocation() end)
     local okReq, Combat = pcall(require, "Combat")
 
@@ -1054,19 +1096,40 @@ local function tick_followers()
                         -- 1% of max health, so healing ticks and float noise do
                         -- not register as a hit.
                         if prev ~= nil and rate < prev - 0.01 then
-                            local okC, CombatMod = pcall(require, "Combat")
-                            local inCombat = okC and CombatMod and CombatMod.IsPlayerInCombat and CombatMod.IsPlayerInCombat()
-                            if inCombat then
+                            -- Two-hundred-and-ninety-third pass (2026-09-09) --
+                            -- NO LONGER TREATED AS BETRAYAL. Dragon: "during
+                            -- combat sometimes they achieved the betrayal, even
+                            -- tho i never hit them and only the enemy pals
+                            -- hitted them".
+                            --
+                            -- This branch GUESSED. It saw a health drop, asked
+                            -- Combat.IsPlayerInCombat(), and if no fight was
+                            -- registered it concluded the player must have done
+                            -- it. That inference is wrong whenever a follower is
+                            -- being mauled by a wild Pal while the player has not
+                            -- personally hit or been hit recently -- which is the
+                            -- common case, because that flag tracks the PLAYER's
+                            -- fight, not the follower's. The Pal takes real
+                            -- damage from an enemy, no fight is "in progress" by
+                            -- that measure, and it is recorded as the player
+                            -- betraying it.
+                            --
+                            -- It only existed as a fallback for when the real
+                            -- damage hooks were not yet confirmed to fire on this
+                            -- build. They are -- the delegate route logs
+                            -- [BETRAYAL-HOOK] "this hook FIRES on this build" --
+                            -- and BOTH of them compare the attacker's name
+                            -- against the player's before counting anything.
+                            -- Real attribution instead of a guess.
+                            --
+                            -- The HP reading itself is kept: st.lastHPRate is
+                            -- still updated above, which is what the rest of the
+                            -- follower logic reads.
+                            if HP_WATCH_VERBOSE then
                                 Logger.log(string.format(
-                                    "[PalBonds/Trust] [HP-WATCH] %s lost health (%.2f -> %.2f) but a fight is in progress — not counted as betrayal",
+                                    "[PalBonds/Trust] [HP-WATCH] %s lost health (%.2f -> %.2f) - recorded only; betrayal is decided by the damage hooks, which check who actually attacked",
                                     tostring(key), prev, rate
                                 ))
-                            else
-                                Logger.log(string.format(
-                                    "[PalBonds/Trust] [HP-WATCH] %s lost health (%.2f -> %.2f) with no fight happening — treating it as a deliberate hit from the player",
-                                    tostring(key), prev, rate
-                                ))
-                                safe_call(function() Trust.OnFollowerDamaged(st.pal, true) end)
                             end
                         end
                     end
@@ -1303,7 +1366,7 @@ function Trust.Init()
                     -- reaching this delegate is an ordinary fight.
                     local hitter = hook_get(Attacker)
                     if hitter == nil or not hitter:IsValid() then return end
-                    local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                    local player = find_player()
                     local playerName = player and safe_call(function() return player:GetFullName() end)
                     local hitterName = safe_call(function() return hitter:GetFullName() end)
                     if playerName == nil or hitterName ~= playerName then return end
@@ -1418,7 +1481,7 @@ function Trust.Init()
                 -- all. A player with no bonds anywhere still pays nothing.
                 local anyBonding = next(State) ~= nil
                 local anyFollowing = anyBonding or (okHas and CombatCheck and CombatCheck.HasAnyFollower and CombatCheck.HasAnyFollower())
-                local player = anyFollowing and safe_call(function() return FindFirstOf("PalPlayerCharacter") end) or nil
+                local player = anyFollowing and find_player() or nil
                 local playerName = player and safe_call(function() return player:GetFullName() end)
                 if playerName then
                     local enemy = nil
@@ -1479,7 +1542,7 @@ function Trust.Init()
                 -- already used throughout this project wherever reference
                 -- equality on actors wasn't trusted (e.g. find_targeted_pal
                 -- excluding the player by name, not by reference).
-                local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                local player = find_player()
                 local playerName = player and safe_call(function() return player:GetFullName() end)
                 local attackerIsPlayer = (attackerName ~= nil and playerName ~= nil and attackerName == playerName)
 

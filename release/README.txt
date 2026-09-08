@@ -47,6 +47,8 @@ CONTROLS
   4    Radial menu - pet and feed a wild Pal you are looking at
   F8   Play with the wild Pal you are looking at
   F9   Show / hide the personality tags
+  F10  Pause / resume passive bonding (followers stop growing closer,
+       so you can keep a group instead of them joining your party)
 
   Stand within about 5 metres and look directly at a Pal for any of these.
 

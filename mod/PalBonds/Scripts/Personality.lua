@@ -63,8 +63,8 @@
     the radial-menu/WorkAssignId investigation (Dragón wanted two things
     moving in parallel so a block on one doesn't stall the other). Real
     spec from Dragón: every wild Pal should get a randomly-rolled
-    personality tier, independent of species — 50% normal (species
-    default), 25% curious, 10% hostile, 15% skittish — so players can
+    personality tier, independent of species. The weights are defined
+    in PERSONALITY_TIERS and are deliberately not repeated here — so players can
     occasionally meet a friendly individual of an otherwise-hostile
     species (or vice versa) worth trying to tame. Implemented the
     ASSIGNMENT half only this pass: `GetOrInitState` now rolls a tier once
@@ -161,16 +161,11 @@ Personality.DISPOSITIONS = DISPOSITIONS
 -- frontier from the radial-menu work: every wild Pal, regardless of
 -- species, gets ONE randomly-rolled "personality tier" the first time we
 -- see it, weighted:
---   50% normal   — behaves exactly as its species naturally would
---                  (whatever GetSpeciesDefaultDisposition() already
---                  resolves — curious/skittish/hostile per real
---                  AIResponsePreset, same as before this pass)
---   25% curious  — forced curious regardless of species (a Daedream-like
---                  "watches, doesn't flee or attack" even on a normally
---                  skittish or hostile species)
---   10% hostile  — forced hostile regardless of species (even a normally
---                  docile species can roll aggressive)
---   15% skittish — forced skittish regardless of species
+--   The exact weights live in PERSONALITY_TIERS below and nowhere else --
+--   they have been changed several times (curious/hostile/skittish were
+--   replaced by the real preset names, and warlike_without_player became
+--   kill_all), and every copy of the numbers written into prose has gone
+--   stale. Read the table; do not trust a percentage in a comment.
 -- This is the ASSIGNMENT half only. Rolled once per stable individual ID,
 -- persisted in PersonalityState so it doesn't re-roll on every
 -- interaction. IMPORTANT, same honesty this file has kept from the start:
@@ -1561,7 +1556,6 @@ local function on_sensor_select_response(Context)
 
     local sensorKey = safe_call(function() return sensor:GetFullName() end)
     if not sensorKey then return end
-    if addr ~= nil then handledSensorAddresses[addr] = true end
 
     local owner = safe_call(function() return sensor:GetOuter() end)
     local pawn = owner and safe_call(function() return owner.Pawn end)
@@ -1571,8 +1565,23 @@ local function on_sensor_select_response(Context)
     local palId = cache_sensor_for_pal(sensor, pawn)
     if not palId then return end
 
-    if handledSensorKeys[sensorKey] then return end
+    if handledSensorKeys[sensorKey] then
+        if addr ~= nil then handledSensorAddresses[addr] = true end
+        return
+    end
     handledSensorKeys[sensorKey] = true
+    -- Two-hundred-and-ninety-second pass (2026-09-09): the address is marked
+    -- HERE, not on entry. The previous version marked it as soon as the name
+    -- resolved -- before the pawn validity check below it -- and a sensor's
+    -- first sense evaluation frequently happens before its pawn is resolvable.
+    -- Those Pals were then skipped forever: no personality state, so no
+    -- personality tag and no enforcement. Dragon caught it as "the personality
+    -- tags dont appear even tho its toggled on".
+    --
+    -- The whole point of the address check is to skip work already DONE, so it
+    -- has to be set where the work finishes -- the same place handledSensorKeys
+    -- has always been set -- not where it starts.
+    if addr ~= nil then handledSensorAddresses[addr] = true end
 
     try_enforce_personality_with_sensor(pawn, palId, sensor)
 end
@@ -2060,8 +2069,9 @@ end
     STATUS as of the ninety-fourth pass — split into two distinct halves:
 
     1. ASSIGNMENT (DONE): every wild Pal individual gets a randomly-rolled
-       personality tier the first time it's seen (50% normal / 25% curious
-       / 10% hostile / 15% skittish, see PERSONALITY_TIERS above),
+       personality tier the first time it's seen (weights in
+       PERSONALITY_TIERS above -- the numbers are not duplicated here
+       because every previous copy of them went stale),
        persisted per stable ID, logged via [PERSONALITY-ROLL].
        GetDisposition(palId) already returns the EFFECTIVE disposition
        (the roll, if not "normal"; the species default otherwise) — any

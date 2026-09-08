@@ -478,155 +478,23 @@ local PermanentlyFled = {}
 --   1. Live instances via FindAllOf — best, reflects real in-world state.
 --   2. The class default object — works even with no cage nearby, as long as
 --      the class has been loaded at least once (Dragón's rescue did that).
-local cageProbeDone = false
-local CAGE_PROBE_MAX_ROUNDS = 180 -- ~30 minutes at 10s: a cage only appears when the player reaches one
-local CAGE_PROBE_RETRY_MS = 10000
 
-local function probe_cage_vfx(round)
-    if cageProbeDone then return end
-    round = round or 1
 
-    local found = false
-    safe_call(function()
-        local cages = FindAllOf("BP_PalCapturedCage_C") or FindAllOf("PalCapturedCage")
-        if cages then
-            for _, cage in ipairs(cages) do
-                local valid = safe_call(function() return cage:IsValid() end)
-                if valid then
-                    local comp = safe_call(function() return cage.Niagara end)
-                    local compValid = comp ~= nil and safe_call(function() return comp:IsValid() end)
-                    local assetName, assetPresent = nil, false
-                    if compValid then
-                        local asset = safe_call(function() return comp.Asset end)
-                        assetPresent = (asset ~= nil)
-                        if asset ~= nil then
-                            assetName = safe_call(function() return asset:GetFullName() end)
-                                     or safe_call(function() return asset:GetPathName() end)
-                        end
-                    end
-                    Logger.log(string.format(
-                        "[PalBonds/Capture] [CAGE-VFX] LIVE cage=%s | comp present=%s | asset present=%s | asset name=%s",
-                        tostring(safe_call(function() return cage:GetFullName() end)),
-                        tostring(comp ~= nil), tostring(assetPresent), tostring(assetName)
-                    ))
-                    if assetName then found = true end
-                end
-            end
-        end
-    end)
 
-    if not found then
-        safe_call(function()
-            local cdo = StaticFindObject("/Game/Pal/Blueprint/MapObject/Cage/BP_PalCapturedCage.Default__BP_PalCapturedCage_C")
-            if cdo == nil then
-                Logger.log("[PalBonds/Capture] [CAGE-VFX] round " .. round .. ": no live cage and the CDO path did not resolve — will retry")
-                return
-            end
-            -- Two-hundred-and-eleventh pass FIX: the previous version's log
-            -- line conflated "the object is nil" with "GetFullName failed on
-            -- it", printing "nil" for both — and then declared the probe done
-            -- anyway. Dragón's log shows exactly that: "NiagaraComponent=nil
-            -- Asset=nil" immediately followed by "asset resolved — probe
-            -- done", which is self-contradictory and meant the probe stopped
-            -- without ever having read anything. Presence and name are now
-            -- reported separately, and success requires a real NAME STRING.
-            local comp = safe_call(function() return cdo.Niagara end)
-            local asset = comp and safe_call(function() return comp.Asset end)
-            local assetName = nil
-            if asset ~= nil then
-                assetName = safe_call(function() return asset:GetFullName() end)
-                         or safe_call(function() return asset:GetPathName() end)
-            end
-            Logger.log(string.format(
-                "[PalBonds/Capture] [CAGE-VFX] CDO cage | comp present=%s | asset present=%s | asset name=%s",
-                tostring(comp ~= nil), tostring(asset ~= nil), tostring(assetName)
-            ))
-            if assetName then found = true end
-        end)
-    end
+-- Two-hundred-and-ninety-first pass (2026-09-09) -- RESTORED.
+-- These were deleted by accident in the previous pass. The dead-code removal
+-- worked by cutting from a function's declaration to the NEXT function
+-- declaration, which also swallowed anything declared BETWEEN two functions --
+-- and these constants sat between probe_cage_vfx and spawn_niagara_at.
+--
+-- Nothing errored, because Lua reads an undefined global as nil: the join
+-- effect simply called spawn_niagara_at(pal, nil) and silently played nothing.
+-- Dragon caught it from the game ("i also no longer see the vfx effect when
+-- they get bond captured"), which is the only place it was visible.
+--
+-- Lesson for the next removal pass: delete a function by its own body, and
+-- check what lived between it and its neighbour before cutting the range.
 
-    if found then
-        cageProbeDone = true
-        Logger.log("[PalBonds/Capture] [CAGE-VFX] a real asset NAME was read — probe done, will not run again this session")
-        return
-    end
-    -- Two-hundred-and-eleventh pass: keep polling far longer, and never stop
-    -- on a failed read. The previous version ran once at startup, misread its
-    -- own result as success, and stopped — so when Dragón went out of his way
-    -- to rescue a Pal from a real cage, nothing was still watching for it.
-    -- A cage only exists in the world once the player is near one, so this
-    -- has to stay alive across the whole session, not just the first seconds.
-    if round >= CAGE_PROBE_MAX_ROUNDS then
-        Logger.log("[PalBonds/Capture] [CAGE-VFX] no cage seen after " .. round .. " rounds — stopping. Nothing was read; this is NOT a result.")
-        return
-    end
-    pcall(function()
-        ExecuteInGameThreadWithDelay(CAGE_PROBE_RETRY_MS, function()
-            safe_call(function() probe_cage_vfx(round + 1) end)
-        end)
-    end)
-end
-
--- Two-hundred-and-twelfth pass (2026-09-06) — hook the rescue MOMENT itself.
---
--- Dragón asked whether he still needs to rescue a Pal for the next run. He
--- does, and this is what makes that trip actually pay off instead of being
--- wasted a third time. Reasoning, stated plainly:
---
---   * The class-default-object route is unlikely to work. A Blueprint CDO
---     usually does not carry live component references, which matches what
---     his log showed. It is kept as a free fallback, not relied on.
---   * The live route needs a real cage actor, and a cage only exists in the
---     world while the player is physically near one. There is no way around
---     that: the asset reference lives on the instance.
---
--- The polling probe alone only catches a cage if a poll tick happens to land
--- while he is near it. This hook removes that luck entirely: it fires exactly
--- when the rescue effect starts, with the live cage handed to us as Context —
--- the single best possible moment to read the Niagara asset.
---
--- Strictly read-only. It is a POST hook that observes and never calls
--- StartCaptureEffect_ServerBP itself, so it cannot trigger or alter the
--- vanilla rescue in any way.
--- Two-hundred-and-thirteenth pass (2026-09-06) — THE JOIN VFX, finally real.
---
--- Dragón's cage rescue produced the breakthrough. The probe read the cage's
--- Niagara asset:
---     NiagaraSystem /Game/Pal/Effect/Common/Glow/NS_SingleStar.NS_SingleStar
--- That is NOT the effect he wants — "Glow/NS_SingleStar" is the little
--- sparkle marker on the cage itself. But knowing the asset PATH FORMAT was
--- enough: searching UE4SS_ObjectDump.txt for NiagaraSystems under
--- /Game/Pal/Effect/ turned up a whole folder built for exactly this moment:
---
---     /Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success
---     /Game/Pal/Effect/Common/PalCatch/NS_PalDisappear   (and 01 / 02)
---     /Game/Pal/Effect/Common/PalCatch/NS_PalAppear
---     /Game/Pal/Effect/Common/Return/NS_Return
---
--- What Dragón described is "a VFX of the Pal turning into light and
--- travelling into the player", so NS_PalDisappear is the closest single
--- match: the Pal dissolving into light at its own position. The others are
--- listed above deliberately — if this one looks wrong in game, switching is a
--- one-line change, no new research needed.
---
--- Spawning uses UNiagaraFunctionLibrary::SpawnSystemAtLocation, confirmed
--- present in this build's Niagara.hpp with this exact signature:
---     SpawnSystemAtLocation(WorldContextObject, SystemTemplate, Location,
---                           Rotation, Scale, bAutoDestroy, bAutoActivate,
---                           PoolingMethod, bPreCullCheck)
---
--- Fired from play_join_celebration_then, at the Pal's own location, right
--- before the real capture — so the sequence becomes: happy reaction ->
--- dissolve into light -> vanish -> named toast. That closes the "smiles then
--- instantly disappears with nothing in between" gap Dragón has been
--- describing for many passes.
---
--- Fully pcall-guarded and purely cosmetic: if any step fails the capture
--- itself is completely unaffected.
--- Two-hundred-and-fourteenth pass (2026-09-06): the pipeline is CONFIRMED
--- working — Dragón's log shows "spawned ... component=true" on all four
--- captures, and he saw an effect play. It was just the wrong one: he
--- described "something that looked like a vanish sphere animation but it
 -- wasn't fitting", which fits NS_PalDisappear exactly (that is the recall-
 -- into-sphere effect).
 --
@@ -712,57 +580,21 @@ function Capture.PreviewNextJoinVfx(pal)
     spawn_niagara_at(pal, path)
 end
 
-local function install_cage_effect_hook()
-    local ok, err = pcall(function()
-        RegisterHook("/Script/Pal.PalCapturedCage:StartCaptureEffect_ServerBP", function(Context, PlayerParam)
-            safe_call(function()
-                local cage = Context and Context:get()
-                if cage == nil then
-                    Logger.log("[PalBonds/Capture] [CAGE-VFX] StartCaptureEffect_ServerBP fired but the cage Context could not be read")
-                    return
-                end
-                Logger.log("[PalBonds/Capture] [CAGE-VFX] *** RESCUE MOMENT *** StartCaptureEffect_ServerBP fired on cage=" ..
-                    tostring(safe_call(function() return cage:GetFullName() end)))
 
-                local comp = safe_call(function() return cage.Niagara end)
-                Logger.log("[PalBonds/Capture] [CAGE-VFX] rescue: Niagara component present=" .. tostring(comp ~= nil) ..
-                    " name=" .. tostring(comp and safe_call(function() return comp:GetFullName() end)))
-
-                if comp ~= nil then
-                    local asset = safe_call(function() return comp.Asset end)
-                    Logger.log("[PalBonds/Capture] [CAGE-VFX] rescue: Niagara ASSET present=" .. tostring(asset ~= nil) ..
-                        " fullname=" .. tostring(asset and safe_call(function() return asset:GetFullName() end)) ..
-                        " pathname=" .. tostring(asset and safe_call(function() return asset:GetPathName() end)))
-                end
-
-                -- Also enumerate every component on the cage: if the effect
-                -- turns out NOT to be the field named "Niagara", this is what
-                -- will say which component it actually is, without needing
-                -- another trip.
-                local comps = safe_call(function() return cage:K2_GetComponentsByClass(StaticFindObject("/Script/Niagara.NiagaraComponent")) end)
-                if comps then
-                    for i, c in ipairs(comps) do
-                        local a = safe_call(function() return c.Asset end)
-                        Logger.log(string.format(
-                            "[PalBonds/Capture] [CAGE-VFX] rescue: NiagaraComponent[%d]=%s asset=%s",
-                            i, tostring(safe_call(function() return c:GetFullName() end)),
-                            tostring(a and (safe_call(function() return a:GetPathName() end) or safe_call(function() return a:GetFullName() end)))
-                        ))
-                    end
-                end
-            end)
-        end)
-    end)
-    if ok then
-        Logger.log("[PalBonds/Capture] [CAGE-VFX] rescue-moment hook installed on PalCapturedCage:StartCaptureEffect_ServerBP (read-only)")
-    else
-        Logger.log("[PalBonds/Capture] [CAGE-VFX] could NOT install the rescue-moment hook: " .. tostring(err))
-    end
-end
 
 function Capture.Init()
-    safe_call(function() probe_cage_vfx(1) end)
-    safe_call(install_cage_effect_hook)
+    -- Two-hundred-and-eighty-ninth pass (2026-09-09): the cage-VFX research is
+    -- retired, and it was not free. probe_cage_vfx re-ran TWO FindAllOf world
+    -- scans every 10 seconds for up to CAGE_PROBE_MAX_ROUNDS = 180 rounds --
+    -- half an hour of scanning, ~360 full walks of the UObject array per
+    -- session -- looking for a capture cage the player may never go near.
+    -- install_cage_effect_hook added a live RegisterHook on top of that.
+    --
+    -- Both existed to find the capture light-beam effect. That search was
+    -- settled in the hundred-and-ninety-third pass (the ABP_ReturnPalEffect_C
+    -- candidate was ruled out against three real capture events), and the
+    -- open part of the question needs an asset found via repak/FModel, which
+    -- no amount of polling live cages will produce.
     Logger.log("[PalBonds/Capture] real trigger points wired (via Trust.lua) — sphere-less capture is now REAL (thirty-ninth pass), calls Capture.TryDirectCapture for real on OnTrustMaxed")
 end
 

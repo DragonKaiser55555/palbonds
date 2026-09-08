@@ -208,6 +208,43 @@ local function safe_call(fn, ...)
     return nil, result
 end
 
+-- ===========================================================================
+-- SAFER PLAYER LOOKUP (two-hundred-and-ninety-second pass, 2026-09-09)
+-- ===========================================================================
+-- Dragon crashed on death and respawn, and this one is NOT the world-change
+-- crash that was fixed earlier -- different fault address, different stack:
+--
+--     EXCEPTION_ACCESS_VIOLATION reading address 0x10
+--     31 consecutive UE4SS frames, then Palworld
+--
+-- 0x10 is UObjectBase::ClassPrivate -- his own UE4SS startup log prints exactly
+-- that offset. So something read Object->ClassPrivate on a NULL object, deep
+-- inside UE4SS itself rather than in game code.
+--
+-- That is the signature described in UE4SS issue #1328, by the same person who
+-- found the out-of-bounds iteration bug:
+--
+--     "FindFirstOf also derefs Object/Class before validating, while FindAllOf
+--      already guards, so that's worth a null check too."
+--
+-- FindFirstOf calls IsA on whatever the iteration hands back, without checking
+-- it first. FindAllOf performs that check. Death is a bad moment to be walking
+-- the object array -- the player actor is being destroyed while we look for it.
+--
+-- This cannot be fixed from Lua, so it is avoided instead: same lookup, via the
+-- path that guards. Honest about the limits -- the upstream bug is unfixed and
+-- this reduces exposure rather than removing it, and the deep UE4SS recursion
+-- in that stack is not something a mod can reach at all.
+local function find_player()
+    local list = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
+    if type(list) ~= "table" then return nil end
+    for _, p in ipairs(list) do
+        if p ~= nil and safe_call(function() return p:IsValid() end) then return p end
+    end
+    return nil
+end
+
+
 -- BondingState[key] = true while the Pal is actively following under
 -- positive trust (not yet captured). Keyed by GetFullName(), same as
 -- Trust.lua — see that file's header for why FPalInstanceID isn't used
@@ -1856,6 +1893,18 @@ local function recall_strayed_followers(followers, originLoc)
     end
 end
 
+-- 100ms while any Pal is following, 1000ms when none is.
+--
+-- This rate is empirical, not a guess: the game's Otomo follow action clears
+-- the Trainer field faster than the 1.5s follower tick can restore it, which is
+-- the entire reason this loop exists. An attempt to relax it to 250ms while
+-- Trainer looked stable was reverted in the two-hundred-and-ninety-third pass --
+-- several things in this loop are counted in PASSES rather than time, so
+-- changing the interval silently rescaled the companion truce, the follower
+-- recall and the player-cache refresh along with it, and combat got worse.
+--
+-- If this ever needs to be relaxed again, convert those pass counters to
+-- accumulated milliseconds FIRST. See the comment at nextDelay.
 local TRAINER_REASSERT_INTERVAL_MS = 100
 -- What the loop costs when nothing is bonding, which is nearly all the time.
 local TRAINER_REASSERT_IDLE_INTERVAL_MS = 1000
@@ -1961,6 +2010,27 @@ local function reassert_follow_trainer(pal, key, playerActor)
         trainerClearedCount[key] = (trainerClearedCount[key] or 0) + 1
     end
 
+    -- Two-hundred-and-ninety-first pass (2026-09-09) -- BOTH MICRO-OPTIMISATIONS
+    -- FROM THE PREVIOUS PASS REVERTED. Dragon: "they have difficulty following
+    -- again after combat, its like they lose once more the follow order".
+    --
+    -- Two things were added here and either could cause that:
+    --
+    --   1. A skip when Trainer already held the player, compared by address.
+    --      It assumed the write is a plain field assignment whose only effect
+    --      is the stored value. That is an assumption, not a measurement -- the
+    --      entire follow mechanism was discovered by finding that REPEATEDLY
+    --      writing this field is what keeps the action alive, so the write
+    --      plausibly re-latches something beyond the value itself. Skipping it
+    --      when "nothing changed" is exactly the case where that would show up.
+    --   2. A validation chain (owner -> controller -> AI action component) that
+    --      RETURNED without writing when any link could not be resolved. Right
+    --      after combat is precisely when those are least likely to resolve, so
+    --      it could refuse to re-assert exactly when re-asserting matters most.
+    --
+    -- Neither was buying much: the real performance wins in that pass were the
+    -- removed world scans, not these. Restoring the original unconditional
+    -- write, which is the version that demonstrably worked.
     local ok = pcall(function() action.Trainer = playerActor end)
     apply_follow_offsets(action, key)
     if not ok then
@@ -2363,7 +2433,7 @@ function Combat.StartTrainerReassertLoop()
             --
             -- What used to be here ran every 5th pass of a 100ms loop -- twice a
             -- second, forever, follower or not, because it sat ABOVE the
-            -- early-out below. Each run did FindFirstOf("PalPlayerCharacter"),
+            -- early-out below. Each run did find_player(),
             -- which walks the ENTIRE UObject array (Palworld carries hundreds of
             -- thousands of objects), and then GetFullName() on the result, which
             -- builds a full path string. Two array walks and two path builds per
@@ -2423,7 +2493,7 @@ function Combat.StartTrainerReassertLoop()
             if player == nil
                or playerCacheAgePasses > PLAYER_CACHE_MAX_AGE_PASSES
                or not safe_call(function() return player:IsValid() end) then
-                player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+                player = find_player()
                 if player ~= nil then
                     lastKnownPlayerActor = player
                     playerCacheAgePasses = 0
@@ -2515,7 +2585,48 @@ function Combat.StartTrainerReassertLoop()
         -- and does a single table lookup. It never stops entirely, because a
         -- loop that has to be restarted is a loop that will one day silently
         -- fail to restart.
-        local nextDelay = didWork and TRAINER_REASSERT_INTERVAL_MS or TRAINER_REASSERT_IDLE_INTERVAL_MS
+        -- Idle when nothing is following; fast while the game is clearing
+        -- Trainer; relaxed once it has held. See the constants at the top.
+        -- Two-hundred-and-ninety-third pass (2026-09-09) -- THE RELAXED TIER
+        -- IS GONE, back to the two speeds that shipped and worked.
+        --
+        -- Dragon: combat "feels worse than what we achieved back then" -- Pals
+        -- struggling to join a fight, drifting off, sometimes not resuming the
+        -- follow afterwards. That is this, and the cause is a detail I did not
+        -- account for when I made the cadence adaptive: several things in this
+        -- loop are counted in PASSES, not in time.
+        --
+        --     COMPANION_TRUCE_EVERY_N_PASSES = 5    -- 500ms at 100ms/pass
+        --     INERT_REPUSH_EVERY_N_PASSES   = 20    -- its own comment says
+        --                                           -- "the loop runs at 100ms,
+        --                                           -- so ~2s"
+        --     PLAYER_CACHE_MAX_AGE_PASSES   = 40
+        --
+        -- Slowing the loop to 250ms silently stretched every one of those by
+        -- 2.5x in real time: the companion truce that stops followers targeting
+        -- each other, the strayed-follower recall, the cached player refresh.
+        -- Combat is exactly where that shows.
+        --
+        -- Guarding it with playerCombatActive did not save it either -- that
+        -- flag tracks the PLAYER's fight. A follower brawling with a wild Pal
+        -- while the player has not been hit does not set it, so the assist ran
+        -- slow during precisely the fights it exists to help with.
+        --
+        -- The cadence was never where the performance came from. That was the
+        -- removed world scans: a full UObject-array walk twelve times a second,
+        -- and the cage probe's ~360 per session. Those all stay removed.
+        local nextDelay
+        if not didWork then
+            nextDelay = TRAINER_REASSERT_IDLE_INTERVAL_MS
+        else
+            -- Two-hundred-and-ninety-first pass: combat is when the game
+            -- destroys our follow action and clears Trainer, and Dragon's
+            -- report was specifically about followers struggling to recover
+            -- AFTER a fight. Waiting to observe a clear and then speeding up is
+            -- reacting one step too late, so the fast rate is held for the
+            -- whole fight and for the COMBAT_WINDOW_MS tail after the last hit.
+            nextDelay = TRAINER_REASSERT_INTERVAL_MS
+        end
 
         -- Reschedule unconditionally, including after an error above, so one bad
         -- frame cannot silently end the loop for the rest of the session -- but

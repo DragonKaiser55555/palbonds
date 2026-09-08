@@ -29,7 +29,6 @@ local Capture      = require("Capture")
 local Indicator    = require("Indicator") -- Forty-third pass (2026-09-03):
                                            -- on-screen trust-progress bar,
                                            -- see Indicator.lua header.
--- local Spy       = require("Spy") -- TEMPORARY research tool, see Spy.lua
                                      -- header. Disabled 2026-09-01: it did
                                      -- its job (see hook-points.md, "Spy.lua
                                      -- results") — real Pet/Feed calls
