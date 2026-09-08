@@ -31,3 +31,6 @@ research/
 
 # Never track live game logs
 *.log
+
+# local backup of the pre-release dev install, not part of the mod
+release/_previous-dev-install-backup/
