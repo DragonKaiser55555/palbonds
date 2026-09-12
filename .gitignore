@@ -1,36 +1,16 @@
-# Third-party reference mods (downloaded, not ours to redistribute).
-#
-# Cleaned up 2026-09-06: the reference mods whose lessons were already
-# extracted into this project's own code were deleted from disk, so their
-# entries are gone from this list too. What remains below is the three that
-# still bear on a genuinely OPEN question:
-#   - Passive Pals / PassiveWildPals — two different routes to making wild
-#     Pals non-hostile, directly relevant to the unsolved "a Pal keeps
-#     fleeing/attacking even after its preset is swapped to friendly" bug.
-#   - PalFollowerTweaks — the PalFunnelCharacter/BP_AIAction_FunnelFollow_C
-#     secondary-follower system, the reference for the pre-capture wild
-#     following question, which is the project's #1 open item.
-#
-# Deleted (do not re-add unless a new question needs them): Pal Analyzer,
-# RemoteAccessEverything and VisiblePalCaptureCounter (all three were, in
-# Dragón's own words, provided only to learn HOW widgets are manipulated in
-# this game — that lesson now lives in Indicator.lua), QuickConsumableSlots
-# (its one lesson, how to print on-screen info text, is implemented in
-# Capture.NotifyJoined), MultiPals (its AddOtomoHandleToFreeSlot finding is
-# extracted and capture works), Food Expansion and Schema Studio (never
-# referenced by this project at all).
-PalFollowerTweaks 5343 1.0 2026-08-24T19-56Z YU8ZI94VI/
-Passive Pals 5445 1.0.0 2026-08-29T06-40Z qJmcAdFYa/
-PassiveWildPals (Steam) 5031 1 2026-08-11T20-21Z Len4csvLY/
-
-# Repak mapping data for FModel. Kept on disk (see docs/phase1-research.md
-# — still needed for the open join-VFX question), but not tracked: it's a
-# large binary pulled from the community PalworldModding/UsefulFiles repo,
-# not ours.
-research/
-
 # Never track live game logs
 *.log
 
-# local backup of the pre-release dev install, not part of the mod
-release/_previous-dev-install-backup/
+# Local archive of material that is no longer part of the product (moved here
+# 2026-09-11). Nothing was deleted — it holds the three third-party reference
+# mods (PalFollowerTweaks, Passive Pals, PassiveWildPals — downloadable again
+# if a future question needs them), the repak mapping data for FModel
+# (research/Mappings.usmap), the pre-release dev-install backup, the duplicate
+# images.zip, and the dev-only research modules (Spy, OtomoWatch, InputSpy)
+# that were never initialised by main.lua.
+stale/
+
+# Test-harness dependencies. `npm install fengari` in tools/harness restores
+# them; see tools/harness/README.md.
+tools/harness/node_modules/
+tools/harness/package-lock.json

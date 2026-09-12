@@ -2002,3 +2002,326 @@ The crash was found by varying behaviour, not by reasoning about mechanisms. Dra
 it: feeding crashed, petting never did, and a single feed with no bond and no follower still
 crashed. Four mechanism-first theories cost a test run each. The behavioural difference cost
 one and pointed straight at the feed path.
+
+## Three-hundred-and-twenty-third pass (2026-09-12): the previous pass's rule was blind, and the harness found two bugs a test run never would
+
+**Run 27's verdict on pass 322, from the log rather than from hope.**
+
+Combat assist itself is working, and this run is the clearest evidence the project has produced. Petallia's trace shows a complete, sustained fight against Dragón's own target:
+
+```
+OtomoFollow -> CombatPal          (hate: BP_BerryGoat_C_2147430697)
+CombatPal   -> AnimationSideStep  (hate: BP_BerryGoat_C_2147430697)
+AnimationSideStep -> CombatPal    (hate: BP_BerryGoat_C_2147430697)
+CombatPal   -> LookSideMove       (hate: BP_BerryGoat_C_2147430697)
+```
+
+`BP_BerryGoat_C_2147430697` is the exact actor `[HATE-ASSIST]` named. `CombatPal` alternating with `AnimationSideStep`/`LookSideMove` is approach-swing-reposition — real melee, against the right target, for about 25 seconds.
+
+**And both bonded Pals were lost anyway**, at 11:36:36 (Petallia, 3757 units) and 11:38:39 (Ribbuny, 3886 units). Two different causes, one of them introduced by the previous pass.
+
+### Defect 1 — target discipline could not read its own input, and fail-loud made that catastrophic
+
+Both `[TARGET-DISCIPLINE]` lines read *"was fighting **'nothing'**"*. `cur.TargetActor` never resolved. The sibling call confirms the cause: `[COMBAT-ACTION]` shows `SetTargetAndNextAction FAILED: attempt to call a TrivialObject value` **29 times out of 29**. Neither the field nor the function exists on `BP_AIAction_CombatPal_C` in this build.
+
+**This was already recorded.** The two-hundred-and-seventeenth pass wrote: *"`SetTargetAndNextAction` is real and on `UPalAIActionCombatBase`, but `GetCurrentAction_BP()` evidently does not hand back an object that accepts it."* Pass 322 built its central rule on the same class without checking this file first. That is the process failure, and it is worth more than the bug.
+
+The consequence was worse than "the rule did nothing". Pass 322 treated an unreadable target as *not sanctioned* and cancelled — so it cancelled **every** combat action a companion ever started, including the correct ones. Ribbuny's `WildLife -> CombatPal -> WildLife -> CombatPal` ping-pong across the whole run, and the 25 separate combat-action installs on one Pal, are very likely this rule fighting the mod's own combat assist.
+
+It also set `followSuspendedForCombat[key] = nil` directly, and that flag is what Trust reads to decide "away fighting, do not call it abandoned". Three seconds after the trace shows Petallia in `CombatPal` against Dragón's target, Trust logged *"is 3757 units away — losing all trust"* rather than the FIGHTING branch. The silent write is what killed her.
+
+**Fix.** The target signal is now `UPalHate::FindMostHateTarget()`, which the *same run* read successfully 52 times (every `[ACTION-TRACE]` line carries one). Use the read that demonstrably works in this build, not the one the header says should exist. The rule also fails **safe**: an unreadable target means leave the Pal alone. It cancels only a positively identified wrong target — the trainer, another bonded companion, or a different fight while the player is in one. A companion defending itself out of combat is left to it. Cancelling now routes through `resume_follow_after_combat`, which logs; and the once-per-Pal log latch is now paired with a counter reported at window close, since two log lines in run 27 concealed an unknown number of actual cancellations.
+
+### Defect 2 — the leash gave no time to come back
+
+```
+11:38:23  Ribbuny is 3074 units away but is away FIGHTING - trust untouched
+11:38:38  player combat window closed
+11:38:39  Ribbuny is 3886 units away - losing all trust
+```
+
+Protected during the fight, gone one second after it ended. She was never given a tick in which to walk back. Dragón's objection is the correct one: *"petallia was faster than me so there was no way for me to catch her during combat"* — losing a companion to a foot-speed difference is not a decision the player ever got to make.
+
+**Fix.** Crossing `MAX_FOLLOW_DISTANCE` now starts a 15-second clock instead of ending the bond. Returning inside the leash clears it with no penalty and says so. The follow tick, which used to be the final `elseif` of the same chain and was therefore skipped for any Pal past the leash, now runs during the grace window — previously *nothing at all* was trying to bring a strayed Pal home. And `Combat.IsBusyFighting` replaces `IsSuspendedForCombat` as the "is it away fighting" test: it asks whether the Pal is running a combat action or holds a live hate target, rather than trusting mod bookkeeping that run 27 proved can be wrong.
+
+### The recall now force-marches
+
+The old recall pushed negative hate, which run 25's `[HATE-VERIFY]` proved is a no-op. Run 27 showed it failing in the open — *"strayed 2005 units — dropping its target"* at 11:36:34, *"is 3757 units away"* at 11:36:36. It "recalled" her and she covered another 1750 units in two seconds.
+
+It now cancels (`AllCancelAction_Logic_HardScript_Reaction`, confirmed 5/5 on real wild Pals), returns the follow slot, and issues a move order at the player, repeating every ~500ms until the Pal is home. **Dragón was offered repositioning the actor as the last resort and chose force-march only, no warping** — so a fast Pal can still in principle outrun this, and the grace period is the deliberate safety net rather than a warp.
+
+### Deleted
+
+- `enforce_companion_truce` — negative hate, so a no-op, running over every pair of followers twice a second during a fight. Target discipline handles a companion aiming at a companion positively now.
+- ~220 lines of unreachable movement-order code at the tail of `Combat.IssueFollowMoveOrder`, behind `USE_OLD_MOVE_ORDER_NUDGE` (false since pass 227) and `USE_MOVE_TO_ACTOR_FOLLOW` (false since 235). `SimpleMoveToActorWithLineTraceGround` and `PalMoveToLocation` were harvested into `force_march_home` first.
+
+### Two bugs found by the harness, not by a test run — and this is the methodological point
+
+`td2test.js` drives the **real** fast loop (the prelude captures `ExecuteInGameThreadWithDelay` callbacks and pumps them) instead of calling internals directly. That is what exposed both of these:
+
+1. **The fast loop's early-out was `next(followActionObjects) == nil`.** A Pal suspended for a fight has its follow action *dropped* — that is what suspension means — so it is absent from that table for the whole fight. With a single follower out fighting, the early-out fired and the entire rest of the pass never ran: no target discipline, no recall, no aim freeze, precisely when they were needed. It only appeared to work in run 27 because a second, unsuspended companion happened to be holding the table open. Now gated on `BondingState`, the real precondition.
+
+2. **The recall measured distance from the aim camera.** It took its origin from `read_player_aim`, which returns `nil, nil` whenever `GetControlRotation()` fails — silently disabling the recall on a camera read. It now measures from the player actor, which is also simply the right number for "how far has it strayed".
+
+Neither would have shown up as anything but "it didn't work again" in a live run.
+
+### Dragón's question, and the answer that reframes the project
+
+> *"how does the real otomo pal do it during fights? why there it works so well and here we have so much trouble?"*
+
+The two-hundred-and-twentieth pass already measured this and the answer deserves to be at the top of `CLAUDE.md`, not buried mid-file:
+
+```
+BONDING (wild): controller = BP_MonsterAIController_Wild_C
+REAL OTOMO    : controller = BP_MonsterAIController_Otomo_C
+```
+
+A party Pal does not behave better because it receives better orders. It behaves better because the game **replaced its brain**. Our bonded Pals keep the wild controller, whose decision vocabulary includes `WildLife`, `Warning_PointWalk`, `TurnAndEncount` and `Leave_BackStep` — actions an Otomo controller never runs, and exactly the ones filling run 27's trace. Every mechanism this project has built is one action pushed into one slot, competing with an entire AI whose job is keeping that Pal near its own territory.
+
+**Never attempted in 300+ passes: swapping the controller itself** — spawning a `BP_MonsterAIController_Otomo_C` and having it possess the bonded Pal. Grepping this file for `Possess` / `SpawnDefaultController` / "controller swap" returns nothing. It is the only idea that addresses the measured root cause rather than out-shouting it, and it is also the riskiest thing this project could do (the `SetActiveAI` incident is the precedent), so it needs an explicit go-ahead and an isolated run of its own.
+
+### Verification
+
+All 8 files compile under fengari. `undefcheck.py` and `hoistcheck.py` report nothing new. `harness3.js` registers 14 hooks with no load error. `td2test.js` 11/11 and `gracetest.js` 9/9, both driving real loops. Deployed to all three trees, md5-verified.
+
+## Three-hundred-and-twenty-fourth pass (2026-09-12): run 28 was a real success, and it caught the bug that was capping it
+
+**Run 28 outcome: zero Pals lost, both companions bonded to completion and joined the party.** That is the first clean run this feature has ever had. The numbers, against run 27:
+
+| | run 27 | run 28 |
+|---|---|---|
+| Pals abandoned | 2 of 2 | **0 of 3** |
+| Transitions into `OtomoFollow` | rare | 26 |
+| Recalls issued / recoveries | 2 / 0 | **4 / 4** |
+| `[TARGET-DISCIPLINE]` with an unreadable target | 2 of 2 | **0 of 12** |
+| Combat entries against the player's actual target | some | 18 |
+
+Every recall was followed by `the march worked, it is following again` within one to six seconds. The force-march does hold, which is the answer to the open question from the previous pass — repositioning the actor is not needed.
+
+### The bug: hitting your own Pal disarmed combat assist
+
+Dragón ran out of arrows mid-fight and had to improvise in melee. The log catches the consequence precisely:
+
+```
+12:24:17  [HATE-ASSIST] player's current enemy = BP_BerryGoat_C_2147418096
+12:24:19  the player hit a bonding Pal — trust 81 -> 18
+12:24:19  [TARGET-DISCIPLINE] ... was fighting a different fight while you were
+          in one ('BP_BerryGoat_C_2147418096')
+```
+
+Both companions were cancelled for fighting the exact goat the player was fighting.
+
+`Combat.OnPlayerCombatTarget` derives "the enemy" from whoever the player damaged. The two-hundred-and-thirty-fourth pass added a guard that correctly refuses to aim the group at a bonded companion — but it sat **one statement below** `currentPlayerEnemy = enemyActor`. So the assignment had already overwritten the real target with the companion the player accidentally hit, and target discipline then compared every legitimate fight against "Petallia" and cancelled all of them.
+
+That is the `cancelled 7 off-target companion attack(s)` burst, and almost none of those seven were off-target. One stray hit on your own Pal disarmed combat assist until the next clean hit on a real enemy landed.
+
+**Fix:** the guard is hoisted above the assignment. A companion is never the player's enemy, not even for the instant between two statements.
+
+**Verified by differential test, not by inspection.** The new case in `td2test.js` — hit your own Pal, then have a companion fight the real enemy — passes against the fixed file and fails against a copy with the statement order restored, reporting `Terminate, Terminate`: the same double cancellation run 28 logged. A regression test that passes both before and after proves nothing, so it was run both ways.
+
+### Friendly fire: measured properly now, and the generator is identified
+
+53 companion-on-companion hits, in two bursts that line up exactly with the two fights. The sequence at 12:23:59 is the mechanism in plain sight: both companions enter `CombatPal` against the same enemy in the same second, and one second later they start clipping each other. They converge on one target while standing on top of each other, and melee swings land on whoever is adjacent.
+
+Two preset slots feed it, both only during a player fight:
+- `Discover_Equal = Battle` — another companion is just another same-sized Pal it noticed, so it may pick a fight with it directly.
+- `Damaged_* = Battle` — being clipped makes it retaliate against the companion that clipped it.
+
+Target discipline cancels the resulting duels (12 cancellations in run 28) but cannot stop them starting.
+
+**The `[FRIENDLY-FIRE]` log line was lying.** It still said it was *"clearing the grudge both ways"* long after pass 322 disabled the clearing, and it named neither Pal. It now reports which companion hit which, latched once per pair, with the real per-fight total printed at the combat window close — the same latch-plus-counter shape pass 322 got wrong with target discipline. A log that misreports its own behaviour is worse than no log, and this project has now been bitten by that twice.
+
+### Not changed, pending Dragón's call
+
+Whether `Damaged_* = Battle` should stay. Pass 247 recorded that `Damaged_Player = Ignore` stops the hate system processing that damage at all — which is why player-betrayal detection had to be moved to the player's side of the hook. The same mechanism applied to `Damaged_Greater/Equal/Smaller` would mean companions never accumulate hate from being hit, and the friendly-fire generator would be closed at the source rather than cleaned up after. The cost is that companions stop retaliating when something genuinely attacks them; they would engage through `Discover_*` and the assist hate push instead. That is a gameplay-feel decision, not a technical one.
+
+## Three-hundred-and-twenty-fifth pass (2026-09-12): retaliation scoped rather than removed, and two new reference mods read end to end
+
+### Dragón corrected the framing, and the code agreed with him
+
+He rejected turning retaliation off outright: *"stopping them from attacking something that hits them is too big of a trade... if im busy doing something else means they will stand idle until i finally target the enemy, posibly letting them die without they even able to fight back."*
+
+He is describing the out-of-combat case, and reading the preset branch confirms he is right. Outside a player fight **every** `Discover_*` slot is `Ignore`, so `Damaged_* = Battle` is the only thing that lets a companion defend itself out there. The option as originally offered would have left an ambushed Pal standing still while something killed it. That was a real flaw in the proposal, not in his objection.
+
+He also set the condition under which he would prefer it: *"if the stop retaliation lets them still fight back when struck by enemies then that would be the better option."* During a player fight that condition is met by a different route — `Discover_*` is `Battle` for the whole window, so a companion engages anything it notices, including whatever is hitting it. The damage-triggered reflex is redundant there and is exactly the friendly-fire amplifier.
+
+So retaliation is now **scoped**, not removed:
+
+```
+out of combat    -> Damaged_* = Battle   (self-defence, unchanged)
+during a fight   -> Damaged_* = Ignore   (Discover_* carries engagement)
+```
+
+Behind `QUIET_RETALIATION_DURING_PLAYER_FIGHT` in `Personality.lua`, because he asked to test it both ways: *"can we try both? a run with and without?"*. One line differs between the two runs, so the comparison is clean.
+
+**Stated plainly as unverified:** whether `Discover_* = Battle` really does make a companion engage something that attacks it mid-fight has never been measured. That is the whole point of the A/B pair. If they stop defending themselves during fights, the toggle goes back to `false`.
+
+`presettest.js` asserts all eight slots in both states; the load-bearing assertion is that out of combat `Damaged_Greater/Equal/Smaller` all remain `Battle`.
+
+### Reference mod: Kick Keybind — directly usable, and it unblocks Play
+
+Sixty-four lines, and it hands over the complete recipe for making the **player** perform an emote:
+
+```lua
+local EmoteKickClass = StaticFindObject(
+    "/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_8.BP_Action_Emote_8_C")
+PC:ActionComponent_PlayAction_ToServer_ForPlayer(Pawn, Param, EmoteKickClass, 0)
+```
+
+Three facts worth recording:
+- Player emotes live at `/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_<N>.BP_Action_Emote_<N>_C`, numbered.
+- They are played through `APalPlayerController::ActionComponent_PlayAction_ToServer_ForPlayer(Pawn, Param, ActionClass, int)` with an empty table as `Param`.
+- Kick is `Emote_8`. The cheer emote is another number in the same series, and which one is not guessable from the path — the assets are numbered, not named.
+
+This is the missing half of the Play interaction, which has always been able to make the *Pal* react but never the player. **Next step when Play is picked up:** a one-shot probe that `StaticFindObject`s `Emote_1..20`, logs which resolve, and lets Dragón identify the cheer by triggering them. Deliberately not built now — Play is still on the deferred list.
+
+The mod also carries a genuinely good idea worth stealing independently: it caches `PalEditableTextBox` / `PalMultiLineEditableTextBox` / `EditableTextBox` and checks `HasKeyboardFocus()` before acting on a keybind, so hotkeys do not fire while the player is typing in chat. This project's F9/F10 binds have no such guard.
+
+### Reference mod: Multi Party Pals Summons — not usable for bonding, but it settles a question
+
+849 lines, and every entry point routes through the **party**:
+
+```
+holder = palUtility:GetOtomoHolderComponent(playerController)
+handle = holder:GetOtomoIndividualHandle(selectedSlot)
+holder:ActivatePalByHandle(handle, spawnTransform.Translation, rotation, true)
+```
+
+`UPalOtomoHolderComponent::ActivatePalByHandle` is the game's own "spawn this Pal as a real active Otomo" call — which means the resulting Pal gets `BP_MonsterAIController_Otomo_C`, the exact brain this project has spent 300 passes trying to emulate with pushed actions. The full API surface it uses: `ActivatePalByHandle`, `InactivateAllOtomo`, `InactiveOtomoByHandle_PreProcess`, `GetOtomoIndividualHandle`, `GetSelectedOtomoID`, `GetSpawnedOtomoID`, `GetOtomoCount`, `TryGetSpawnedOtomoHandle`, `TryGetOwnerControlledPawn`, `GetTransform_SpawnPalNearTrainer`, `IsRidingBySpawnSlotID`, `IsRidingBySelectSlotID`.
+
+**Every one of those needs an `FPalIndividualCharacterHandle`, and a handle only exists for a Pal already in the player's party.** A bonding wild Pal has no handle, so none of this is reachable during the bonding phase as currently designed. That is a clean negative, not a maybe.
+
+**But it does prove the mechanism exists and works**, and it reframes the controller-swap idea recorded in pass 323. There are now two routes to giving a bonded Pal the right brain:
+
+1. *Possess it with an Otomo controller* — never attempted, unknown, risky.
+2. *Capture it earlier* (at the moment following starts, rather than at 100% trust) and summon it with `ActivatePalByHandle` as an extra Otomo — uses only the game's own systems, proven working by this mod, and would make following and combat assist correct by construction.
+
+Route 2 is a **design** change, not a bug fix: today the Pal deliberately stays wild until full trust, and the whole bonding fantasy is built on that. Recorded for Dragón to decide, not acted on.
+
+## Three-hundred-and-twenty-seventh pass (2026-09-12): the Flopie loss was a session-wide budget running out, and it was the lag too
+
+### The finding, and it corrects a claim I made last pass
+
+Dragón reported one Pal drifting away and escaping, and added the detail that settles it: *"no flopie is not faster than the player, i just didnt chase her, was trying to check if she would return by herself after"*. He stood still. So nothing about speed or chasing explains it.
+
+```
+13:13:52  [FOLLOW-ACTION] Flopie's follow action is gone; REBUILDING it, attempt 3 of 25
+13:13:53  [FOLLOW-ACTION] session budget reached (40) — no further attempts
+13:14:28  [ACTION-TRACE] Flopie : Warning_PointWalk -> WildLife  (hate target: none)
+13:14:43  [RECALL] strayed 1910 units - action cancelled and marched back to you
+13:15:09  is 4402 units away and did not come back within 15s — losing all trust
+```
+
+`FOLLOW_ACTION_MAX_TOTAL = 40`, counted from mod load and never reset. It ran out mid-run. `followActionDisabled` latched true, and from that second **no Pal in the session could ever be given a follow action again**. Flopie spent her entire 76-second drift with no follow action and no possibility of getting one. Note also the hate target: **none**. She was not chasing anything; she was doing the ordinary wild idle wander, with nothing installed to hold her.
+
+**A correction to the previous pass.** I reported run 28's recall as "4 strays, 4 recoveries, the force-march holds". Looking again, every one of those crossings was marginal — 1809, 1810, 1900, 1910 units against an 1800 limit — so a Pal hovering at the boundary drifts back across it on its own. Those recoveries are not evidence the march works, and I should not have presented them as such. The one unambiguous test, a stationary player and a Pal 2500 units out, the march lost.
+
+### The budget was the same bug CLAUDE.md already had a section about
+
+`CLAUDE.md` carries a heading called **"Never budget a retry from mod load"**, written after the tag hooks and the radial hooks were both broken by exactly this shape. This budget survived that cleanup because it looked like a different thing: a leak guard, not a retry limit. It is the same bug. 40 was a sane number when the follow action was installed once per Pal; combat now destroys and rebuilds it constantly, so one busy fight eats the entire session's allowance.
+
+It is now a **rate**: `FOLLOW_ACTION_MAX_PER_WINDOW = 40` per rolling `FOLLOW_ACTION_WINDOW_SECONDS = 60`. Sustained thrash is still throttled and a runaway loop is still caught, but the mod recovers when the window rolls over instead of being dead for the session. Crucially it no longer sets `followActionDisabled`.
+
+### The lag, and it shares the root cause
+
+Dragón: *"there was a lot of lag during these, was that because of the log? or something is firing everytime hit marks?"* The per-minute rates answer it — the load is concentrated exactly in the fighting minutes (`[FOLLOW-ACTION]` 148/min and 124/min during fights, near zero otherwise), so it is the follow-action thrash, not the logging volume by itself.
+
+Three removals, none of which touch behaviour:
+
+1. **The 6s RECHECK and 14s LATE re-read per follow install.** Both existed to answer "does the follow action stay installed, and does Destination ever fill in", answered many passes ago. They were still scheduling **two extra game-thread callbacks per install**, each doing a `GetCurrentAction_BP` plus a `GetFullName` path build plus a full `dump_follow_action_fields`. Run 29 installed 40 follow actions: 80 scheduled callbacks and 79 log lines, concentrated in the laggy minutes.
+2. **`[PRESET-VERIFY]`.** It read eight slots back off the sensor immediately and again 4s later, to find out whether the preset write lands. It does, and it has been re-confirming that on every application since. 58 lines and 29 extra scheduled callbacks in run 29. The offline `presettest.js` now covers all eight slots in both combat states, so removing the live probe does not leave the preset unguarded.
+3. **`[ACTION-TRACE]` is now adaptive** — 200ms while the player is in combat, 1000ms otherwise. The fine resolution earns its keep in a fight; outside one it was doing a path-string build and a hate lookup per Pal five times a second forever. Flopie's decisive `Warning_PointWalk -> WildLife` line was an out-of-combat transition and would still have been caught at the slower rate.
+
+This is the standing rule about diagnostic hooks outliving the question they were built for, applied to three of them at once.
+
+### The march is now instrumented, which it should have been from the start
+
+`force_march_home` wrapped both of its movement calls in **bare pcalls with no logging**. That is why run 29 cannot answer the only question that matters about the recall: when Flopie walked away from a stationary player, was `SimpleMoveToActorWithLineTraceGround` *refused*, or *accepted and then ignored by her own AI*? Those are different bugs with different fixes. Each outcome is now logged once. A silent pcall around a native call is the specific mistake this project keeps paying for.
+
+### The cheer emote, shipped
+
+Dragón ran the F7 probe and reported: *"confirmed cheer emote is 0"*. `CHEER_EMOTE_INDEX = 0`, the probe is switched off, and Play now makes the player cheer.
+
+**Placed as the last statement of `do_play`, deliberately.** The hundred-and-forty-fifth pass note sits directly above the old call site and records that the previous player-Cheer attempt, at that exact spot, killed `do_play` silently every single time — no idle animation, no Happy follow-up, no trust — because an uncaught error there takes the rest of the function with it, swallowed by the outer `safe_call` in the keybind handler. Running it last makes that failure mode structurally impossible: the Pal's animation and the trust grant have already happened. The implementation also never calls `:GetClass()` on a CDO, which was that pass's leading suspect; the class object from `StaticFindObject` is passed straight through exactly as the reference mod passes it.
+
+One bug caught before it shipped: the first version called `play_player_emote` from `do_play` (line ~650) while the function was defined ~850 lines below. Lua locals are not hoisted, so that compiles to a nil global and `safe_call` eats the error — Play would silently never cheer and no log would say so. Caught by `hoistcheck.py`; fixed with a forward declaration.
+
+## Pass 331-333 (2026-09-12): the march is out-voted, not refused — and Dragón found the real lag source with a question
+
+### Three results from run 30, all clean
+
+- **No `session budget reached`, and the new rate limit never even engaged.** The pass-327 fix holds; nobody was lost.
+- **`SimpleMoveToActorWithLineTraceGround was ACCEPTED for the march`.** This is the answer to the question run 29 could not settle. The move order is *accepted* and the Pal walks away anyway, so it is being **out-voted by its own AI, not refused**. That is the same structural finding as everything else in this project: order-based movement against the wild controller loses. It also means there is nothing to "fix" in the march itself.
+- **Friendly fire halved**, 13 per fight against ~26 in run 29, and the Ribbuny Dragón described hovering near the escape zone is visible as boundary oscillation: crossed 13:42:02, back 13:42:14, crossed 13:42:16, back 13:42:34.
+
+### Dragón's question found a real cost
+
+> *"at some point i felt lag without fighting, just by looking at a few wild pals in the distance fight, you're not tracking every fight right? just the ones of my followers and me right?"*
+
+We were tracking every fight. `/Script/Pal.PalHate:DamageEvent` fires for **every damage event in the world**. Its cheap exit was `next(State) == nil` — but `State` holds an entry for every Pal the player has ever interacted with, so after the first pet of a session it is never empty again. From that point on, every hit between any two wild Pals anywhere near him paid for **two `GetFullName()` calls**, each a reflection round-trip that builds a full path string — the call this project has already identified as its most expensive operation, twice.
+
+Gated now on `GetAddress()` (a pointer read) against the small set of Pals actually being bonded with, rebuilt at most once a second. A stale address can only produce a false positive, which costs one name build and is then rejected by the existing name checks, so it can never cause a wrong decision.
+
+Worth noting the shape: this is the **second** time he has caught exactly this class of bug by asking whether a hook fires for things we do not care about. The first is recorded in `Trust.lua`'s own comment on the sibling hook — *"if you're tracking every hit of the player on pals, wouldnt that cause lag?"*
+
+### The rest of the lag was install tracing that always said "ok"
+
+Run 30: 37 follow installs and 39 combat installs produced roughly **530 of the run's 913 lines**, every one reporting success. Two of them built a `GetFullName()` purely to print it. They date from when installs were genuinely failing and have reported nothing but success for many passes.
+
+Success is now silent and counted; failure is still logged in full; and one `[INSTALLS]` line per fight reports the churn — which is the number that actually matters, since the construct/install cycle is the real cost, not the printing.
+
+### One more proven-dead call removed
+
+`SetTargetAndNextAction` is gone from the combat install path. It has failed on **every attempt across three instrumented runs** — 29 of 29 in run 27, 39 of 39 in run 30 — always with "attempt to call a TrivialObject value", because it does not resolve on `BP_AIAction_CombatPal_C` in this build. That was a native call plus a log line per install, dozens of times per fight, for something proven not to exist. Combat assist never depended on it: companions engage through the assist hate push plus the Discover preset.
+
+## Pass 334-335 (2026-09-12): I broke combat assist with a performance gate, and the fix is mostly about failing open
+
+**Dragón's report: "my bonded pals no longer fought".** The log agrees completely — **zero `[HATE-ASSIST]` lines** and one combat install in the whole session. Combat assist never triggered once. This is a regression I introduced in pass 331, in the same change that fixed the real lag.
+
+### What went wrong
+
+Pass 331 gated `/Script/Pal.PalHate:DamageEvent` on an address check, so two wild Pals brawling in the distance would stop costing two `GetFullName()` path builds per hit. The address set was built from `State` — the Pals being bonded with.
+
+But that hook is also where the player's current enemy is *discovered*: whenever the player hits something, that something is the enemy, and `Combat.OnPlayerCombatTarget` pushes it onto the companions. **In exactly that event neither side is a bonded Pal** — the attacker is the player, the defender is a wild enemy — so the gate rejected the one event the entire feature depends on.
+
+The gate was right about what it wanted to skip (fights we have no stake in) and wrong about the set it tested. The player belongs in it.
+
+### The more important half: it now fails open
+
+The deeper problem was not the missing entry, it was what happens when the set comes back empty for *any* reason. `address_of` is a `pcall`, so if `GetAddress()` did not work on this build every lookup would return nil, the set would be empty, and a gate that reads "not in the set" as "not ours" would silently switch off trust penalties, friendly-fire detection **and** combat assist at once, with no error anywhere.
+
+That is unacceptable in a performance optimisation: the worst a speed-up may do is be slow. So if we are tracking Pals and could not resolve a single address, the gate marks itself unusable, logs `[DAMAGE-GATE]` once, and stops filtering. Correct-but-slower, never silently wrong.
+
+### The test I should have written when I added the gate
+
+`assisttest.js` drives the **real registered hook** — the prelude now captures hook handlers so a test can fire engine events at them — and asserts all four paths: player hits a wild enemy, a wild enemy hits the player, two wild Pals brawling (must be skipped), and a wild enemy hitting one of our Pals (must reach the trust path, *not* combat assist, since only the player's own hits set the target).
+
+Run both ways: with addresses working, and with `GetAddress()` erroring to exercise the fail-open branch. Then run against a copy with the fix reverted — it fails there with exactly the run-31 symptom, which is what makes it a real regression test rather than a test that passes either way.
+
+**The pattern to take from this:** a gate added for performance must be tested on the events it is supposed to *let through*, not just the ones it is supposed to block. I tested that the filter filtered, and shipped without testing that the feature still worked behind it.
+
+## Run 32 (2026-09-12): both regressions fixed, two problems left
+
+Dragón: *"looked better but still feels laggy also they still managed to atk each other, yet i didnt see them wander off so thats good"*. The log agrees on all three points.
+
+**Fixed and confirmed working:**
+- Combat assist is back — 9 `[HATE-ASSIST]` pushes, 16 combat actions installed. The pass-334 fix to the damage gate holds, and no `[DAMAGE-GATE]` line appeared, so address filtering works on this build rather than falling back to open.
+- No Pal wandered off and none was lost. The pass-327 rate-limit fix to the follow budget holds; no `session budget reached`, and the throttle never engaged.
+- Log volume down to **263 lines from 913** in run 30, a 71% cut, with no diagnostic value lost that has been missed since.
+
+**Still open, and now measured rather than guessed:**
+
+*Lag.* The `[INSTALLS]` line added in pass 333 does its job:
+
+```
+that fight cost 12 follow-action rebuild(s) and 8 combat-action install(s)
+that fight cost  5 follow-action rebuild(s) and 8 combat-action install(s)
+```
+
+The follow action and the combat action share priority slot 10 by design, so they evict each other: combat destroys follow, the follow tick rebuilds it, combat destroys it again. Each rebuild is a `StaticConstructObject` plus a `SetAction`. This is the remaining lag — it is not the logging, which was cut by 71% between runs 30 and 32 while the lag survived.
+
+*Friendly fire.* 16 and 6 hits across the two fights, 4 and 3 resulting duels cancelled by target discipline. The containment works (Dragón sees them "stop moments after") but the hits are not prevented. `QUIET_RETALIATION_DURING_PLAYER_FIGHT` remains unresolved: ~18 per fight with it off (run 28), ~26 with it on (run 29), 16 and 6 with it on (run 32). Noisy, no clear signal, and the comparison keeps being confounded because other fixes land between runs. It needs a clean single-variable pair.
+
+### Session handoff
+
+The offline harness was moved out of the session scratchpad into `tools/harness/` so it survives a context clear, with a README covering every suite, the prelude facilities (scheduled-callback pump, hook capture, address mocking with a fail-open mode) and the rule that a regression test must be run against the broken code too. `CLAUDE.md` was rewritten around the two remaining problems so a fresh session can pick up without reading this log.

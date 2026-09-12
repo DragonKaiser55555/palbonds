@@ -1,89 +1,4 @@
---[[
-    Trust.lua — DESIGN.md §3.3
-
-    FIRST REAL IMPLEMENTATION (2026-09-01), replacing the stub. Wired
-    directly to the REAL FriendshipPoint/FriendshipRank mechanic — per
-    Dragón's original instruction to reuse the existing mechanic rather
-    than invent a parallel one — and shaped around Dragón's own
-    description of how it actually works in vanilla:
-
-      - Pals start at rank 0, cap at rank 10.
-      - Each rank requires more FriendshipPoint than the last.
-      - Rank grants real stat bonuses (HP/ATK/DEF/WorkSpeed) — native
-        game behavior, nothing this mod needs to touch.
-      - Party Pals gain passive friendship over time; base Pals gain it
-        slower. (Real fields for this DO exist — see hook-points.md,
-        sixteenth pass: FriendshipPoint_AutoIncrementOtomo /
-        _ActiveOtomo / _Worker on what looks like a game balance config
-        object — but hooking a bonding WILD Pal into that same system
-        means making it a real Otomo, which is still unsolved, DESIGN.md
-        Q6. This pass approximates passive gain with our own timer.)
-      - "Kinship peaches" give a big one-time boost. NOT implemented this
-        pass — needs the item's real FName/ID, which needs either FModel
-        or a live feed-and-log session to discover. Left as a TODO with
-        the real hook point named (see bottom of this file).
-
-    This mod's OWN rules layered on top (Dragón's spec, 2026-09-01):
-      1. Hundred-and-ninety-fifth pass (2026-09-05): the raw
-         "N successful interactions" following-trigger has been replaced
-         with FOLLOW_TRIGGER_RATIO — the Pal starts following once its
-         real FriendshipPoint crosses that fraction of its own bonding
-         threshold (see BONDING_TRIGGER_THRESHOLD_BASE), matching Dragón's
-         explicit request to make every trigger relative to the bar
-         itself rather than a raw action count that stopped incrementing
-         reliably once Pet/Feed mostly ran through real vanilla actions.
-      2. While following: passive trust gain over time (our own timer —
-         see tick_followers below — approximating the real Otomo
-         auto-increment mentioned above).
-      3. While following, if the Pal is damaged: a big trust LOSS
-         (DAMAGE_FRIENDSHIP_PENALTY).
-      4. If a following Pal's rank hits 0 (after damage, or after losing
-         all trust for distance below): it's done — Capture.OnTrustLost
-         flags it permanently, matching DESIGN.md §3.6.
-      5. If the player gets too far from a following Pal: it loses ALL
-         trust and stops following (approximates a leash break; actual
-         forced despawn is NOT implemented this pass — see note below).
-      6. Reaching CAPTURE_AT_FRIENDSHIP_POINT -> Capture.OnTrustMaxed
-         fires (DESIGN.md §3.5), calling the real sphere-less capture
-         function. FORTY-FIRST PASS (2026-09-02): this used to check the
-         real game's own FriendshipRank reaching 1, but that meant
-         needing the real, never-actually-read point-per-rank curve to
-         even predict when it'd fire. Dragón pointed out we control this
-         value ourselves — switched to a plain FriendshipPoint threshold
-         (55, tunable) checked from both a pet/feed AND the passive-gain
-         tick, so it can be tuned freely without any more research.
-
-    Real functions/fields this reuses (confirmed in the SDK dump,
-    Pal.hpp — same UPalIndividualCharacterParameter object Interaction.lua
-    already reads):
-      - GetFriendshipPoint() — already used elsewhere in this project.
-      - GetFriendshipRank() — NEW this pass. Same "plain int, no args"
-        safe shape as GetFriendshipPoint(). This is the real 0-10 rank
-        Dragón described.
-      - AddFriendShip(Value, ApplyPassiveSkill) — already proven safe,
-        used here with NEGATIVE values (damage/leash loss, passive gain
-        uses positive). CONFIRMED LIVE as of the seventeenth-pass test
-        session: real negative calls (-38, -22, -76, distance wipes; -50
-        from a real damage penalty before the eighteenth pass lowered it
-        to -25) all applied cleanly with no crash.
-
-    Per-instance state is keyed by `pal:GetFullName()` (same identifier
-    this project has used since the ninth pass), NOT FPalInstanceID
-    (the real per-individual save ID the SDK dump confirms exists,
-    DESIGN.md Q5) — reading that safely means reaching into a nested
-    struct (`param.SaveParameter.InstanceId`, itself containing two FGuid
-    fields) not yet tested live. Documented limitation carried over from
-    DESIGN.md: this state resets if the Pal despawns or the game reloads.
-    Fine for a first pass; a real save-ID pass can come later.
-
-    EXPERIMENTAL: this file is the project's first use of a repeating
-    timer rather than a pure event hook (RegisterHook). See Init() below
-    for why that's flagged, and what the fallback path is if it doesn't
-    work on this build.
-]]
-
 local Logger = require("Logger")
-
 local Trust = {}
 
 -- Hundred-and-eighty-first pass (2026-09-05): Dragón asked for confirmation
@@ -119,6 +34,7 @@ local EASY_TEST_MODE = false
 -- regardless of which starting tier it rolled. Both numbers are Dragón's.
 local FOLLOW_TRIGGER_RATIO = 0.5
 local FRIENDLY_TRIGGER_RATIO = 0.2
+
 -- Seventeenth pass (2026-09-01): was 5000ms. Dragón's own test report
 -- ("started following but irregularly", a Pal "ran away from its normal
 -- skittish behavior" mid-follow) matches a real gap in the old design:
@@ -131,8 +47,8 @@ local FRIENDLY_TRIGGER_RATIO = 0.2
 -- so its per-drop line is off by default. It would otherwise print on every
 -- enemy hit a follower takes in a fight, which is most of a fight.
 local HP_WATCH_VERBOSE = false
+local TICK_INTERVAL_MS = 1500          
 
-local TICK_INTERVAL_MS = 1500          -- how often the follower tick runs (move order + distance check)
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
 -- 10/tick "seems too high," dropped to 5 per tick (~1.5s) for now.
 -- Hundred-and-ninety-ninth pass (2026-09-06): dropped again, 5 -> 2 —
@@ -175,9 +91,9 @@ local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = false
 -- nothing about it is written to the save, so a player who forgets they left it
 -- off just gets the normal behaviour back on the next launch.
 local passiveGainEnabled = true
-
 local REAL_PASSIVE_FRIENDSHIP_PER_TICK = 2
 local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST and 0 or REAL_PASSIVE_FRIENDSHIP_PER_TICK
+
 -- Hundred-and-eighty-fifth pass (2026-09-05): rescaled after Dragón's
 -- simplification (small vanilla-scale bonding numbers, one lump bonus
 -- at actual capture — see BONDING_TRIGGER_THRESHOLD_BASE and
@@ -188,6 +104,12 @@ local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST a
 -- a full reset to 0 ("betrayal") — see OnFollowerDamaged below — not
 -- scaled by this constant at all.
 local DAMAGE_FRIENDSHIP_PENALTY = -150
+
+-- Seconds between third-party-damage log lines per follower. A multi-hit
+-- attack lands far faster than this; the hits are counted and reported in
+-- the next line rather than each forcing its own disk flush.
+local THIRD_PARTY_DAMAGE_LOG_INTERVAL = 2.0
+
 -- Two-hundred-and-twenty-fifth pass: while a follow mechanism is unproven, a
 -- drift stops the following but does not destroy the bond. See the branch that
 -- uses this below.
@@ -197,7 +119,45 @@ local DAMAGE_FRIENDSHIP_PENALTY = -150
 -- building. Following works now, so drifting out of range is once again a real
 -- consequence the player is responsible for, which is the intended design.
 local EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = false
-local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following Pal loses all trust
+local MAX_FOLLOW_DISTANCE = 3000.0
+
+-- ===================================================================
+-- THE GRACE PERIOD (three-hundred-and-twenty-third pass, 2026-09-12)
+-- ===================================================================
+-- Crossing the leash used to end the bond in the same instant, and run 27 shows
+-- why that is too harsh to keep:
+--
+--     11:38:23  Ribbuny is 3074 units away but is away FIGHTING - trust untouched
+--     11:38:38  player combat window closed
+--     11:38:39  Ribbuny is 3886 units away - losing all trust
+--
+-- She was protected while the fight was on, the fight ended, and she was gone
+-- one second later. She was never given a single tick in which to walk back.
+-- The same shape took Petallia three minutes earlier, and Dragon's objection is
+-- the correct one: "petallia was faster than me so there was no way for me to
+-- catch her during combat". Losing a companion to a foot-speed difference is
+-- not a decision the player ever got to make.
+--
+-- So the distance now starts a clock instead of ending the bond. While the
+-- clock runs, the follow tick keeps running too (it used to be skipped entirely
+-- past the leash, which meant nothing was even trying to bring the Pal back),
+-- and Combat.lua's recall is force-marching it home on the fast loop. Only if
+-- the Pal is STILL beyond the leash when the clock runs out does the bond end.
+-- Coming back inside the leash at any point clears it with no penalty.
+local DRIFT_GRACE_SECONDS = 15.0
+local driftingSince = {}
+
+-- Friendly-fire accounting. The per-pair latch keeps the log readable (run 28
+-- produced 53 events in two bursts) while the counter keeps the real number
+-- visible, which is the mistake pass 322 made with the target-discipline latch.
+local friendlyFireEvents = 0
+local friendlyFirePairLogged = {}
+function Trust.ReportFriendlyFire()
+    local n = friendlyFireEvents
+    friendlyFireEvents = 0
+    friendlyFirePairLogged = {}
+    return n
+end
 
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
 -- 500 (was 100 in the previous pass, before his exact multiplier tiers
@@ -207,6 +167,7 @@ local MAX_FOLLOW_DISTANCE = 3000.0     -- Unreal units (~30m) before a following
 -- stay untouched, real, and vanilla-scale regardless of level; only how
 -- MUCH of them is needed changes.
 local BONDING_TRIGGER_THRESHOLD_BASE = 500
+
 -- Share of a Pal's own bonding bar lost per direct hit from the player. At 0.5
 -- a bond survives one accident and dies on the second hit, whatever the Pal's
 -- level. See OnFollowerDamaged for the full reasoning.
@@ -238,6 +199,120 @@ Trust.CAPTURE_AT_FRIENDSHIP_POINT = CAPTURE_AT_FRIENDSHIP_POINT
 -- key (GetFullName()) -> { interactionCount, isFollowing, lastRank, lastPoint, pal, tickCount }
 local State = {}
 
+-- ===================================================================
+-- THE WORLD-WIDE DAMAGE HOOK NEEDS A CHEAPER GATE (pass 331, 2026-09-12)
+-- ===================================================================
+-- Dragón asked the right question: "at some point i felt lag without fighting,
+-- just by looking at a few wild pals in the distance fight - you're not
+-- tracking every fight right? just the ones of my followers and me right?"
+--
+-- We were tracking every fight. /Script/Pal.PalHate:DamageEvent fires for EVERY
+-- damage event in the world, and its existing cheap exit is `next(State) == nil`
+-- -- but State holds an entry for every Pal the player has ever interacted
+-- with, so after the very first pet of the session it is never empty again.
+-- From that point on, every hit between any two wild Pals anywhere near him
+-- paid for TWO GetFullName() calls, and GetFullName is a reflection round-trip
+-- that builds a full path string. This project has already identified that
+-- exact call as its most expensive operation, twice.
+--
+-- So the gate is now an ADDRESS check. GetAddress() is a pointer read rather
+-- than a string build, and the set of addresses we care about is tiny (the Pals
+-- being bonded with). Rebuilt at most once a second, which for a handful of
+-- Pals is a few pointer reads -- nothing against two path builds per hit in a
+-- world full of fighting Pals.
+--
+-- SAFETY NOTE on address reuse: a stale address can only ever produce a FALSE
+-- POSITIVE, which costs one name build and is then rejected by the existing
+-- name-based checks below. It can never cause a wrong decision, because nothing
+-- downstream trusts the address for identity -- only for "might be worth
+-- looking at".
+local trackedAddresses = {}
+local trackedAddressesAt = -99
+local addressGateUsable = true
+local TRACKED_ADDRESS_REFRESH_SECONDS = 1.0
+local find_player   -- forward: defined below, called from refresh_tracked_addresses
+
+local function address_of(actor)
+    if actor == nil then return nil end
+    local ok, addr = pcall(function() return actor:GetAddress() end)
+    if ok then return addr end
+    return nil
+end
+
+local function refresh_tracked_addresses()
+    local now = os.clock()
+    if (now - trackedAddressesAt) < TRACKED_ADDRESS_REFRESH_SECONDS then return end
+    trackedAddressesAt = now
+    local fresh = {}
+    for _, st in pairs(State) do
+        if st and st.pal then
+            local addr = address_of(st.pal)
+            if addr ~= nil then fresh[addr] = true end
+        end
+    end
+
+    -- THE PLAYER BELONGS IN THIS SET, and leaving them out was a regression
+    -- that switched combat assist off completely (run 31: zero [HATE-ASSIST]
+    -- lines, one combat install in the whole session).
+    --
+    -- This hook is where the player's current enemy is discovered: whenever the
+    -- player hits something, or something hits the player, that other actor IS
+    -- the enemy, and Combat.OnPlayerCombatTarget pushes it onto the companions.
+    -- In exactly that event NEITHER side is a bonded Pal -- the attacker is the
+    -- player and the defender is a wild enemy -- so an address gate built only
+    -- from State rejected the one event the whole feature depends on.
+    --
+    -- The lesson is about what the gate is FOR. It exists to skip fights the mod
+    -- has no stake in (wild versus wild), not to skip the player.
+    local player = find_player and find_player()
+    if player ~= nil then
+        local paddr = address_of(player)
+        if paddr ~= nil then fresh[paddr] = true end
+    end
+
+    trackedAddresses = fresh
+
+    -- FAIL OPEN, and this is the part that matters most.
+    --
+    -- If GetAddress() does not work on these objects for any reason, every
+    -- lookup returns nil, the set comes back empty, and a gate that treats
+    -- "not in the set" as "not ours" silently switches off trust penalties,
+    -- friendly-fire detection and combat assist all at once -- with no error
+    -- anywhere, because every call is inside a pcall. That is precisely the
+    -- shape of failure this project keeps paying for, and it is unacceptable in
+    -- a performance optimisation: the worst a speed-up may do is be slow.
+    --
+    -- So if we are tracking Pals but could not resolve a single address, the
+    -- gate marks itself unusable and stops filtering entirely. The mod goes
+    -- back to being correct-but-slower, and says so once.
+    if next(fresh) == nil and next(State) ~= nil then
+        if addressGateUsable then
+            addressGateUsable = false
+            Logger.log("[PalBonds/Trust] [DAMAGE-GATE] GetAddress() resolved nothing for any tracked Pal — the cheap damage-event filter cannot work on this build, so it is now OFF and every event is processed as before (logged once). Slower, but nothing is silently skipped.")
+        end
+    elseif not addressGateUsable then
+        addressGateUsable = true
+        Logger.log("[PalBonds/Trust] [DAMAGE-GATE] address filtering is working again")
+    end
+end
+
+-- True when this damage event could possibly concern us: a Pal we are bonding
+-- with on either side, OR the player on either side (which is how the player's
+-- current enemy is discovered for combat assist).
+--
+-- Deliberately permissive: when in doubt it says yes and the slower name-based
+-- checks decide. The only thing it is meant to reject outright is a fight
+-- between two actors we have no stake in at all.
+local function damage_event_is_ours(defender, attacker)
+    refresh_tracked_addresses()
+    if not addressGateUsable then return true end
+    if next(trackedAddresses) == nil then return false end
+    local d = address_of(defender)
+    if d ~= nil and trackedAddresses[d] then return true end
+    local a = address_of(attacker)
+    if a ~= nil and trackedAddresses[a] then return true end
+    return false
+end
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then return result end
@@ -271,7 +346,7 @@ end
 -- path that guards. Honest about the limits -- the upstream bug is unfixed and
 -- this reduces exposure rather than removing it, and the deep UE4SS recursion
 -- in that stack is not something a mod can reach at all.
-local function find_player()
+find_player = function()
     local list = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
     if type(list) ~= "table" then return nil end
     for _, p in ipairs(list) do
@@ -279,19 +354,15 @@ local function find_player()
     end
     return nil
 end
-
-
 local function hook_get(param)
     if param == nil then return nil end
     local ok, value = pcall(function() return param:get() end)
     if ok then return value end
     return nil
 end
-
 local function get_key(pal)
     return safe_call(function() return pal:GetFullName() end)
 end
-
 local function get_state(pal)
     local key = get_key(pal)
     if not key then return nil, nil end
@@ -300,7 +371,7 @@ local function get_state(pal)
         st = { interactionCount = 0, isFollowing = false, lastRank = 0, lastPoint = 0, pal = pal, tickCount = 0, captureTriggered = false }
         State[key] = st
     else
-        st.pal = pal -- refresh in case this call handed us a new Lua wrapper for the same actor
+        st.pal = pal 
     end
     return st, key
 end
@@ -316,7 +387,6 @@ function Trust.HasBondingState(palActor)
     local key = get_key(palActor)
     return key ~= nil and State[key] ~= nil
 end
-
 local function get_individual_parameter(pal)
     local comp = safe_call(function() return pal.CharacterParameterComponent end)
     if not comp or not comp:IsValid() then return nil end
@@ -378,8 +448,8 @@ local EASY_TEST_SPEEDUP = 10
 -- trade-off — a rare, minor imprecision against a real, definite,
 -- scales-with-Pal-count lag source.
 local LevelMultiplierCache = {}
-
 function Trust.ComputeLevelMultiplier(palActor)
+
     -- Two-hundred-and-seventh pass (2026-09-06): Dragón's balance
     -- verification run, his own design — "turn off the multipliers by level
     -- for now, so i can test the base with all and any pal." With this on,
@@ -391,23 +461,18 @@ function Trust.ComputeLevelMultiplier(palActor)
     if LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST then
         return 1.0
     end
-
     if EASY_TEST_MODE then
         return 1 / EASY_TEST_SPEEDUP
     end
-
     local cacheKey = safe_call(function() return palActor:GetFullName() end)
     if cacheKey and LevelMultiplierCache[cacheKey] ~= nil then
         return LevelMultiplierCache[cacheKey]
     end
-
     local palParam = get_individual_parameter(palActor)
     local palLevel = palParam and safe_call(function() return palParam.SaveParameter.Level end)
-
     local player = find_player()
     local playerParam = player and get_individual_parameter(player)
     local playerLevel = playerParam and safe_call(function() return playerParam.SaveParameter.Level end)
-
     if palLevel == nil or playerLevel == nil then
         Logger.log(string.format(
             "[PalBonds/Trust] [LEVEL-MULT] could not read pal/player level (pal=%s player=%s) — defaulting to x1 (not cached, will retry next call)",
@@ -452,12 +517,16 @@ function Trust.ComputeLevelMultiplier(palActor)
     else
         multiplier = 1.0
     end
-
     if cacheKey then LevelMultiplierCache[cacheKey] = multiplier end
-
     Logger.log(string.format(
-        "[PalBonds/Trust] [LEVEL-MULT] pal level=%d player level=%d gap=%d -> multiplier=%.1fx",
-        palLevel, playerLevel, gap, multiplier
+        -- %.2f, not %.1f: the real multipliers include 0.75 and 0.25, which
+        -- %.1f printed as "0.8x" and "0.2x". The maths was always right, but the
+        -- log said a number that is not in the table above, and this project has
+        -- twice reached a wrong conclusion from a misleading log line. The bar
+        -- size is printed alongside so the number can be checked directly
+        -- against the ratios in the lines that follow.
+        "[PalBonds/Trust] [LEVEL-MULT] pal level=%d player level=%d gap=%d -> multiplier=%.2fx (bonding bar = %.0f)",
+        palLevel, playerLevel, gap, multiplier, BONDING_TRIGGER_THRESHOLD_BASE * multiplier
     ))
     return multiplier
 end
@@ -559,8 +628,8 @@ end
 -- Two-hundredth pass (2026-09-06): Dragón's ask after the first real look
 -- at this — bump 4000 -> 5000, tune further from there.
 local CAPTURE_DELAY_FIXED_MS = 5000
-
 local function finish_capture_now(pal, key, point)
+
     -- Hundred-and-eighty-fifth pass: Dragón's lump-sum capture bonus —
     -- "just then we give enough xp to push past the friendship levels to
     -- 3 or higher if we want." Applied right before the real capture call
@@ -580,13 +649,11 @@ local function finish_capture_now(pal, key, point)
             ))
         end
     end
-
     local okReq, Capture = pcall(require, "Capture")
     if okReq and Capture.OnTrustMaxed then
         Capture.OnTrustMaxed(pal)
     end
 end
-
 local function wait_for_animation_then_capture(pal, key, point)
     Logger.log(string.format(
         "[PalBonds/Trust] %s — waiting a flat %.1fs for the real Feed/Happy animation sequence before capturing (see hundred-and-ninety-ninth pass for why this is a fixed delay, not a detected signal)",
@@ -607,7 +674,6 @@ local function wait_for_animation_then_capture(pal, key, point)
         finish_capture_now(pal, key, point)
     end
 end
-
 local function maybe_trigger_capture(pal, st, key, point)
     if st.captureTriggered then return end
     local threshold = get_bonding_threshold(pal)
@@ -627,17 +693,15 @@ local function maybe_trigger_capture(pal, st, key, point)
             "[PalBonds/Trust] %s: friendship threshold reached but this Pal already has a real owner — refusing to fire the capture call",
             tostring(key)
         ))
-        st.captureTriggered = true -- don't keep re-checking every tick for something we now know is owned
+        st.captureTriggered = true 
         return
     end
-
     st.captureTriggered = true
-    st.isFollowing = false -- it's about to be a real party member, not our approximated bonding-follow state
+    st.isFollowing = false 
     Logger.log(string.format(
         "[PalBonds/Trust] %s reached %s friendship (bonding threshold %.1f) — trust threshold for sphere-less capture met, waiting for its current animation to finish before capturing",
         tostring(key), tostring(point), threshold
     ))
-
     wait_for_animation_then_capture(pal, key, point)
 end
 
@@ -676,21 +740,17 @@ function Trust.OnInteractionSucceeded(pal)
         Logger.log("[PalBonds/Trust] this Pal already has a real owner — skipping ALL trust/capture bookkeeping (this system is for wild Pals only)")
         return
     end
-
     local st, key = get_state(pal)
     if not st then
         Logger.log("[PalBonds/Trust] could not get a stable key for this Pal — skipping trust bookkeeping")
         return
     end
-
     local param = get_individual_parameter(pal)
     local rank = param and param:IsValid() and safe_call(function() return param:GetFriendshipRank() end)
     local point = param and param:IsValid() and safe_call(function() return param:GetFriendshipPoint() end)
-
     st.interactionCount = st.interactionCount + 1
     if rank ~= nil then st.lastRank = rank end
     if point ~= nil then st.lastPoint = point end
-
     Logger.log(string.format(
         "[PalBonds/Trust] %s: interaction #%d recorded (real rank=%s, real point=%s)",
         key, st.interactionCount, tostring(rank), tostring(point)
@@ -705,19 +765,33 @@ function Trust.OnInteractionSucceeded(pal)
     -- tick will just try again).
     local threshold = point ~= nil and get_bonding_threshold(pal)
     local ratio = (point ~= nil and threshold and threshold > 0) and (point / threshold) or nil
-
     if not st.isFollowing and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
         Trust.StartFollowing(pal, st, ratio)
     end
-
-    if ratio ~= nil and ratio >= FRIENDLY_TRIGGER_RATIO then
+    -- Two-hundred-and-ninety-sixth pass (2026-09-11): `not st.isFollowing` is
+    -- new, and it fixes a real preset clobber Dragón's log caught.
+    --
+    -- The 50% follow trigger above applies the COMPANION preset (player slots
+    -- Ignore, other Discover slots Battle). This 20% trigger then swapped the
+    -- real preset to plain 'friendly'. Normally the two fire on different
+    -- interactions and nobody notices — but a low-level Pal can cross both
+    -- thresholds on a SINGLE interaction, and then these run back to back and
+    -- the companion preset is overwritten microseconds after being applied.
+    -- Dragón's log shows it exactly: "[COMPANION] now has a companion preset"
+    -- immediately followed by "[WON-OVER] (was 'companion_combat') ... real
+    -- AIResponsePreset ALSO swapped to friendly".
+    --
+    -- Once a Pal is following, 'friendly' is a DOWNGRADE from 'companion' —
+    -- it is the disposition of a wild Pal that likes you, not of one fighting
+    -- at your side. Nothing is lost by skipping it: a follower is already past
+    -- the friendly threshold by definition.
+    if ratio ~= nil and ratio >= FRIENDLY_TRIGGER_RATIO and not st.isFollowing then
         local okPersonality, Personality = pcall(require, "Personality")
         if okPersonality and Personality.MaybeBecomeFriendlyByBar then
             local palId = safe_call(Personality.GetStableId, pal)
             Personality.MaybeBecomeFriendlyByBar(palId, pal)
         end
     end
-
     maybe_trigger_capture(pal, st, key, point)
 end
 
@@ -769,16 +843,15 @@ function Trust.TogglePassiveFriendshipGain()
         " (F10; session-only, back to ON on the next launch)")
     return passiveGainEnabled
 end
-
 function Trust.IsPassiveGainEnabled()
     return passiveGainEnabled
 end
-
 function Trust.GetFollowingSnapshot()
     local snapshot = {}
     for _, st in pairs(State) do
         if st.isFollowing and st.pal then
             local point = st.lastPoint or 0
+
             -- Hundred-and-eighty-fifth pass: per-Pal threshold, not the
             -- flat base — a higher-level Pal's bar should show progress
             -- toward ITS OWN (bigger) bonding threshold.
@@ -845,7 +918,6 @@ function Trust.ComputeBondingThresholdFor(palActor)
     if palActor == nil then return nil end
     return get_bonding_threshold(palActor)
 end
-
 function Trust.StartFollowing(pal, st, ratio)
     st = st or (select(1, get_state(pal)))
     if not st or st.isFollowing then return end
@@ -882,6 +954,7 @@ local function on_follower_lost_all_trust(pal, reason)
     Trust.StopFollowing(pal, reason)
     local okReq, Capture = pcall(require, "Capture")
     if okReq and Capture.OnTrustLost then
+
         -- Two-hundred-and-forty-third pass: the reason is now forwarded so the
         -- player gets told WHICH mistake they made. The two call sites use
         -- "too far from player" and a damage reason; anything containing "far"
@@ -948,11 +1021,10 @@ function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
     local key = safe_call(function() return pal:GetFullName() end)
     local st = key ~= nil and State[key] or nil
     if not st or not st.isFollowing then return end
-
     local param = get_individual_parameter(pal)
     if not param or not param:IsValid() then return end
-
     if attackerIsPlayer then
+
         -- Two-hundred-and-forty-ninth pass (2026-09-07) — GRADUAL, at Dragón's
         -- call. This used to zero the bar on a single hit at any level: one
         -- stray swing, at 95% of the way to a bond, ended it permanently.
@@ -970,13 +1042,13 @@ function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
         local point = safe_call(function() return param:GetFriendshipPoint() end) or 0
         local threshold = get_bonding_threshold(pal) or BONDING_TRIGGER_THRESHOLD_BASE
         local penalty = math.ceil(threshold * PLAYER_HIT_PENALTY_FRACTION)
-
         if point - penalty > 0 then
             safe_call(function() param:AddFriendShip(-penalty, false) end)
             Logger.log(string.format(
                 "[PalBonds/Trust] the player hit a bonding Pal — trust %d -> %d (-%d, %.0f%% of its %d bar). The bond survives, for now.",
                 point, point - penalty, penalty, PLAYER_HIT_PENALTY_FRACTION * 100, threshold
             ))
+
             -- Tell the player. Erosion the player cannot see is worse than
             -- instant loss: they would watch a bond quietly disappear with no
             -- idea they were causing it.
@@ -994,7 +1066,6 @@ function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
             end
             return
         end
-
         Logger.log(string.format("[PalBonds/Trust] BETRAYAL — the player hit this bonding Pal once too often (had %d points, penalty %d) — trust is gone", point, penalty))
         if point > 0 then
             safe_call(function() param:AddFriendShip(-point, false) end)
@@ -1002,7 +1073,6 @@ function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
         on_follower_lost_all_trust(pal, "hit by the player directly (betrayal)")
         return
     end
-
     Logger.log(string.format("[PalBonds/Trust] following Pal took damage — applying trust penalty (%d)", DAMAGE_FRIENDSHIP_PENALTY))
     safe_call(function() param:AddFriendShip(DAMAGE_FRIENDSHIP_PENALTY, false) end)
 
@@ -1034,6 +1104,7 @@ end
 -- order (Combat.lua), applies passive trust gain every few ticks, and
 -- checks distance from the player (leash break).
 local function tick_followers()
+
     -- Two-hundred-and-seventy-second pass: this tick touches every follower's
     -- actor, so it stops dead once the world is going away. See Combat's
     -- SHUTDOWN GUARD comment for why validity checks are not enough here.
@@ -1044,12 +1115,51 @@ local function tick_followers()
     local player = find_player()
     local playerLoc = player and safe_call(function() return player:K2_GetActorLocation() end)
     local okReq, Combat = pcall(require, "Combat")
-
     for key, st in pairs(State) do
         if st.isFollowing and st.pal then
             local stillValid = safe_call(function() return st.pal:IsValid() end)
             if stillValid then
                 st.tickCount = st.tickCount + 1
+
+                -- ===========================================================
+                -- DEATH, BEFORE ANYTHING ELSE (two-hundred-and-ninety-sixth
+                -- pass, 2026-09-11)
+                -- ===========================================================
+                -- Until now nothing in the bond-loss path ever asked whether a
+                -- follower was alive. A companion that died in combat kept its
+                -- State entry, its corpse drifted past MAX_FOLLOW_DISTANCE, and
+                -- the drift branch below declared it "abandoned" — so Dragón
+                -- watched a Cawgnito die defending him and then got told it had
+                -- been left behind and gave up on him.
+                --
+                -- Checked here, at the top, so a dead Pal never reaches the
+                -- distance check, the passive gain, or the follow re-issue.
+                -- `endedThisPass` guards the rest of this iteration, because
+                -- ending the bond does not break out of the loop body — the
+                -- same trap the two-hundred-and-sixty-fifth pass documents
+                -- below, where a bond ended at the top of an iteration got a
+                -- brand new follow action installed at the bottom of it.
+                local palIsDead = safe_call(function()
+                    local comp = st.pal.CharacterParameterComponent
+                    if comp == nil or not comp:IsValid() then return nil end
+                    local dead = safe_call(function() return comp:IsDead() end)
+                    if dead == true then return true end
+                    local dying = safe_call(function() return comp:IsDying() end)
+                    if dying == true then return true end
+                    return false
+                end)
+                local endedThisPass = false
+                if palIsDead == true and not st.deathHandled then
+                    st.deathHandled = true
+                    endedThisPass = true
+                    Logger.log("[PalBonds/Trust] " .. tostring(key) ..
+                        " died while bonded — ending the bond as a death, not as a drift")
+                    Trust.StopFollowing(st.pal, "died")
+                    local okCap, CaptureMod = pcall(require, "Capture")
+                    if okCap and CaptureMod and CaptureMod.OnTrustLost then
+                        CaptureMod.OnTrustLost(st.pal, "died")
+                    end
+                end
 
                 -- ===========================================================
                 -- BETRAYAL BY HEALTH, NOT BY HOOK
@@ -1093,9 +1203,11 @@ local function tick_followers()
                     if type(rate) == "number" then
                         local prev = st.lastHPRate
                         st.lastHPRate = rate
+
                         -- 1% of max health, so healing ticks and float noise do
                         -- not register as a hit.
                         if prev ~= nil and rate < prev - 0.01 then
+
                             -- Two-hundred-and-ninety-third pass (2026-09-09) --
                             -- NO LONGER TREATED AS BETRAYAL. Dragon: "during
                             -- combat sometimes they achieved the betrayal, even
@@ -1135,17 +1247,72 @@ local function tick_followers()
                     end
                 end
                 local lostAllTrust = false
-
-                if playerLoc then
+                if playerLoc and not endedThisPass then
                     local palLoc = safe_call(function() return st.pal:K2_GetActorLocation() end)
                     if palLoc then
                         local dx, dy, dz = palLoc.X - playerLoc.X, palLoc.Y - playerLoc.Y, palLoc.Z - playerLoc.Z
                         local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-                        if dist > MAX_FOLLOW_DISTANCE then
+                        -- Three-hundred-and-fourteenth pass (2026-09-12): a Pal
+                        -- that is off fighting is not abandoning the player.
+                        -- Combat.lua drops its follow action for the duration of
+                        -- a fight (see [COMBAT-FREE]), which is exactly when it
+                        -- will chase an enemy out of range. Dragón had to
+                        -- physically run after chasing companions to stop them
+                        -- being declared abandoned; that is not a mistake he
+                        -- should be punished for. The suspension is time-capped
+                        -- in Combat.lua, so this cannot be held open forever.
+                        -- Combat.IsBusyFighting rather than IsSuspendedForCombat:
+                        -- the suspension flag is mod bookkeeping and run 27
+                        -- proved it can be wrong (target discipline was clearing
+                        -- it every tick), whereas IsBusyFighting asks the Pal
+                        -- what it is actually doing. IsSuspendedForCombat stays
+                        -- as the fallback for an older Combat.lua.
+                        local fightingNow = false
+                        if okReq and Combat and Combat.IsBusyFighting then
+                            fightingNow = safe_call(function()
+                                return Combat.IsBusyFighting(st.pal)
+                            end) == true
+                        elseif okReq and Combat and Combat.IsSuspendedForCombat then
+                            fightingNow = safe_call(function()
+                                return Combat.IsSuspendedForCombat(st.pal)
+                            end) == true
+                        end
+
+                        local pastLeash = dist > MAX_FOLLOW_DISTANCE
+                        if not pastLeash then
+                            if driftingSince[key] ~= nil then
+                                driftingSince[key] = nil
+                                Logger.log(string.format(
+                                    "[PalBonds/Trust] %s made it back inside the leash (%.0f units) — the bond is safe",
+                                    key, dist))
+                            end
+                        end
+
+                        if pastLeash and fightingNow then
+                            driftingSince[key] = nil
                             Logger.log(string.format(
-                                "[PalBonds/Trust] %s is %.0f units away (limit %.0f) — losing all trust",
+                                "[PalBonds/Trust] %s is %.0f units away (limit %.0f) but is away FIGHTING — trust untouched until the fight ends",
                                 key, dist, MAX_FOLLOW_DISTANCE
                             ))
+                        elseif pastLeash and driftingSince[key] == nil then
+                            -- First tick past the leash and not fighting: start
+                            -- the clock, say so, and let the recall work.
+                            driftingSince[key] = os.clock()
+                            Logger.log(string.format(
+                                "[PalBonds/Trust] %s is %.0f units away (limit %.0f) — being marched back; it has %.0fs to return before the bond breaks",
+                                key, dist, MAX_FOLLOW_DISTANCE, DRIFT_GRACE_SECONDS
+                            ))
+                        elseif pastLeash and (os.clock() - driftingSince[key]) < DRIFT_GRACE_SECONDS then
+                            -- Still inside the grace window. Deliberately silent:
+                            -- this runs every 1.5s and the line above already
+                            -- said what is happening.
+                        elseif pastLeash then
+                            driftingSince[key] = nil
+                            Logger.log(string.format(
+                                "[PalBonds/Trust] %s is %.0f units away (limit %.0f) and did not come back within %.0fs — losing all trust",
+                                key, dist, MAX_FOLLOW_DISTANCE, DRIFT_GRACE_SECONDS
+                            ))
+
                             -- Two-hundred-and-twenty-fifth pass (2026-09-07):
                             -- while an experimental follow mechanism is being
                             -- tested, a drift should NOT cost Dragón the bond.
@@ -1172,6 +1339,7 @@ local function tick_followers()
                                 end
                             end
                             lostAllTrust = true
+
                         -- Two-hundred-and-sixty-fifth pass (2026-09-07) — the
                         -- actual bug, after seven attempts aimed at the wrong
                         -- thing entirely.
@@ -1194,7 +1362,10 @@ local function tick_followers()
                         -- st.isFollowing is re-read here rather than trusted from
                         -- the top of the iteration, because anything above may
                         -- have ended the bond in between.
-                        elseif okReq and st.isFollowing then
+                        end
+
+                        if (not lostAllTrust) and okReq and st.isFollowing then
+
                             -- Two-hundred-and-second pass (2026-09-06): both
                             -- mechanisms are called from here every tick —
                             -- IssueFollowMoveOrder itself now no-ops when
@@ -1204,7 +1375,7 @@ local function tick_followers()
                             -- Dragón, replacing the old one-shot call that
                             -- used to fire only from Combat.StartFollowing.
                             if Combat.IssueFollowMoveOrder then
-                                Combat.IssueFollowMoveOrder(st.pal, playerLoc, player) -- two-hundred-and-eleventh pass: actor passed for continuous move-to-actor following
+                                Combat.IssueFollowMoveOrder(st.pal, playerLoc, player) 
                             end
                             if Combat.TickRealOtomoFollow then
                                 Combat.TickRealOtomoFollow(st.pal, key)
@@ -1212,10 +1383,10 @@ local function tick_followers()
                         end
                     end
                 end
-
                 if lostAllTrust then
                     on_follower_lost_all_trust(st.pal, "too far from player")
                 elseif not passiveGainEnabled then
+
                     -- Switched off with F10. Deliberately skips the capture
                     -- check as well as the gain: that check lives here to catch
                     -- a Pal crossing the join threshold on passive drip alone,
@@ -1224,6 +1395,7 @@ local function tick_followers()
                     -- Interaction-driven joins (petting or feeding a Pal over
                     -- the line) are untouched.
                 else
+
                     -- Hundred-and-eighty-fifth pass: applied every tick
                     -- (not every Nth), a flat real vanilla-scale amount —
                     -- NOT scaled by the level-gap multiplier (that now
@@ -1232,6 +1404,7 @@ local function tick_followers()
                     local param = get_individual_parameter(st.pal)
                     if param and param:IsValid() then
                         safe_call(function() param:AddFriendShip(PASSIVE_FRIENDSHIP_PER_TICK, false) end)
+
                         -- FORTY-FIRST PASS: passive gain alone can now
                         -- cross CAPTURE_AT_FRIENDSHIP_POINT without
                         -- another pet/feed — check here too, not just in
@@ -1245,7 +1418,6 @@ local function tick_followers()
         end
     end
 end
-
 function Trust.Init()
     Logger.log("[PalBonds/Trust] real hooks active — tracking interaction counts, rank, and follow state via the real FriendshipPoint/FriendshipRank system")
 
@@ -1259,6 +1431,7 @@ function Trust.Init()
     -- PASSED-IN hook argument, the same mechanism used successfully for
     -- AddFriendShip's Value/ApplyPassiveSkill args.
     local okDamageWatch = pcall(function()
+
         -- ===================================================================
         -- BETRAYAL, VIA THE PLAYER RATHER THAN THE VICTIM
         -- (two-hundred-and-forty-seventh pass, 2026-09-07)
@@ -1304,6 +1477,7 @@ function Trust.Init()
         -- line and one toast per hit rather than two.
         local lastBetrayalKey, lastBetrayalAt = nil, 0
         local loggedBetrayalHookFired = false
+
         -- Two-hundred-and-fifty-second pass (2026-09-07). The pass-247 hook
         -- registered OK and then never fired once across a whole session, so it
         -- is replaced rather than kept alongside -- a hook that demonstrably
@@ -1333,6 +1507,7 @@ function Trust.Init()
         -- leaving another silent nothing.
         local okBetray, errBetray = pcall(function()
             RegisterHook("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", function(Context, Attacker, Defender, ActualDamage)
+
                 -- Dragón caught this before it shipped, and he was right:
                 -- "if you're tracking every hit of the player on pals, wouldnt
                 -- that cause lag? if im attacking a pal without followers will
@@ -1355,7 +1530,6 @@ function Trust.Init()
                 -- Same shape as the early-out already guarding
                 -- Combat.OnPlayerCombatTarget, and for the same reason.
                 if next(State) == nil then return end
-
                 safe_call(function()
                     local victim = hook_get(Defender)
                     if victim == nil or not victim:IsValid() then return end
@@ -1370,7 +1544,6 @@ function Trust.Init()
                     local playerName = player and safe_call(function() return player:GetFullName() end)
                     local hitterName = safe_call(function() return hitter:GetFullName() end)
                     if playerName == nil or hitterName ~= playerName then return end
-
                     if not loggedBetrayalHookFired then
                         loggedBetrayalHookFired = true
                         Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] this hook FIRES on this build — the delegate route works (logged once)")
@@ -1380,7 +1553,6 @@ function Trust.Init()
                     local now = os.clock()
                     if key == lastBetrayalKey and (now - lastBetrayalAt) < 0.5 then return end
                     lastBetrayalKey, lastBetrayalAt = key, now
-
                     Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] the player damaged a Pal that is bonding with them — " .. tostring(key))
                     Trust.OnFollowerDamaged(victim, true)
                 end)
@@ -1388,12 +1560,45 @@ function Trust.Init()
         end)
         Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] RegisterHook(PalDamageReactionComponent:OnProcessedActualDamageDelegate) = " ..
             (okBetray and "OK" or ("FAILED: " .. tostring(errBetray) .. " — betrayal falls back to the hate hook, which misses followers whose Damaged_Player slot is Ignore")))
-
         RegisterHook("/Script/Pal.PalHate:DamageEvent", function(Context, DamageResult)
             local result = hook_get(DamageResult)
             if result == nil then return end
+
+            -- ===========================================================
+            -- CHEAP EXIT FIRST (two-hundred-and-ninety-eighth pass, 2026-09-11)
+            -- ===========================================================
+            -- This hook fires for EVERY damage event in the world, not just
+            -- ones involving a bonding Pal — every hit between any two Pals
+            -- anywhere near the player. It used to resolve BOTH actor names
+            -- immediately, and GetFullName() is a reflection call that builds a
+            -- string. Two of those per hit, for every hit in the world.
+            --
+            -- Dragón felt this as a hitch when a follower was caught by a
+            -- multi-hit DPS attack: his log shows 22 damage events in three
+            -- seconds, peaking at ten in one second, each paying for two
+            -- reflection round-trips before anything checked whether the mod
+            -- even cared. It is the same cost that made find_targeted_pal
+            -- 74ms in the two-hundred-and-eighth pass, for the same reason.
+            --
+            -- Nothing below this point can do anything useful unless at least
+            -- one Pal is bonding, so bail out before paying for a single name.
+            -- In ordinary play — no Pal bonding — the whole hook is now one
+            -- table check.
+            if next(State) == nil then
+                local okEarly, CombatEarly = pcall(require, "Combat")
+                local anyFollower = okEarly and CombatEarly and CombatEarly.HasAnyFollower
+                    and CombatEarly.HasAnyFollower()
+                if not anyFollower then return end
+            end
+
             local defender = safe_call(function() return result.Defender end)
             local attacker = safe_call(function() return result.Attacker end)
+
+            -- Pointer-cheap gate, BEFORE the two GetFullName calls below. See
+            -- the comment on trackedAddresses: without this, two wild Pals
+            -- brawling in the distance cost two path-string builds per hit.
+            if not damage_event_is_ours(defender, attacker) then return end
+
             local damage = safe_call(function() return result.Damage end)
             local defenderName = safe_call(function() return defender and defender:GetFullName() end)
             local attackerName = safe_call(function() return attacker and attacker:GetFullName() end)
@@ -1431,26 +1636,40 @@ function Trust.Init()
             -- combat window: to a companion, another companion is just another
             -- Pal it noticed, so a stray AoE hit starts a war.
             --
-            -- Fix at the source: if BOTH sides of a damage event are Pals we
-            -- are bonding with, cancel the grudge immediately by pushing a
-            -- large NEGATIVE hate both ways. (UPalHate::ResetHateAll exists but
-            -- belongs to the Arena classes, not this one — checked, not
-            -- guessed — so ChangeHate with a negative value is the available
-            -- route, and negative AddFriendShip is already long-proven safe in
-            -- this project, so a negative float here is the same shape.)
+            -- The original fix here pushed a large NEGATIVE hate both ways to
+            -- cancel the grudge. That was removed in the three-hundred-and-
+            -- twenty-second pass: run 25's [HATE-VERIFY] proved hate
+            -- subtraction does nothing in this build, so it was two native
+            -- calls per damage event to achieve nothing. Companion-on-companion
+            -- fights are ended by enforce_target_discipline instead, which
+            -- cancels the ACTION rather than editing the hate table.
+            --
+            -- What remains is purely a MEASUREMENT, and pass 324 made it an
+            -- honest one. The old line said it was "clearing the grudge both
+            -- ways" long after it had stopped doing anything -- a log that
+            -- lies about its own behaviour is worse than no log, and this file
+            -- has been bitten by exactly that before. It now reports what it
+            -- actually knows, and names both Pals: run 27 and run 28 could both
+            -- see THAT companions were clipping each other (53 events in run
+            -- 28, in two bursts that line up exactly with the two fights) but
+            -- not WHO, which is the number needed to tell a stray AoE hit from
+            -- a genuine duel.
             do
                 local aIsFollower = attackerName ~= nil and State[attackerName] ~= nil and State[attackerName].isFollowing
                 local dIsFollower = defenderName ~= nil and State[defenderName] ~= nil and State[defenderName].isFollowing
                 if aIsFollower and dIsFollower and attackerName ~= defenderName then
-                    Logger.log("[PalBonds/Trust] [FRIENDLY-FIRE] two bonded companions hit each other — clearing the grudge both ways so they do not start a war")
-                    local okC, CombatMod = pcall(require, "Combat")
-                    if okC and CombatMod and CombatMod.ClearMutualHate then
-                        safe_call(function() CombatMod.ClearMutualHate(attacker, defender) end)
+                    friendlyFireEvents = friendlyFireEvents + 1
+                    local a = tostring(attackerName):match("([^%.]+)$") or tostring(attackerName)
+                    local d = tostring(defenderName):match("([^%.]+)$") or tostring(defenderName)
+                    if not friendlyFirePairLogged[a .. ">" .. d] then
+                        friendlyFirePairLogged[a .. ">" .. d] = true
+                        Logger.log("[PalBonds/Trust] [FRIENDLY-FIRE] " .. a .. " hit " .. d ..
+                            " (first time for this pair; the per-fight total is reported when the fight ends)")
                     end
                 end
             end
-
             do
+
                 -- Two-hundred-and-sixteenth pass (2026-09-06) — Dragón's
                 -- edge case, applied at the outermost point too. This hook
                 -- fires for EVERY damage event in the world, and the block
@@ -1460,6 +1679,7 @@ function Trust.Init()
                 -- skip it on a plain table check first. HasAnyFollower does no
                 -- engine calls at all.
                 local okHas, CombatCheck = pcall(require, "Combat")
+
                 -- Two-hundred-and-fifty-first pass (2026-09-07) — the reason
                 -- Dragon could hit a partially-bonded Gumoss forever with no
                 -- penalty. The log is blunt about it: ZERO DamageEvent lines in
@@ -1486,11 +1706,12 @@ function Trust.Init()
                 if playerName then
                     local enemy = nil
                     if attackerName == playerName then
-                        enemy = defender          -- the player hit something
+                        enemy = defender          
                     elseif defenderName == playerName then
-                        enemy = attacker          -- something hit the player
+                        enemy = attacker          
                     end
                     if enemy ~= nil then
+
                         -- Two-hundred-and-eleventh pass (2026-09-06) — REAL
                         -- BUG FIX, and the reason [HATE-ASSIST] fired ZERO
                         -- times in Dragón's run. This file has no file-level
@@ -1530,10 +1751,17 @@ function Trust.Init()
             -- different feature nobody asked for.
             if defenderName and State[defenderName] then
                 local defenderIsFollowing = State[defenderName].isFollowing
-                Logger.log(string.format(
-                    "[PalBonds/Trust] [DAMAGE-WATCH] real DamageEvent fired — defender=%s attacker=%s damage=%s",
-                    tostring(defenderName), tostring(attackerName), tostring(damage)
-                ))
+                -- Guarded because [DAMAGE-WATCH] is in Logger's SUPPRESSED_TAGS:
+                -- without the check the string.format still ran on every hit and
+                -- the result was thrown away, since Lua evaluates arguments
+                -- before the call. Exactly the trap the hundred-and-seventy-fifth
+                -- pass found in the SetHPPercent hook.
+                if Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled() then
+                    Logger.log(string.format(
+                        "[PalBonds/Trust] [DAMAGE-WATCH] real DamageEvent fired — defender=%s attacker=%s damage=%s",
+                        tostring(defenderName), tostring(attackerName), tostring(damage)
+                    ))
+                end
 
                 -- Hundred-and-eighty-fourth pass: identify whether the
                 -- PLAYER specifically dealt this hit (betrayal, see
@@ -1572,7 +1800,26 @@ function Trust.Init()
                 if attackerIsPlayer then
                     Trust.OnFollowerDamaged(State[defenderName].pal, true)
                 elseif defenderIsFollowing then
-                    Logger.log("[PalBonds/Trust] following Pal was damaged by something other than the player — no trust penalty (two-hundred-and-eleventh pass: a companion getting hit is expected now that it fights back)")
+
+                    -- Throttled and counted (two-hundred-and-ninety-eighth pass,
+                    -- 2026-09-11). This line is NOT in Logger's suppressed list,
+                    -- and Logger flushes to disk per line, so a multi-hit DPS
+                    -- attack turned into ten synchronous writes in one second —
+                    -- the hitch Dragón reported. The information is worth
+                    -- keeping, so it is aggregated rather than dropped: one line
+                    -- per follower every THIRD_PARTY_DAMAGE_LOG_INTERVAL, saying
+                    -- how many hits it covers.
+                    local st = State[defenderName]
+                    st.thirdPartyHits = (st.thirdPartyHits or 0) + 1
+                    local nowHit = os.clock()
+                    if (nowHit - (st.lastThirdPartyLogAt or -99)) > THIRD_PARTY_DAMAGE_LOG_INTERVAL then
+                        Logger.log(string.format(
+                            "[PalBonds/Trust] following Pal was damaged by something other than the player — no trust penalty (%d hit(s) since the last line; a companion getting hit is expected now that it fights back)",
+                            st.thirdPartyHits
+                        ))
+                        st.lastThirdPartyLogAt = nowHit
+                        st.thirdPartyHits = 0
+                    end
                 end
             end
         end)
@@ -1596,6 +1843,7 @@ function Trust.Init()
     local function scheduleTick()
         local ok = pcall(function()
             ExecuteInGameThreadWithDelay(TICK_INTERVAL_MS, function()
+
                 -- Two-hundred-and-sixth pass (2026-09-06): this line used
                 -- to log unconditionally, every 1.5s, forever — 396 lines
                 -- in one 10-minute session, whether or not a single Pal
@@ -1628,24 +1876,11 @@ function Trust.Init()
                     else
                         Logger.log("[PalBonds/Trust] [TICK] LoopAsync tick fired OFF the game thread — skipping this tick (not touching Pal actors from here)")
                     end
-                    return false -- false = keep looping
+                    return false 
                 end)
             end)
         end
     end
     scheduleTick()
 end
-
--- TODO (future pass): kinship-peach-style big trust boost. Real hook
--- point identified but not wired up — UPalUtility:CanUseTargetGainFriendshipPoint
--- (WorldContextObject, IndividualParameter, Item) decides whether a given
--- item can grant friendship at all, and UPalAction_FeedItemToCharacter /
--- SelectedFeedingItem(ItemSlotId, Num) is the real item-driven feed path
--- (see hook-points.md, twelfth pass). Needs the specific item's real
--- FName, which needs either FModel or a live feed-and-log session to
--- discover, before this can special-case it.
-function Trust.OnKinshipItemUsed(pal)
-    -- Not implemented yet. See the TODO above this function.
-end
-
 return Trust

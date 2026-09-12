@@ -1,604 +1,555 @@
-# 32 — PalBonds (mod de comportamiento para Palworld)
+# 32 — PalBonds (behaviour mod for Palworld)
 
-**Progreso: 82%**
+**Progress: 92%**
 
-| Categoría | Peso | Avance | Aporte |
+| Category | Weight | Done | Contributes |
 |---|---|---|---|
-| Diseño y planificación (documento de diseño, roadmap, checklist de investigación) | 10% | 100% | 10% |
-| Herramientas instaladas (UE4SS + mod stub cargando en el juego) | 15% | 100% | 15% |
-| Investigación de hooks reales (las 6 preguntas abiertas en DESIGN.md §8) | 15% | 98% | 15% |
-| Sistema de personalidad por individuo | 10% | 80% | 8% |
-| Interacción con Pals salvajes (acariciar/alimentar) | 15% | 95% | 14% |
-| Sistema de confianza (trust) | 15% | 75% | 11% |
-| Seguir y proteger en combate | 10% | 45% | 5% |
-| Captura/huida por umbral (trust 1.0 / 0.0) | 5% | 85% | 4% |
-| Pulido y configuración | 5% | 0% | 0% |
+| Design and planning | 10% | 100% | 10% |
+| Tooling (UE4SS + mod loading in game) | 15% | 100% | 15% |
+| Hook research (the 6 open questions in DESIGN.md §8) | 15% | 100% | 15% |
+| Per-individual personality system | 10% | 95% | 9.5% |
+| Wild-Pal interaction (pet / feed / play) | 15% | 100% | 15% |
+| Trust system | 15% | 95% | 14.25% |
+| Following and combat assist | 10% | 85% | 8.5% |
+| Threshold capture / flee | 5% | 100% | 5% |
+| Polish and configuration | 5% | 0% | 0% |
 
-Recalcular esta tabla cada vez que una categoría avance — no es una sensación, sale de esta cuenta.
+Recalculate this table whenever a category moves. **Open question for Dragón:**
+the last category and the total depend on whether the Steam Workshop page is
+actually live — I cannot see that from here. If it is published, "Polish" is
+roughly 60% (README, Workshop description, licence, screenshots, folder cleanup
+all done; settings screen still missing) and the total is ~95%.
 
-## ✅ ESTADO ACTUAL: MODS ACTIVOS (2026-09-06)
+---
 
-El mod está cargando normalmente. Se reactivó tras la sesión de Dragón en un servidor de la comunidad.
+## What this mod is
 
-### Procedimiento de activar/desactivar mods (documentado, repetible)
+Instead of only capturing Pals by force, the player walks up to a wild Pal and
+pets, feeds and plays with it. A per-individual trust value rises with good
+treatment and slowly while the Pal follows. Cross 20% and its personality turns
+friendly; cross 50% and it follows and defends the player; fill the bar and it
+joins the party on its own, with no sphere thrown. Hit it yourself, or leave it
+too far behind, and you lose it.
 
-Dragón entra a servidores de la comunidad cada tanto, y ahí **cualquier mod activo es riesgo de ban**, así que esto va a volver a pasar. El procedimiento completo, verificado el 2026-09-06:
+Nothing new is authored — no models, textures or animations. Everything reuses
+behaviour the game already has.
 
-**Desactivar** — renombrar, en `C:\Program Files (x86)\Steam\steamapps\common\Palworld\Pal\Binaries\Win64\`:
-`dwmapi.dll` → `dwmapi.dll.MODS-DISABLED`
+**Scope:** singleplayer / self-hosted only. Mods on official Pocketpair servers
+risk a ban.
 
-**Reactivar** — el renombre inverso.
+**Stack:** UE4SS (Okaetsu's experimental Palworld build, v3.0.1 Beta, Git SHA
+`ba2efd55`) with all logic in Lua. The installed build's authoritative Lua API
+is the `docs/lua-api/` folder of that exact commit — not memory, not a strings
+grep of `UE4SS.dll` (both have produced wrong API names here; see "Retired
+approaches").
 
-Por qué alcanza con ese único archivo: `dwmapi.dll` es el DLL proxy que carga UE4SS dentro del proceso del juego. Sin él UE4SS no se carga en absoluto, así que **ningún mod de Lua puede ejecutarse** — no hace falta desactivarlos uno por uno, ni tocar `enabled.txt`, ni la carpeta `ue4ss/`. Verificado que ese archivo NO figura en los manifiestos del propio juego (`Manifest_NonUFSFiles_Win64.txt`, `Manifest_DebugFiles_Win64.txt`), o sea que no es de Palworld: es de UE4SS.
+---
 
-**Lo que hay que revisar aparte cada vez**, porque NO depende de UE4SS y sobreviviría a ese renombre:
-- Mods empaquetados en `Pal/Content/Paks/LogicMods/` y `Pal/Content/Paks/~mods/`. Al 2026-09-06: la primera vacía, la segunda no existe.
-- Otros DLL proxy en `Pal/Binaries/Win64/` (`xinput1_3`, `d3d11`, `d3d12`, `version`, `winmm`, `dsound`, `dinput8`, `bink2w64`). Al 2026-09-06: ninguno.
+## Current state
 
-**Salvedad honesta:** que el cliente quede sin mods es verificable y se verifica. La política de un servidor de terceros no — si guarda historial o detectó algo antes, eso escapa a lo que este proyecto puede ver. La decisión de entrar es de Dragón.
+v1.0.0 shipped (git tag-level commit `abe5ec8`, MIT licensed, source at
+`github.com/DragonKaiser55555/palbonds`). Everything in the feature list works
+in game and has been confirmed by Dragón in live play:
 
-## ⚠️ EMPEZAR ACÁ — Lista de pendientes en orden (2026-09-03)
+- Pet, feed and play on wild Pals through the game's own radial menu
+- Trust bar and personality tag drawn under the wild Pal's health gauge
+- Seven personalities rolled per individual, with player-facing names
+- Bonded Pals follow, stay *behind* the player, and hold still while aimed at
+- Combat assist via the Hate system; companions defend and are pointed at the
+  player's current enemy
+- Sphere-less joining, with a celebration animation, a join VFX, a named toast,
+  and a flat +50000 friendship head start
+- Betrayal (player hits the Pal) and bond loss by distance
 
-**Antes de leer cualquier otra cosa en este archivo o inventar una nueva línea de investigación: esta es la lista real y ordenada de lo que falta, decidida junto con Dragón después de una sesión entera de pegar contra paredes.** El detalle completo de cada punto (por qué, qué se probó, qué evidencia hay) vive en `DESIGN.md` §12 ("Priority TODO list") — leer ESO antes de tocar código, no re-derivar esta lista desde cero ni generar una pregunta de investigación nueva sin haberla revisado primero.
+Two crashes were found and fixed after v1.0.0 and are **not** in the released
+zip: the world-change crash (pass 285) and the death/respawn crash (commit
+`94adf54`). Whatever ships next must include both.
 
-**🟢 ESTADO ACTUAL DEL SEGUIMIENTO (2026-09-07, pasada 228) — leer esto antes que cualquier otra cosa sobre el punto 5 de abajo, que quedó viejo.**
+### Cleanup pass, 2026-09-11
 
-La acción de seguimiento real (`BP_AIAction_OtomoFollow_C` construida a mano y empujada con `SetAction`) **se probó aislada y quedó DESCARTADA con evidencia, no por sospecha.** El log confirmó por primera vez en ocho mecanismos que el empujón SÍ entra: `HasAction(followClass, priority 10) = true`, y sigue presente 6 segundos después. Pero la Petallia no se movió en absoluto — ni siquiera hizo lo que hace un Pal salvaje solo (deambular, reaccionar a ruido) — hasta que Dragón se alejó y disparó un Escape. Es decir: la acción **gana** el slot de Logic, lo retiene, y es **inerte** — silencia la IA propia del Pal sin producir movimiento. Por eso subirle la prioridad (HardScript/Reaction) **no sirve y no hay que reintentarlo**: no está perdiendo, no está funcionando. `Trainer` + `SelfActor` no alcanzan como estado para que esa acción calcule un destino.
+An external audit (a different AI, without this project's context) returned a
+cleaned tree. It was verified rather than trusted, and the result is now
+deployed to `mod/`, `release/PalBonds/` and the live game install:
 
-**🔄 REABIERTO EL MISMO DÍA (pasada 229) por una observación de Dragón que la conclusión de arriba no tenía en cuenta.** Sus palabras: *"petting and feeding have higher interaction, normally if a pal is fighting or moving around i can use the radial menu to pet and feed and they will drop everything they're doing and come to me"*. Si acariciar tiene prioridad por encima de Logic y la acción se queda pegada, eso explica la Petallia congelada **por sí solo**, sin necesidad de que la acción de seguimiento sea inerte — y habría sido invisible en todas las corridas anteriores, porque todos los mecanismos previos (empujón, leash/territorio) esquivan por completo la pila de acciones. Esta fue la primera que dependía de ella. O sea: acariciar es un **factor de confusión**, no solo un paso previo. La conclusión "la acción es inerte" quedó dicha con demasiada seguridad; son dos explicaciones vivas, no una.
+- Shipping code went from 6,230 to 4,763 real code lines. All of it was dead
+  research code; every functional hook survived (14 of them), and every
+  hard-won fix survived byte-for-byte, including the pass-285 GameInstance
+  outer fix.
+- **It shipped two real defects, both fixed here.** `WORKER_MENU_OVERLAY_CLASS`
+  was used but its declaration deleted — an undeclared Lua local reads as a nil
+  global, so `Interaction.Init()` threw, and `Trust`/`Combat`/`Capture` never
+  initialised at all (9 hooks instead of 57). And `update_territory_anchor` was
+  called after its definition was deleted, throwing silently on every follow
+  tick inside `safe_call`.
+- Two genuine improvements were adopted from it: `[FOLLOW-RESTORE]` (detect via
+  `HasAction` that the follow action is no longer installed and rebuild it —
+  more precise than only rebuilding when the Lua object goes invalid), and
+  moving `ApplyCompanionPreset` above the `GetHateSystem()` early return so
+  preset restore no longer depends on the hate system being readable.
 
-**También tenía razón en lo del funnel:** el código resuelve `BP_AIAction_OtomoFollow_C` y solo cae al funnel si esa ruta no carga — nunca cayó. **Se probó el follow del Otomo, no el del Funnel.** El funnel es justamente el que sigue al jugador SIN ser el Otomo activo (el caso exacto de un Pal salvaje en vínculo), así que `BP_AIAction_FunnelFollow_C` es un candidato real y sin probar. Queda como el SIGUIENTE paso, deliberadamente NO combinado con la prueba de F9 (una variable por corrida).
+**Lesson worth keeping:** the break was invisible to reading and would have been
+invisible in game (the mod loads, prints nothing alarming, and simply does
+nothing). It was caught by *running* the code. See "Verifying a change" below.
 
-**Tecla F9 = vínculo instantáneo, idea de Dragón (pasada 229).** Apuntar a un Pal salvaje y presionar F9 le da el 50% de su propia barra de vínculo **sin ejecutar ninguna interacción** — sin pair-call, sin animación, sin nada que pueda ocupar la pila de acciones. Así el seguimiento se dispara sin que acariciar contamine la prueba. F9 estaba libre de verdad (era la vieja tecla manual de Pet, el menú radial la reemplazó y el bind se sacó; la constante `PET_KEY` quedó muerta en el archivo). Va a la lista de limpieza de lanzamiento.
+---
 
-**Estado desplegado hoy (pasada 229, para la prueba de F9):** `USE_REAL_FOLLOW_ACTION = true` (Otomo, prioridad 10), `USE_TERRITORY_FOLLOW = false`, empujón/orbit/move-to-actor apagados — o sea, aislamiento total otra vez: cualquier seguimiento que se vea es de la acción de seguimiento y de nada más. Las radios apretadas (500/1200) quedan escritas en el archivo, solo desactivadas — volver al leash es cambiar un toggle.
+## Where things live
 
-**Fallback si la prueba de F9 tampoco produce seguimiento:** `USE_TERRITORY_FOLLOW = true` con esas mismas radios apretadas, decidido de antemano por Dragón: *"the old nudge is not as good as the tight leash, so i would say if we ever go back, we will go back to the tight leash instead, the old nudge failed way too often."* El empujón viejo sigue apagado.
+```
+32-PalBonds/
+  CLAUDE.md            <- this file: current state, rules, next steps
+  CLAUDE-archive.md    <- full narrative history (Continuación 1-180)
+  DESIGN.md            <- the design: subsystems, phases, research questions
+  README.md            <- repo readme (GitHub-facing)
+  mod/PalBonds/        <- dev tree, mirrors what ships
+  release/PalBonds/    <- release staging (same Scripts as mod/)
+  release/README.txt   <- the readme that ships to players
+  release/workshop-description.txt
+  images/              <- Steam Workshop screenshots
+  docs/hook-points.md  <- technical pass-by-pass log (the real detail)
+  docs/hook-points-archive.md
+  stale/               <- archived, not part of the product (gitignored)
+```
 
-**Costo conocido de ese fallback:** con inner 500 los Pals siguen bien pero quedan enjaulados — no alcanzan a un atacante, así que dejan de defenderse. **Decisión abierta para Dragón, no tomada por cuenta propia:** las dos corridas de leash cambiaron DOS cosas a la vez, no una — la apretada (500) no tenía el escalonado por seguidor y la suelta (1100) sí. Una radio intermedia CON escalonado nunca se probó, y es el único punto que queda donde "los retiene" y "pueden pelear" podrían convivir. Es una decisión de sensación de juego, no técnica.
+`mod/PalBonds/Scripts/` and `release/PalBonds/Scripts/` are kept identical, and
+both are kept identical to the live game install. There are exactly 8 modules:
+`main`, `Logger`, `Personality`, `Interaction`, `Trust`, `Combat`, `Capture`,
+`Indicator`.
 
-**Pendiente conversacional — resuelto (2026-09-06):** la explicación simple del arreglo de Pet (medir antes/después y ajustar a 25 exacto) ya se le dio a Dragón al retomar esta sesión, en términos simples. No hace falta repetirla salvo que la vuelva a pedir.
+**Live game install:**
+`C:\Program Files (x86)\Steam\steamapps\common\Palworld\Pal\Binaries\Win64\ue4ss\Mods\PalBonds\`
 
-**🔴 SESIÓN CERRADA A PEDIDO EXPLÍCITO DE DRAGÓN (2026-09-06) — retoma otra IA distinta desde acá. Leer esta sección COMPLETA antes que cualquier otra cosa en este archivo, incluida la lista de abajo — corrige tres malentendidos reales de la sesión anterior.**
+---
 
-**1. "¿Un Pal ya capturado sigue como Otomo real?" — NUNCA fue una pregunta abierta.** Palabras textuales de Dragón: *"there was never a doubt after the pal had already been captured, of course it acts like a real otomo because by that point is already a real otomo or owned pal... this had been one of the first things confirmed way earlier into the project."* La sesión anterior trató esto como si fuera algo por confirmar — estaba mal. `diagnose_post_capture_slot` (Capture.lua) SÍ tenía un bug real (intentaba leer el handle del Pal DESPUÉS de la captura, cuando el actor ya estaba siendo desarmado por `PalCaptureSuccess` — arreglado, ahora se resuelve ANTES) y el arreglo se queda, pero **no responde ninguna pregunta real pendiente.** La pregunta real, sin tocar ni un poco por las últimas 3 pasadas, sigue siendo: **¿cómo hace un Pal para seguir al jugador DURANTE el vínculo, mientras todavía es salvaje y NO es dueño de nadie?** Los dos mecanismos probados (empujón viejo, composite de Otomo repetido) están confirmados que NO funcionan; Funnel y Otomo completo dependen los dos de `GetTrainer()` real (ya investigado en la Continuación 137, re-confirmado esta ronda, nada nuevo). No hay ningún mecanismo nativo conocido que no dependa de propiedad real. Esto sigue completamente sin resolver.
+`tools/harness/` — the offline fengari test harness (see its own README, and
+the section on it further down). Its `node_modules/` is gitignored; restore with
+`npm install fengari`.
 
-**2. VFX del haz de luz — la sesión anterior entendió mal el pedido, sigue sin resolverse.** Lo que Dragón describe de una captura/rescate de jaula real: (a) el Pal hace una animación feliz — **esto ya está** (agregado esta pasada: `Capture.lua`'s `play_join_celebration_then`, Happy+corazones antes de capturar, confirmado bueno por Dragón); (b) **un VFX del Pal convirtiéndose en luz y viajando hacia el jugador — esto sigue completamente sin implementar**, y es la parte que se siente incompleta: hoy el Pal sonríe y al instante desaparece, sin nada en el medio; (c) el texto de confirmación — **ya está** (`Capture.NotifyJoined`). El candidato que se tenía para (b), `ABP_ReturnPalEffect_C`, **ya se descartó con evidencia real** (Continuación 163: correlaciona solo con cambiar de Otomo activo, nunca con ninguna de 3 capturas/rescates reales probados en la misma sesión) — sugerir "cambiá de Otomo para verlo" en la pasada anterior respondía la pregunta equivocada. **Sigue pendiente encontrar la clase real detrás de ese efecto — necesita investigación nueva (repak/strings o FModel, mismo método ya probado en este proyecto), no reusar ese candidato.**
+`stale/` — gitignored local archive: the five third-party reference mods, the
+FModel mapping data, the pre-release dev-install backup, and retired research
+modules. Nothing in it is part of the product, but the reference mods are worth
+re-reading before building anything new (see the design rule about existing
+implementations).
 
-**3. Lag — ATENDIDO EN LA CONTINUACIÓN 175 (2026-09-06), pendiente de confirmar en vivo.** Se encontraron y eliminaron seis fuentes reales, ninguna identificada antes, la peor un hook de diagnóstico muerto sobre `SetHPPercent` que hacía una llamada de reflexión por cada actualización de cada barra de vida en pantalla, con su costo escondido detrás de un tope de log que solo silenciaba la salida. Leer la Continuación 175 al final de este archivo. El texto original de este punto se conserva abajo porque su diagnóstico seguía siendo correcto en su momento:
+## Working procedures
 
-**3 (original). Lag — sigue sin resolverse, NO se cerró.** Palabras de Dragón: *"lag still feels a lot laggier than yesterday, idk what happened but im sure it was something last added."* El arreglo del throttle de `[OTOMO-GETTER-WATCH]` (Interaction.lua) era un bug real y se queda arreglado, pero **no es (o no es el único) responsable del lag que Dragón siente** — no darlo por cerrado. Aparte, se encontró y mató un proceso `find.exe` colgado desde una sesión anterior (buscaba un archivo ya encontrado por otra vía, llevaba más de una hora corriendo) — esto NO tiene relación con el lag del juego (es un proceso del sistema host, no del mod), pero vale la pena revisar procesos de fondo colgados cuando "algo se siente raro". **La causa real del lag en el juego sigue sin encontrarse** — necesita perfilado nuevo la próxima sesión.
+### Deploying a change
 
-**Qué se queda del código de las últimas pasadas, a pesar de las correcciones de arriba:**
-- `Combat.lua`: `USE_OLD_MOVE_ORDER_NUDGE = false`, `USE_REPEATED_OTOMO_COMPOSITE = false` — ningún mecanismo de seguimiento activo, correcto dejarlo así.
-- `Capture.lua`: el arreglo de `diagnose_post_capture_slot` se queda (bug real, arreglo real), aunque no cierra ninguna pregunta abierta real.
-- `Capture.lua`: `play_join_celebration_then` (Happy+corazones antes de capturar) se queda, confirmado bueno, pero es solo una parte de lo pedido.
-- `Interaction.lua`: el arreglo del throttle de `OTOMO-GETTER-WATCH` se queda, bug real, pero no confirmado como la causa del lag.
+Copy the changed `.lua` to all three locations (dev, release staging, live
+install) and confirm with `md5sum` that all three match. A change that is only
+in `mod/` has not been tested by anyone.
 
-Detalle técnico completo, con las citas exactas de Dragón y el razonamiento completo de cada corrección, en `hook-points.md` ("Two-hundred-and-fifth pass") — leer ESE antes de retomar cualquier cosa.
+### Verifying a change — do this before asking Dragón to test
 
-**Fase 1 — para hacer ya, sin riesgo, sin investigación pendiente:**
-1. Interacción "Play" — **CONFIRMADO FUNCIONANDO (2026-09-04):** idle + `CancelActionByType` + Happy/corazones andando de verdad en el juego. Delay subido de 3s a 6s a pedido de Dragón (cortaba animaciones a mitad de camino). Cheer (emote real del jugador) sigue diferido — no retomar con el mismo enfoque, ya rompió `do_play()` dos veces. Sigue sin explicar por qué se vio algo parecido a Feed en un Pal.
-1b. **Personalidad "curious" global — CONFIRMADO FUNCIONANDO (2026-09-04, pero AHORA APAGADO):** `apply_global_curious_preset_override()` funcionó (Dragón lo confirmó en el juego), pero `FORCE_ALL_CURIOUS` se puso en `false` para probar la variedad real por individuo — ver 1c.
-1c. **✅ CONFIRMADO FUNCIONANDO (2026-09-04) — variedad real por individuo.** Dragón vio comportamientos distintos en vivo tras el reinicio. 147 individuos con roll, split real cercano al 10/15/25/50 esperado. Punto 4 (bug del sensor) se da por arreglado en la práctica.
-1d. **Etiqueta de texto temporal de personalidad — funcionando (2026-09-04, sin crash).** Confirmó un bug real: Pals con preset "escape" plano quedaban mal etiquetados "curious".
-1e. **Sistema de personalidad renombrado + expandido — CONFIRMADO FUNCIONANDO (2026-09-04):** nombres reales (friendly/warlike/escape/notinterested/warlike_anyway/warlike_without_player + normal), bug de "escape" arreglado, NPCs/jefes excluidos siempre. Dragón confirmó que los Warlike de verdad atacan ahora. Distribución actual (Continuación 135): normal 35 / friendly 30 / escape 10 / notinterested 10 / warlike 5 / warlike_anyway 5 / warlike_without_player 5. Pals cuyo preset real ya es NotInterested también quedan excluidos del roll (mismo mecanismo que NPC/Boss) — el "notinterested" del roll sigue disponible para el resto.
-1f. **Lag real por logging de crash sin sacar — arreglado (2026-09-04):** `[CRASH-DIAG]` de la etiqueta de personalidad era más de la mitad del log de Indicator — recortado. Ver Continuación 127 / hook-points.md ("Hundred-and-fifty-fourth pass").
-1g. **"?" persistente — segundo intento con reintento real (2026-09-04), sin confirmar todavía:** el primer arreglo (hook inmediato al iniciar) falló en su propia prueba por falta de reintento (la clase no estaba cargada esa temprano) — ahora tiene reintento acotado real (1s, 30 rondas). Ver Continuación 130 / hook-points.md ("Hundred-and-fifty-seventh pass").
-1h. **Discrepancias de personalidad — medidas con datos reales (2026-09-04):** ~95% de enforcement real exitoso (37/39 rolls relevantes), 2 casos reales sin aplicar. Hueco chico, probablemente probabilístico, no perseguido más por ahora.
-2. Huida real al perder toda la confianza — **IMPLEMENTADO (2026-09-04), sin confirmar todavía.** `Capture.OnTrustLost` ahora fuerza tier="escape" vía `Personality.ForceTier`, reusando el enforcement ya probado hoy. Aviso: el hook reactivo no reintenta un tier nuevo si el sensor de ese Pal ya disparó antes — solo el scan proactivo (menos confiable) lo cubriría en ese caso. Ver Continuación 129 / hook-points.md ("Hundred-and-fifty-sixth pass").
-3. VFX del haz de luz al unirse — **el candidato que se tenía (`ABP_ReturnPalEffect_C`) ya se descartó** (Continuación 163: correlacionaba con cambiar de Otomo activo, nunca con una captura real, en una corrida de prueba dedicada). Necesita un candidato nuevo desde cero, no retomar ese. **La animación feliz del Pal antes de capturar ya está confirmada buena (Continuación 174/hook-points.md "Two-hundred-and-fifth pass") — lo que falta específicamente es el VFX del Pal convirtiéndose en luz y viajando hacia el jugador**, la parte que hace que la desaparición se sienta incompleta hoy.
-1i. **CAUSA RAÍZ ENCONTRADA (2026-09-04): solo Pet otorga amistad real hoy — Feed y Play dan 0.** Confirmado con datos exactos de una prueba controlada de Dragón sobre 3 Pals (9 puntos de dato, cero excepciones). Pet funciona porque la acción REAL de Cuidar del juego dispara directo sobre el Pal sustituido por el menú radial (independiente de nuestro propio `do_pet()`, que casi siempre queda descartado por nuestro propio gate); Feed/Play dependen 100% de nuestro `Happy()`, que no otorga nada en ese contexto. Ver Continuación 132 / hook-points.md ("Hundred-and-fifty-ninth pass") para el detalle completo y el experimento en curso (punto 7, reabierto).
+There is no Lua interpreter on this machine, but `fengari` (a Lua 5.3 VM in
+JavaScript) runs under Node and is enough to catch load-time breakage:
 
-**Fase 2 — investigación acotada, con payoff real, NO abierta indefinidamente:**
-4. Arreglar la lectura del sensor de IA — **MUY PROBABLEMENTE ARREGLADO (2026-09-04), falta confirmar con `[ENFORCE] SUCCESS` real en el próximo test.** En vez de seguir buscando el sensor proactivamente (roto), se agregó un hook REACTIVO sobre `SelectResponseBySenses` (la función que el juego llama solo cuando un Pal decide algo) que recibe el sensor directo del propio hook, sin buscar nada. Ver Continuación 121 / hook-points.md ("Hundred-and-forty-eighth pass").
-5. Seguimiento real durante el vínculo (ANTES de la captura — no confundir con seguir ya siendo Otomo real, eso ya funciona confirmado por Dragón). Primer paso, costo cero: revisar el diagnóstico `[FOLLOW-DIAG]` que ya existe desde hace varias pasadas y nunca se leyó
-6. Que los Pals en vínculo ayuden en combate (depende de que el punto 5 tenga resultado primero)
+```bash
+npm install fengari
+node harness.js <path-to-Scripts> prelude.lua
+```
 
-**Nombre público decidido (2026-09-07): PalBonds.** Dragón preguntó entre "PalBonds" y "PalTamers" pensando en marketing, y eligió PalBonds. El razonamiento que se le dio y que conviene conservar: "tamer" es una palabra de género que no distingue nada — Palworld ya tiene captura, así que un jugador que lee "PalTamers" no aprende nada nuevo; "bond" nombra justamente la mecánica que este mod agrega y que el juego base no tiene (acariciar/alimentar/jugar hasta que el Pal decide seguirte y unirse solo). Además "bonds" se lee como algo mutuo, mientras "tamers" es algo que se le hace al Pal. **Pendiente de Dragón: verificar en Nexus que el nombre esté libre.** Si estuviera tomado, la alternativa recomendada es "PalBefriend", no "PalTamers".
+`prelude.lua` stubs the UE4SS globals (`RegisterHook`, `FindFirstOf`,
+`ExecuteInGameThreadWithDelay`, `UEHelpers`, …) as no-ops returning nil, then
+the harness `dofile`s the real `main.lua`. What it proves:
 
-**Nombres de personalidad para el jugador — DECIDIDOS E IMPLEMENTADOS (2026-09-07).** Los eligió Dragón; ya están en `Indicator.lua` (`PERSONALITY_DISPLAY_NAMES`), reemplazando los strings internos que se mostraban antes:
+- whether `main.lua` completes or aborts, and on which line
+- how many hooks register — **the healthy number is 14**; a lower number means
+  init died partway and everything after it never ran
 
-| tier interno | nombre visible |
+It cannot prove gameplay behaviour, since every game call returns nil. It
+catches exactly the class of bug that reading misses. The working copies live in
+the session scratchpad; rebuild them if they are gone, it is worth it.
+
+### Turning mods off (Dragón joins community servers)
+
+Any active mod is a ban risk there. Rename, in
+`Palworld\Pal\Binaries\Win64\`: `dwmapi.dll` → `dwmapi.dll.MODS-DISABLED`.
+That single file is UE4SS's proxy DLL, so without it no Lua mod runs at all.
+Reverse the rename to re-enable. Check separately that
+`Pal/Content/Paks/LogicMods/` and `~mods/` are empty and that no other proxy DLL
+(`xinput1_3`, `d3d11`, `version`, `winmm`, `dinput8`, `bink2w64`) is present.
+Client-side cleanliness is verifiable; a third-party server's own policy is not.
+
+---
+
+## Decisions that are settled — do not re-litigate
+
+- **Pet and Feed are radial-menu interactions, not keys.** F9/F10 as Pet/Feed
+  were removed deliberately. Play keeps F8 only because it has no radial-menu
+  equivalent yet.
+- **Grumpy and Hostile stay separate personalities.** Dragón: *"while grumpy
+  doesnt attack inmediately, it can attack if it sees another pal of its same
+  species attacking, so kind of like they join - its an interesting
+  personality"*. Do not merge them as a tidy-up.
+- **No fallbacks that hide failure** while the project is in development. A
+  failed read shows "unknown", never a plausible-looking default. This came from
+  a real bug where a "friendly" fallback made most Pals look friendly.
+- **Read everything you need from a Pal BEFORE `PalCaptureSuccess` runs.** The
+  actor is torn down during capture and every component read fails afterwards.
+  This bug has been introduced twice; resolve names and handles up front and
+  pass them along as plain values.
+- **`ActionComponent:ActionIsEmpty()` is not a reliable "is busy" signal.** It
+  reports empty in the gaps between steps of a real multi-part interaction.
+  Three separate attempts to detect "the animation finished" failed on it; the
+  capture delay is now a fixed 5s on purpose.
+- **A low-level Pal bonding in a single interaction is intended, not a bug.**
+  Dragón, 2026-09-11: *"yes the level difference allowed to bond with just 1
+  interaction thats on purpose to somewhat match high level catch on low level
+  pals"* — it mirrors how trivially a high-level player captures a low-level
+  Pal normally. A lv30 Pal against a lv61 player gets a 125-point bar, and one
+  75-point feed clears 50% of it. Do not "fix" this.
+- **Never propose removing a working feature to work around a bug.** Fix it, or
+  ship with the limitation documented.
+
+## Two routes to "the right brain" — Dragón has ruled on both (2026-09-12)
+
+Pass 325 found that `UPalOtomoHolderComponent::ActivatePalByHandle` spawns a Pal
+as a real active Otomo, with `BP_MonsterAIController_Otomo_C`, using only the
+game's own systems (proven by the Multi Party Pals Summons reference mod). That
+gave two possible ways to stop fighting the wild AI:
+
+**1. Capture the Pal earlier — REJECTED, do not propose again.** Summoning a
+bonded Pal as an extra Otomo requires it to be in the party, so it would mean
+capturing at the moment following starts instead of at full trust. Dragón's
+ruling: *"i honestly dont like it, because it would shorten the bond with the
+player we would be losing betrayal, passive friendship gain, the toasts, etc -
+too many things just for one, so that consider it a no go."* The bonding phase
+is the product; trading it for better pathing is the wrong trade.
+
+**2. Possess the wild Pal with an Otomo controller — held in reserve.** Not
+rejected, but explicitly not the current plan: *"lets leave it as a risky option
+if what you're currently doing doesnt work and we have to try other things - if
+your method works, then that settles it and we wont even need to try that."* So
+this is only on the table if the action-pushing approach stops improving. Do not
+open it while the current method is still gaining ground.
+
+---
+
+## Retired approaches — do not resurrect
+
+Each of these was killed by evidence, not suspicion:
+
+- **Territory / leash following** (`SetupLeash`) — an inner radius tight enough
+  to hold followers also caged them, so they could not reach an attacker and
+  stopped defending themselves. Also leaked leash actors.
+- **The repeated Otomo composite** (`SetRootComposite` + `SetOtomoFollowAction`)
+  — reported success every time and moved nobody.
+- **`ABP_ReturnPalEffect_C` as the join VFX** — correlates only with switching
+  active Otomo, never with a capture. The real VFX was found later.
+- **`SelectedFeedingItem` called cold** — caused a crash that left the game
+  running but unresponsive.
+- **`OpenOtomoFeedInventory()` to open the picker directly** — needs a real
+  deployed Otomo, so a new player could never feed, never bond, never get a
+  first Pal.
+- **Guessing UE4SS API names.** `RegisterInitGameStatePostHook` is real;
+  `…PostCallback` is not. Four wrong names cost four test cycles. Read the api
+  docs at the installed commit.
+- **Subtracting hate to steer a target.** Run 25's `[HATE-VERIFY]` logged the
+  player still most-hated *immediately after* `ChangeHate(-999999)`. Every fix
+  built on it was a no-op: `clear_player_hate`, `PLAYER_OUTBID_HATE`,
+  `Trust.ClearMutualHate`, `enforce_companion_truce`, `release_assist_hate` and
+  the original hate-based recall. Adding hate still works and is what
+  `[HATE-ASSIST]` uses.
+- **`TargetActor` and `SetTargetAndNextAction` on the running combat action.**
+  Both are declared on `UPalAIActionCombatBase`, and neither resolves on
+  `BP_AIAction_CombatPal_C` in this build. `SetTargetAndNextAction` failed 29
+  times out of 29 in run 27 with *"attempt to call a TrivialObject value"*, and
+  `TargetActor` read as unreadable every time. Recorded once already in pass 217
+  and repeated in pass 322 — **check `docs/hook-points.md` before reaching for
+  this class again.** Use `UPalHate::FindMostHateTarget()` instead; it works.
+- **UE4SS's async Lua** (`LoopAsync`) — a UE4SS collaborator states plainly it
+  is unsafe. Dead fallbacks using it still exist in `Trust.lua` and
+  `Indicator.lua`; see open defects.
+
+---
+
+## Combat assist and following — where they actually stand (run 32, 2026-09-12)
+
+**Both work.** This is settled by logs, not impression. Run 32, the most recent:
+
+| | result |
 |---|---|
-| normal / unknown | Normal |
-| friendly | Curious |
-| escape | Timid |
-| notinterested | Aloof |
-| warlike | Grumpy |
-| warlike_anyway | Hostile |
-| kill_all | Feral |
-
-Estados de vínculo, que TAPAN a la personalidad y se calculan desde la barra (no desde el string de disposition, porque un Pal ganado por vínculo y uno que simplemente sacó el tier "friendly" comparten el mismo valor y no se pueden distinguir de otro modo): **≥20% = "Friendly"**, **≥50% = "Bonding"**. Sin nombre para 100% — palabras de Dragón: "no necesitamos un nombre para 100% porque para entonces ya va a estar capturado".
-
-**Grumpy y Hostile se quedan SEPARADOS por decisión explícita de Dragón, y la razón conviene conservarla para que nadie los fusione después como "limpieza":** *"while grumpy doesnt attack inmediately, it can attack if it sees another pal of its same species attacking, so kind of like they join - its an interesting personality"*. Es un Pal que se suma a peleas ajenas de su especie, no un hostile debilitado.
-
-**Etiqueta de personalidad como opción para el jugador (pedido de Dragón, 2026-09-07).** Hoy la etiqueta de personalidad sobre cada Pal existe solo como herramienta de desarrollo, con los nombres internos crudos. Dragón quiere que en el producto final sea una **opción activable por el jugador** (no siempre visible, no siempre oculta), con **nombres pensados para jugadores, no los internos**. Él va a proponer los nombres; la lista completa de tiers que la etiqueta puede mostrar hoy está en la respuesta del 2026-09-07 y en `PERSONALITY_TIERS` (Personality.lua). Se ata al punto 10 (pantalla de configuración) — cuando esa exista, esta etiqueta es una de sus opciones.
-
-**Objetivo declarado por Dragón (2026-09-06): publicar el mod para otros jugadores.** Sus palabras al volver del servidor: "lets continue working to soon share this cool mod with other players, so they can tame pals too". Esto convierte varias cosas que hasta ahora eran "lindo tenerlo" en requisitos reales de lanzamiento, y conviene tenerlas anotadas desde ya aunque no se toquen todavía:
-- Sacar/apagar el modo de verificación de balance y volver a los números reales (`BALANCE_VERIFICATION_MODE`, `LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST`) — hoy Pet/Feed/Play están en 100 para pruebas, no son valores de lanzamiento.
-- Sacar las teclas y diagnósticos experimentales que quedan (CTRL+K, CTRL+H, **F9 (`[INSTANT-BOND]`, agregada 2026-09-07 solo para probar el seguimiento sin interacción previa)**, `[BALANCE-TEST]`, `[NAME-DIAG]`, `[CAGE-VFX]`, `[FOLLOW-ACTOR]`) — un jugador no debería ver nada de eso.
-- Bajar el volumen del log de forma seria: `Logger.lua` fuerza escritura a disco por línea, que es correcto para depurar un crash pero no para un mod publicado.
-- README de instalación para usuarios finales (hoy el README asume que el lector es quien lo desarrolla).
-- Decidir qué es configurable y cómo (se ata al punto 10 de abajo, la pantalla de configuración).
-- Probar en una instalación limpia, no solo en la de Dragón.
-
-**Fase 3 — engavetado, NO reabrir sin evidencia nueva:**
-7. Comida real para Pals salvajes — **EN INVESTIGACIÓN ACTIVA, prueba en vivo pendiente (2026-09-05).** El camino del menú "4"/apuntado (BaseCampId, WorkAssignId, la esfera de interacción) sigue bloqueado — prueba base confirmó 9/9 sin enganche nativo sobre Pals salvajes (Continuación 138), y copiar/falsificar propiedad real (`OwnerPlayerUId`) para disambiguar quedó descartado por Dragón por riesgo de corromper datos reales de otro Pal. **Pero se encontró un camino nuevo que evita "4" por completo**: Ghidra (register-level, no solo pseudocódigo) confirmó que `OnSelectedOrderWorkerRadialMenu(resultType=Feed)` llama a `SelectedFeedingItem` con UN SOLO argumento (el Pal mismo, sin ítem todavía) — el Crash #5 fue casi seguro por saltar directo al segundo paso (confirmar con ítem) sin haber pasado por el primero. Implementado y desplegado: CTRL+H ahora llama `pal:OnSelectedOrderWorkerRadialMenu(parameter)` directo (parámetro reutilizado de uno ya vivo en memoria, `resultType=1`), pasando por el despacho reflejado real de Unreal, sin construir nada a mano. Sin confirmar en vivo todavía — pendiente que Dragón pruebe. Detalle completo en `hook-points.md` ("Hundred-and-sixty-fifth pass").
-8. Kinship peaches (bloqueado por el punto 7, ahora en investigación activa otra vez)
-9. Balance/rendimientos decrecientes — Dragón pidió dejarlo para el final a propósito
-10. Pantalla de configuración — baja prioridad, "tal vez más adelante"
-11. Optimización general — la de `[INDICATOR-WATCH]` ya se arregló esta sesión; el resto son costos aceptados a propósito, no descuidos
-12. Viabilidad en servidor dedicado — sin investigar, sin urgencia, la de menor prioridad de toda la lista
-
-## Resumen del concepto
-
-Mod de comportamiento para Palworld (juego ya existente de terceros, no es una IP propia de las 30 ideas — este proyecto no está listado en `game proyects.txt`, se agregó aquí porque sigue el mismo sistema de seguimiento). En vez de solo capturar Pals por la fuerza, el jugador puede acercarse a un Pal salvaje, acariciarlo y alimentarlo antes de capturarlo. Un valor de confianza (trust, 0.0–1.0) por individuo sube con buen trato y con ganar peleas mientras el Pal acompaña al jugador, y baja si el Pal recibe daño mientras están vinculándose. Al llegar a 1.0 el Pal se une al equipo sin Palsphere; si baja a 0.0 (habiendo estado arriba antes) el Pal huye para siempre y vuelve a requerir captura forzada normal.
-
-No se tocan modelos, texturas ni animaciones nuevas — todo reutiliza comportamiento que el juego ya tiene (seguir/pelear como Pal propio, animaciones de acariciar/alimentar ya existentes para Pals capturados).
-
-## Decisiones de diseño tomadas
-
-- Alcance v1: singleplayer / servidor propio autoalojado únicamente. Jugar en servidores oficiales de Pocketpair con esto instalado arriesga ban — no es el objetivo de este mod.
-- Cada subsistema es un módulo Lua independiente (`Personality`, `Interaction`, `Trust`, `Combat`, `Capture`) para poder construir y probar de a uno.
-- Se prioriza reutilizar comportamiento existente del juego (ej: el follow/fight que ya tienen los Pals propios) en vez de escribir IA nueva desde cero, donde sea posible.
-- El detalle completo de cada subsistema, el roadmap de 6 fases y las preguntas de investigación abiertas viven en `DESIGN.md` — no se duplica aquí, revisar ese archivo para el detalle real.
-
-## Stack / engine
-
-- **UE4SS** (build experimental de Okaetsu para Palworld) — motor de scripting Lua, éste es donde vive casi toda la lógica.
-- **PalSchema** — se usará solo si algún dato resulta ser una tabla de datos plana que conviene parchear como JSON en vez de hookear en Lua.
-- **FModel** — inspección de assets/datos del juego, solo para investigación, no en runtime.
-- Todo gratuito, sin costo ni ahora ni si este mod "creciera" (no aplica lógica de monetización — es un mod, no un producto propio).
-
-## Estado actual
-
-**🎉 HITO ALCANZADO HOY (2026-09-01): se puede acariciar un Pal salvaje de verdad, sin que el juego se caiga.** Probado en vivo contra un Lamball común y un Chikipi ya agresivo, presionando la tecla varias veces seguidas sobre cada uno — 0 crashes en 14 intentos. Secuencia real confirmada: el jugador hace el gesto de estirar la mano (animación real del juego), se suma Friendship real (`AddFriendShip`), y el Pal responde con su animación de felicidad — y ya no se puede "spamear": si el jugador o el Pal están en medio de otra animación, la tecla simplemente no hace nada, igual que en el juego real.
-
-**Camino hasta llegar ahí — 3 crashes reales en el proceso, ya resueltos:** Un `Debug_CaptureNewMonster`-style approach fue descartado pronto; en cambio, se intentó forzar animaciones reales llamando `PlayActionByType` directo desde Lua, lo cual causó 3 caídas distintas del juego. Sospechas iniciales (una acción sincronizada mal configurada, un Pal dormido interrumpido) resultaron ser pistas parcialmente falsas. La causa real, encontrada recién con un sistema de log propio a prueba de crashes (`Logger.lua`, que escribe y fuerza a disco cada línea al instante, porque el log normal de UE4SS se pierde entero cuando el juego se cae de golpe): una función (`GetSaveParameter()`) que copiaba una estructura entera de 880 bytes con arrays internos, usada solo para leer un dato chico (el GUID del dueño). Copiar algo así entre Lua y el juego es frágil y corrompía memoria. Se sacó esa llamada y se lee el dato directo del objeto en vez de copiar toda la estructura — eso solo bastó para que el mismo código que antes se caía siempre, ahora funcione siempre.
-
-**Investigación con el SDK nativo de UE4SS (2026-09-01):** se activó el generador de SDK nativo de UE4SS (`Dumpers` → `Dump CXX Headers`), que reconstruye headers C++ de todas las structs/clases nativas del juego. Respondió:
-- **Pregunta 3 (trust/friendship existente): RESPONDIDA.** `FriendshipPoint`, en runtime vía `UPalIndividualCharacterParameter:GetFriendshipPoint()` / `:AddFriendShip(valor, bool)`.
-- **Pregunta 5 (ID estable por individuo): RESPONDIDA.** `FPalInstanceID`.
-- **Pregunta 4 (captura sin esfera): pistas fuertes, sin probar en vivo todavía.**
-- Pregunta 6 sigue parcial.
-
-Detalle técnico completo (los 3 crashes, el log a prueba de fallos, la causa real, y los nombres exactos de cada función) en `docs/hook-points.md`.
-
-**Dos bugs reales encontrados y confirmados arreglados (mismo día, sesión siguiente):** (1) el mod estaba acariciando sin querer al propio personaje del jugador (`PalPlayerCharacter` es en sí una subclase de `PalCharacter`, y la comparación para excluirlo no funcionaba de forma confiable en Lua) — esto explicaba varios reportes confusos anteriores ("acariciar el aire", saltos raros de friendship). (2) doble otorgamiento de friendship: cada acariciada real disparaba `AddFriendShip` dos veces (una nuestra, otra como efecto secundario de la propia animación "Happy" del juego) — se sacó la llamada explícita del mod y ahora se apoya solo en el efecto del juego, que ya es la cantidad correcta. Ambos confirmados arreglados en una sesión de prueba en vivo completa (Gumoss, Chikipi x3 con incrementos limpios de 0→10→20, guardia anti-spam funcionando).
-
-**Limitación nueva encontrada (no arreglada, no urgente):** los jefes grandes (ej. Mammorest) son efectivamente imposibles de apuntar — el chequeo de distancia/ángulo usa un solo punto (la raíz del actor), que en un jefe de ese tamaño puede estar lejos de donde el jugador realmente está mirando. Los Pals de tamaño normal funcionan bien.
-
-**Alimentar (F10) agregado:** mismo mecanismo que acariciar (F9), reutilizando el gesto de "estirar la mano" real del juego (`HumanFeeding`, en vez de `HumanPetting`) y la misma reacción "Happy" ya probada. Es una aproximación: el alimentar real del juego elige un ítem de comida específico del inventario primero (encontramos las funciones reales para eso, `SelectedFeedingItem`/`UPalAction_FeedItemToCharacter`, pero no están conectadas todavía) — por ahora F10 no consume ítems ni varía el monto según la comida.
-
-**Primer intento de "que no huya" tras interactuar:** encontramos campos reales en el SDK (`APalAIController.TargetPlayers`/`TargetNPCs`, `HateSystem:ChangeHate()`) y se intenta limpiar el "objetivo" del Pal justo después de una acariciada/alimentada exitosa. Esto es un experimento, no una solución confirmada — el campo real de "personalidad/disposición" (Pregunta 1 de DESIGN.md) sigue sin encontrarse. En paralelo se agregó un volcado de propiedades de solo lectura (mismo método que usa un mod ya incluido en UE4SS para inspeccionar objetos) filtrado por palabras clave ("warning", "escape", "curious", etc.) que se registra en el log cada vez que se interactúa con éxito — la idea es que unas pocas pruebas reales (un Pal que sí huye vs. un Daedream que no) nos den el nombre real del campo en vez de adivinar.
-
-## Próximos pasos
-
-1. **Confirmar que revertir `SetActiveAI` arregló la animación:** acariciar/alimentar a un Pal que ya sigue debería volver a mostrar la animación real (no solo la sonrisa "Happy").
-2. **Confirmar el daño con los nuevos logs:** golpear al propio Pal que sigue, y dejar que otro Pal salvaje lo golpee — revisar las líneas `[DAMAGE-WATCH]` en el log para confirmar quién aparece como atacante en cada caso, y que la penalización real aplicada sea -25 (no -50).
-3. Con `SetActiveAI` fuera de la ecuación, ver si un Pal que llega a rango 0 por daño ahora sí reacciona en tiempo real (huye o pelea) en vez de quedarse congelado hasta que restauramos su IA después del hecho.
-4. **Encontrar qué Blueprint implementa `GetIndicatorInfo` para un `PalCharacter` genérico** (el próximo paso concreto de la Pregunta 2/acariciar-alimentar salvaje) — buscar en FModel bajo otros nombres de clase base de Pal, no "PalCharacter.uasset" (no existe con ese nombre exacto).
-5. **Seguimiento real de Otomo — la secuencia real de "cambiar de Pal activo" ya está CONFIRMADA EN VIVO (2026-09-02, continuación 7):** observando al juego real hacerlo (no adivinando), quedó claro que el cambio de Pal activo NO usa las funciones que se habían encontrado antes (`ActivatePalByHandle`/`ActivateCurrentOtomo` nunca se dispararon, en dos sesiones de prueba completas) — usa una clase de Blueprint específica del jugador, `BP_OtomoPalHolderComponent_C`, con esta secuencia real, confirmada 4 veces seguidas: `holder:InactivateCurrentOtomo()` seguido de `holder:ActivateOtomo(slot, transform, éxito)`. Falta un solo eslabón real antes de animarse a probar algo con un Pal salvaje: qué función se dispara cuando un Pal se UNE por primera vez a la party (una captura real) — `AddOtomoHandleToFreeSlot` nunca se disparó para el jugador en nada de lo probado hasta ahora (cambiar de Pal, acariciar, alimentar, abrir la Palbox), solo una vez para un NPC. Próximo paso, todavía sin ningún riesgo nuevo: pedirle a Dragón que capture un Pal salvaje nuevo de forma normal (con esfera, como siempre) con el sistema de observación activo, para ver si esa función se dispara y con qué datos — recién ahí se habría cerrado el último hueco real antes de proponer un experimento de verdad sobre un Pal salvaje.
-6. El seguimiento aproximado actual (tick de 1.5s, sin suprimir la IA salvaje) sigue siendo el sustituto mientras el punto 5 no se intente.
-7. Pendiente aparte, sin tocar todavía: Pregunta 1 (personalidad/disposición real — confirmado que `TargetPlayers`/`HateSystem` NO es el campo correcto), Pregunta 4 (captura real sin esfera — el disparador ya funciona, falta la llamada real), y el ítem kinship peach (necesita el FName real del ítem).
-
-
-
-
-## Historial archivado (Continuación 1 a 154)
-
-**2026-09-06:** este archivo había crecido a más de 460KB — superando el límite de lectura de una sola llamada, un riesgo real de que una sesión futura no viera contenido importante. El historial narrativo completo de las sesiones 2026-09-01 a 2026-09-05 (Continuación 1 a 154) se movió, sin resumir ni borrar nada, a `CLAUDE-archive.md`. **No hace falta leerlo para continuar el trabajo** — la lista "EMPEZAR ACÁ" de arriba y las continuaciones recientes de abajo (155 en adelante) ya tienen todo lo necesario. Consultarlo solo para el detalle exacto de una decisión/hallazgo viejo. Mismo criterio aplicado a `docs/hook-points.md` / `docs/hook-points-archive.md`.
-
-## Continuación 155 (2026-09-05): crash real en el diagnóstico de balance — un CDO pasado como WorldContextObject, arreglado con el jugador real
-
-El diagnóstico de la pasada anterior crasheó de verdad al siguiente lanzamiento — pero no sin antes lograr los números reales de `UPalGameSetting` (Petting=30, AutoIncrementOtomo=10, AutoIncrementActiveOtomo=50, AutoIncrementWorker=1, Min=-15000, Max=250000, Starvation/Sick/Dead=-100, SleepOnSide=100). El crash pasó justo después, antes de cualquier línea del lado de los ítems.
-
-**Causa real:** `utility:GetItemIDManager(utility)` — se pasó el propio CDO (`Default__PalUtility`) como argumento `WorldContextObject`. Un CDO no es un objeto real en el mundo — no tiene un `UWorld` real al que resolver. La función nativa probablemente intenta `WorldContextObject->GetWorld()` por dentro y desreferenció basura. Arreglado usando `FindFirstOf("PalPlayerCharacter")` (el mismo actor real ya usado en todo este archivo) en su lugar. Se agregó logging antes/después de cada llamada nueva, para que si algo vuelve a fallar, el log diga exactamente cuál.
-
-**Sobre la pregunta de Dragón:** `GetStaticItemData` lee la definición ESTÁTICA del ítem, no su inventario personal — tanto `AffectionFruit_01` como `AffectionFruit_02` deberían volcarse sin importar cuál de los dos tenga realmente en su inventario.
-
-Verificado con `luaparse`, desplegado. **Prueba pendiente:** lanzar el juego una vez más — ahora debería pasar el punto donde crasheaba antes y mostrar el volcado real de ambos niveles del Kinship Peach.
-
-## Continuación 156 (2026-09-05): segundo crash real en el diagnóstico de balance — un string de Lua pasado como FName, arreglado con FindOrAddFName
-
-La prueba de Dragón llegó más lejos (el arreglo del WorldContextObject funcionó, `GetItemIDManager` tuvo éxito) pero crasheó de nuevo — rastreado exacto gracias al logging antes/después ya agregado: la línea "about to call GetStaticItemData(AffectionFruit_01) NOW" apareció sin ninguna línea de "returned" después — el crash pasó adentro de esa llamada.
-
-**Causa real:** se pasó un string plano de Lua directo donde la función nativa espera un `FName` real (`GetStaticItemData(const FName StaticItemId)`). Primera vez en este proyecto que se pasa un string de Lua DENTRO de una llamada nativa como argumento FName — todos los usos anteriores de FName solo LEÍAN uno de vuelta, nunca construían uno para mandar.
-
-**Arreglo real, encontrado en los propios mods incluidos de esta instalación de UE4SS** (no adivinado): `BPModLoaderMod`/`ConsoleEnablerMod` construyen un FName real vía `UEHelpers.FindOrAddFName(string)` antes de pasarlo a cualquier llamada nativa. Agregado `UEHelpers` a los requires de `Interaction.lua` y envuelto el ID del ítem con `FindOrAddFName` antes de la llamada.
-
-Verificado con `luaparse`, desplegado. **Prueba pendiente:** este es el tercer intento de este diagnóstico después de dos crashes reales — si vuelve a fallar, lo honesto es parar de iterar a ciegas sobre esto y repensar el enfoque, no seguir adivinando formas de llamada nativa una por una.
-
-## Continuación 157 (2026-09-05): CONFIRMADO — valores reales de ambos Kinship Peach, cierra la investigación de balance
-
-Tercer intento, sin crash. Datos reales confirmados:
-
-| | AffectionFruit_01 (completa) | AffectionFruit_02 (menor) |
-|---|---|---|
-| `FloatValue1` (probable bono de amistad) | 20000.0 | 2000.0 |
-| Rareza | 3 | 1 |
-| Precio | 30000 | 20000 |
-| RestoreSatiety | 10 | 1 |
-| RestoreSanity | 100 | 10 |
-
-Cada estadística escala exactamente 10x entre los dos niveles — confirma que `FloatValue1` (un campo genérico reusado, ya que no existe un campo dedicado de amistad en `UPalStaticItemDataBase`) es de verdad el bono real de amistad, con una magnitud (2000/20000) que encaja naturalmente en la misma escala de la curva real de rango encontrada dos pasadas atrás (6000 en rango 1, hasta 200000 en rango 10) — no es un número chico arbitrario de UI. Corrección sobre la estimación de Dragón: la proporción real es 10x, no ~5x.
-
-Cierra la investigación de balance de esta sesión — ya hay números reales para: Petting vanilla (30), las cuatro tasas de ganancia pasiva, las cuatro penalizaciones, la curva completa 1-10 de rango de amistad, y ambos niveles del Kinship Peach.
-
-## Continuación 158 (2026-09-05): implementado el balance real — números pequeños de vanilla durante el vínculo, umbral escalado por nivel, bono de golpe al capturar
-
-Diseño real de Dragón, refinado en vivo tras la pasada de investigación: en vez de números grandes propios (1000/2000/7000/21000 por interacción) manejando la barra directamente, el vínculo salvaje usa cantidades reales y chicas, a escala vanilla (Petting ≈30, Feed ≈60, ambos niveles del Kinship Peach con sus valores reales ya encontrados), y el multiplicador por diferencia de nivel escala el TAMAÑO de un umbral chico (`BONDING_TRIGGER_THRESHOLD_BASE = 100`, el propio número de ejemplo de Dragón) en vez de cada ganancia individual — un Pal de nivel mucho más alto necesita una barra proporcionalmente más grande llena con los mismos números reales, no números más grandes. Al llegar a ese umbral, un bono de una sola vez (`CAPTURE_BONUS_TARGET_POINT = 21000`, Rango 3 real de vanilla) empuja el total real del Pal hacia arriba antes de la captura real, así que el Pal recién capturado arranca con un vínculo real significativo en vez de un total ínfimo.
-
-**Por qué esto es más simple y de menor riesgo que el primer borrador:** Pet/Play no necesitan ninguna sobreescritura del otorgamiento real de vanilla — el efecto secundario interno de Happy se aplica intacto, igual que siempre. Feed (hoy cero crédito real para Pals salvajes) recibe un otorgamiento explícito basado en el monto real de Petting en vez de un número redondo inventado. Solo la comparación de UMBRAL y el bono de captura de una sola vez son código nuevo — ninguna forma nueva de llamada nativa, nada parecido al riesgo de los crashes de FName/CDO de la fase de investigación misma.
-
-**Trust.lua:** `Trust.ComputeLevelMultiplier(palActor)` — lee `SaveParameter.Level` del Pal y del jugador real (mismo campo, confirmado vía `IsPlayer`), devuelve 0.2/0.5/1/2/4 según la diferencia de nivel (los huecos entre los cinco puntos que dio Dragón caen por defecto en el nivel "más o menos igual" x1 — una interpretación, marcada como tal). Devuelve un 10x plano en cambio mientras `EASY_TEST_MODE` esté activo, por pedido explícito de Dragón. `get_bonding_threshold(pal)` = `BONDING_TRIGGER_THRESHOLD_BASE / multiplicador`, usado por `maybe_trigger_capture` y expuesto como `Trust.GetBondingThreshold` para la barra de Indicator.lua (antes leía una constante global plana — ahora es real por Pal). `maybe_trigger_capture` ahora también aplica el bono de captura (nunca reduce un total ya más alto, ej. por un peach) antes de llamar a `Capture.OnTrustMaxed`. `OnFollowerDamaged` ganó un parámetro `attackerIsPlayer` — un golpe normal sigue constando `DAMAGE_FRIENDSHIP_PENALTY` (reescalado a -150), pero un golpe del JUGADOR resetea el total real a 0 y huye de inmediato ("traición"). La ganancia pasiva pasó de un monto plano cada N ticks a `PASSIVE_FRIENDSHIP_PER_TICK = 10` cada tick (~1.5s) — un punto de partida real a escala vanilla, el número que Dragón piensa retocar en vivo (considerando 200/seg tras probar) — ya NO escalado por el multiplicador de nivel.
-
-**Interaction.lua:** `FEED_FRIENDSHIP_BASE = 60`, `KINSHIP_PEACH_LESSER/FULL_FRIENDSHIP_BASE = 2000/20000` (los valores reales ya encontrados). El post-hook de `RequestUseToCharacter` (ya el lugar confirmado donde cae un Feed salvaje real) ahora también lee el ID del ítem consumido, otorga el monto correspondiente vía `AddFriendShip`, y llama a `Interaction.OnWildPalPetted` — nada de esto existía antes (Feed salvaje real otorgaba cero confianza hasta ahora).
-
-**Dejado a propósito sin tocar, señalado para Dragón:** `INTERACTIONS_TO_START_FOLLOWING` (sigue en 5 interacciones crudas, todavía no el disparador por porcentaje de barra discutido antes) — la causa raíz ya diagnosticada (el contador de interacciones no incrementa de forma confiable ahora que Pet/Feed pasan mayormente por las acciones reales de vanilla) sigue sin arreglar. Esta pasada solo implementó los VALORES de punto reales que Dragón especificó; el rediseño del disparador de seguimiento es una pieza aparte, todavía no accionada.
-
-Verificado con `luaparse` en los tres archivos, desplegado. **Prueba pendiente:** vincularse con un Pal cerca del propio nivel (~x1) y ver la barra llenarse con Pet/Feed normales; probar un Pal de nivel mucho más bajo para confirmar que la barra llena más rápido; confirmar que un Kinship Peach completo captura de un solo golpe a un Pal de nivel igual o menor; confirmar que el FriendshipPoint real del Pal queda en 21000 justo al capturar; probar un golpe del jugador sobre un Pal siguiendo para el reset de traición.
-
-## Continuación 159 (2026-09-05): multiplicadores exactos de Dragón + números base refinados
-
-Dragón dio los tramos exactos del multiplicador de barra (4x/2x/1x/0.5x/0.25x) y preguntó si traducían bien la idea original de multiplicador de ganancia (0.2x/0.5x/1x/2x/4x). Revisado: cuatro de cinco son recíprocos exactos, el quinto (el tramo más alto) redondea 1÷0.2=5 a un más limpio 4 — traducción correcta.
-
-**Un giro de dirección atrapado al implementar:** `Trust.ComputeLevelMultiplier` ahora devuelve directamente un multiplicador de TAMAÑO DE BARRA (número más grande = barra más grande/difícil), la imagen espejo del enfoque anterior. Esto significó que `get_bonding_threshold` pasó de dividir a multiplicar, y — fácil de pasar por alto — el override plano de `EASY_TEST_MODE` también tuvo que invertirse: el "10x más fácil durante pruebas" de Dragón ahora significa devolver `1/10`, no `10`, ya que un multiplicador de tamaño de barra más grande ahora hace las cosas MÁS DIFÍCILES, no más fáciles.
-
-**Números base refinados, todas cifras exactas de Dragón:** `BONDING_TRIGGER_THRESHOLD_BASE` 100→500, `PASSIVE_FRIENDSHIP_PER_TICK` 10→5, los Kinship Peach pasaron de los valores reales crudos de vanilla (2000/20000) a números limpios en base a la nueva barra de 500 (250 menor / 500 completo — la peach completa ahora otorga exactamente una barra completa de un solo uso a nivel igual). Pet/Play, Feed, penalización de daño y traición ya estaban correctos de la pasada anterior.
-
-Verificado con `luaparse`, desplegado.
-
-## Continuación 160 (2026-09-05): lag real atrapado por Dragón — el multiplicador de nivel se recalculaba cada tick para cada Pal visible, arreglado con un caché permanente
-
-Dragón reportó lag terrible, sobre todo al entrar a áreas nuevas, y diagnosticó la causa él mismo correctamente: `Trust.ComputeLevelMultiplier` se llamaba de cero en CADA tick para CADA Pal con barra de confianza visible (la barra de Indicator.lua, no solo los Pals con los que realmente se interactúa) — cada llamada hacía una lectura real de componente en el Pal Y un `FindFirstOf` fresco más otra lectura de componente en el jugador, cada vez — un costo que escala directo con cuántos Pals hay en pantalla.
-
-**Arreglo, diagnóstico y solución propia de Dragón:** "it should be calculated on the interactions... maybe saved in the cache." El nivel de un Pal nunca cambia a mitad de sesión, así que el multiplicador ahora se cachea de forma PERMANENTE por Pal la primera vez que se calcula — cualquier llamada posterior es una lectura barata de tabla, no un cálculo fresco. Único riesgo real: si el jugador sube de nivel a mitad de sesión, los Pals ya cacheados se quedan con el multiplicador viejo — aceptado como un trade-off menor y raro contra una fuente de lag real y segura que escala con la cantidad de Pals.
-
-Verificado con `luaparse`, desplegado.
-
-## Continuación 161 (2026-09-05): sin fallback — el umbral de un Pal sin interacción real jamás se calcula, ni una sola vez
-
-Dragón afinó más el arreglo anterior: incluso un solo cálculo (y una escritura de caché) por Pal sigue siendo trabajo desperdiciado para la mayoría de los Pals, que aparecen y desaparecen en el fondo sin que el jugador se les acerque nunca. `Trust.GetBondingThreshold` ahora revisa si existe una entrada real de `Trust.State` (creada solo por una interacción real) ANTES de tocar `ComputeLevelMultiplier` — sin entrada, devuelve `nil`, no una constante por defecto. `Indicator.lua` trata `nil` como "nada que mostrar todavía" y devuelve 0 directo, sin dividir ni hacer ninguna lectura de nivel. Cero cálculo, cero escritura de caché, para cualquier Pal sin interacción real.
-
-Verificado con `luaparse`, desplegado.
-
-## Continuación 162 (2026-09-05): el arreglo grande — la barra de confianza ya no se construye para un Pal sin interacción real
-
-Dragón hizo la pregunta estructural correcta: ¿la barra se construye para todo Pal que aparece, o solo para los que se miran? Rastreado: `Indicator.lua` escanea el contenedor nativo de gauges del juego (`Canvas_Root`) cada 2 segundos y construye/actualiza una barra propia para CADA Pal que el juego mismo muestra con gauge nativo — todo Pal cercano/visible, no solo los interactuados. En un área concurrida son 15-20+ Pals, todos con lectura y refresco periódico para siempre.
-
-**Decisión de Dragón: solo construir/actualizar barras para Pals con interacción real registrada** (el mismo principio ya aplicado al multiplicador de nivel, ahora extendido a la existencia misma de la barra). `Trust.HasBondingState(palActor)` — una lectura de tabla plana, sin resolución de actor/componente — filtra `install_trust_bar` antes de cualquier trabajo de widget. No marca el gauge como "ya resuelto" al saltarlo por esta razón — sigue revisando en escaneos futuros (barato) para que un Pal interactuado después sí reciba su barra.
-
-Verificado con `luaparse`, desplegado.
-
-## Continuación 163 (2026-09-05): DAMAGE-WATCH y DIAG-PANEL recortados, y una corrida de prueba dedicada cerró los cuatro hilos abiertos de OtomoWatch
-
-Dragón pegó un fragmento real de consola y preguntó qué era todo eso. Dos hallazgos reales revisando el código directo, no adivinando: `[DAMAGE-WATCH]` (Trust.lua) registraba CADA golpe real del juego entero, sin relación con ningún Pal en vínculo — el propio comentario del código lo admitía, de la Decimoctava pasada, cuando el único objetivo era confirmar que el hook disparaba. Arreglado moviendo el log adentro del mismo chequeo que ya usa la lógica real de penalización (`State[defenderName].isFollowing`). `[DIAG-PANEL]` (Indicator.lua) tenía el mismo problema — logueaba cada cambio del pool nativo de gauges del juego, información de una investigación de estructura ya cerrada desde la pasada cincuenta y uno. Recortado, dejando intacto el escaneo funcional (necesario para instalar las barras).
-
-**Corrida de prueba dedicada, pedida por Dragón para cerrar OtomoWatch de una vez:** una sola sesión con una captura real por esfera, una captura real sin esfera, y un rescate real de jaula. Resultado, los cuatro hilos abiertos cerrados:
-- `ABP_PalCaptureJudgeObject_C`/`[CAPTURE-JUDGE]`: nunca disparó en ninguno de los tres eventos — confirmado de nuevo que es exclusivo del flujo de Arena/desafío. **Sacado.**
-- `ABP_CaptureWire_C`: tampoco disparó nunca, su propósito nunca se confirmó. **Sacado.**
-- `PawnOtmoIsPartyOtomo`/`[PARTY-DIAG]` (Interaction.lua): revisado 17 veces, incluyendo sustituciones reales de Pal salvaje por el menú "4" — `FindAllOf(PalPlayerPartyPalHolder)` encontró 0 instancias todas las veces. Confirmado muerto para el alcance real de este proyecto (sin Arena). **Sacado** el llamado; la función queda comentada por si algún día se retoma soporte de Arena.
-- `ABP_ReturnPalEffect_C`/`[PRISM-SPY]`: la sorpresa real. Cada instancia esta sesión coincidió casi al segundo con un evento `[INACTIVATE-CURRENT]` (cambiar de Pal activo), nunca con ninguna de las capturas ni con el rescate de jaula — tumba la teoría de "haz de luz de captura" de las pasadas cuarenta y cinco/cuarenta y seis, que se basó en una coincidencia de tiempos en una prueba temprana. Misterio cerrado, con una respuesta distinta a la esperada. **Sacado** (ya no queda nada que investigar ahí).
-- `UBP_ActionUnlockCagePalLock_C`: disparó justo al abrir la jaula, como se esperaba — confirmado real. **Se queda.**
-
-Verificado con `luaparse` en `Trust.lua`, `Indicator.lua`, `OtomoWatch.lua` e `Interaction.lua`, desplegado en el juego real. Sin cambio de comportamiento para nada que Dragón use — todo esto era instrumentación de investigación ya respondida.
-
-## Continuación 164 (2026-09-05): personalidad visible restaurada, el bug de la captura instantánea de la Petallia arreglado, y los triggers reales por porcentaje de barra implementados
-
-Dragón reportó tres cosas después de la corrida de prueba de OtomoWatch: (1) el arreglo de la barra de confianza (Continuación 162, solo para Pals interactuados) se llevó puesta sin querer la etiqueta de personalidad — la quiere visible en TODO Pal salvaje desde lejos, incluso sin interactuar, y mencionó que a futuro le gustaría exponer esto como una opción real de encendido/apagado en una interfaz de configuración; (2) capturó a su Petallia con un Kinship Peach menor y la Pal desapareció al instante, sin ninguna animación real (ni de alimentar, ni de comer, ni de felicidad); (3) preguntó si los triggers por porcentaje de barra (>10% personalidad cambia a friendly, +50% empieza a seguir) ya estaban implementados — no lo estaban.
-
-**Arreglo 1 — personalidad visible restaurada, desacoplada de la barra de confianza.** `install_trust_bar` ahora construye la etiqueta de personalidad para TODO Pal con gauge, siempre, sin condición — solo la barra real de confianza sigue exigiendo `Trust.HasBondingState` (una interacción real), preservando el arreglo de lag de la Continuación 162. Esto necesitó arreglar dos bugs reales que habrían aparecido en la próxima prueba: `reparent_existing_bar` exigía que la BARRA ya existiera para poder mover solo la ETIQUETA (una entrada solo-etiqueta nunca se podía reusar, así que se construía una duplicada en cada reciclado de gauge) y `update_trust_bars` exigía `entry.bar:IsValid()` sin condición cada tick (con `bar` ahora legítimamente `nil`, esto habría descartado y reconstruido cada entrada solo-etiqueta, cada tick). Ambos arreglados. Se agregó además `try_upgrade_entry_with_bar`: en cuanto un Pal solo-con-etiqueta tiene su primera interacción real, la barra real se construye ahí mismo, sin esperar a que su gauge se recicle.
-
-**Arreglo 2 — la causa real de la desaparición instantánea, encontrada en el código:** `Trust.maybe_trigger_capture` llamaba a `Capture.OnTrustMaxed(pal)` (la captura real) de forma completamente sincrónica, apenas se cruzaba el umbral — sin ningún respeto por si había una animación real todavía reproduciéndose. No es un bug exclusivo del peach — cualquier cruce de umbral podía en teoría cortar una animación — el peach solo lo hizo pasar siempre, al dar un solo salto grande, en vez de ocasionalmente con ganancias graduales de acariciado. **Arreglo, según la preferencia explícita de Dragón (esperar a que la animación real termine, no un delay fijo, porque puede variar según el Pal y "se siente más natural en el flujo del proceso de domesticación"):** ahora se usa `ActionComponent:ActionIsEmpty()` — la misma función real ya probada en este proyecto (el propio gate de ocupado de `do_interaction`, tanto del jugador como del objetivo) — revisada cada 500ms hasta que reporta libre, con un tope de seguridad generoso de 20 segundos (algunas animaciones reales, como las de descanso de Play, se vieron correr 20+ segundos) antes de capturar de todos modos. Si el `ActionComponent` del Pal ni siquiera se puede leer, cae de inmediato al número de respaldo explícito de Dragón: un delay fijo de 5 segundos.
-
-**Arreglo 3 — los dos triggers reales por porcentaje de barra, implementados, reemplazando los mecanismos viejos por completo (a pedido explícito de Dragón, no como respaldo):**
-- `Trust.lua`: nuevas constantes `FOLLOW_TRIGGER_RATIO = 0.5` y `FRIENDLY_TRIGGER_RATIO = 0.2` (números exactos de Dragón — ajustó el "10%" original a 20% en la misma conversación), ambas fracciones del mismo `get_bonding_threshold(pal)` que ya usa todo el resto del sistema. Revisadas en `Trust.OnInteractionSucceeded` justo después de leer el punto real — el tick pasivo no necesita su propia copia de este chequeo, ya que solo procesa Pals que YA están siguiendo, lo cual por construcción solo puede pasar después de que el trigger de 50% ya disparó por el camino de interacción.
-- `Personality.lua`: `Personality.OnSuccessfulInteraction` (el viejo "escape → friendly" de un solo uso, solo en la primera interacción) fue renombrada y generalizada a `Personality.MaybeBecomeFriendlyByBar(palId, palActor)` — se sacó la restricción de "solo si es escape", ya que el nuevo trigger aplica desde cualquier disposición inicial. Se llama desde `Trust.OnInteractionSucceeded` (que tiene el ratio real) en vez del viejo punto de llamada en `Interaction.lua`, que se eliminó.
-
-El viejo contador crudo `INTERACTIONS_TO_START_FOLLOWING = 5` (ya señalado como poco confiable desde la pasada 132) fue retirado del todo, según instrucción explícita de Dragón de reemplazar, no mantener como respaldo.
-
-Verificado con `luaparse` en `Indicator.lua`, `Trust.lua`, `Personality.lua` e `Interaction.lua`, desplegado en el juego real. Progreso recalculado: Sistema de personalidad 75%→80% (etiqueta siempre visible + WON-OVER generalizado) y Sistema de confianza 65%→75% (triggers reales por barra + bug de captura instantánea arreglado) — total del proyecto 81%→82%.
-
-**Prueba pendiente:** alimentar un Pal salvaje con un Kinship Peach por el menú "4" real y confirmar que la animación de comer/feliz se reproduce antes de que desaparezca; por separado, acariciar/alimentar un Pal hasta pasar el 20% de su barra y confirmar que su etiqueta cambia a "friendly", y seguir hasta el 50% para confirmar que empieza a seguir, sin necesitar cinco interacciones exactas.
-
-## Continuación 165 (2026-09-05): prueba real de los 4 arreglos de la Continuación 164 — uno confirmado funcionando, tres bugs reales encontrados y diagnosticados (dos a fondo, uno parcial), ninguno arreglado todavía
-
-Dragón hizo una corrida de prueba real cubriendo los cuatro puntos de la Continuación 164 y reportó punto por punto, más pegó un fragmento grande de log crudo. **No se cambió código en esta pasada — solo investigación, detenida a mitad de camino por un "wait stop here" explícito de Dragón antes de escribir cualquier arreglo.** Esta entrada documenta el estado exacto de la investigación para que quede claro dónde retomar.
-
-**1. Etiqueta de personalidad — CONFIRMADO FUNCIONANDO.** Dragón: "thanks i see it again, very useful." El desacople de la Continuación 164 (etiqueta siempre visible) se sostiene en el juego real. Sin acción pendiente en este punto.
-
-**2. Bug de desaparición instantánea — SIGUE PASANDO. El arreglo de la Continuación 164 (`ActionComponent:ActionIsEmpty()`) no funciona, y Dragón diagnosticó bien la razón antes de que se revisara el log:** "i asume its because you set it at the actionisempty(), which probably happens briefly between interactions, so its not a reliable method." Confirmado exacto por el log: el primer chequeo de `wait_for_animation_then_capture` (0.5ms después de empezar a esperar) ya reportó `idle == true`, mientras el diagnóstico de solo lectura de `Combat.lua` (`[FOLLOW-DIAG]`, ya existente desde la "pasada ochenta y seis") mostró, ~0.8ms ANTES, una acción de IA real y todavía corriendo (`BP_AIActionPairCall_FeedItem_C`). O sea: `pal.ActionComponent:ActionIsEmpty()` no refleja el mismo estado de "ocupado" que la acción real de varios pasos de Alimentar/comer/feliz — se libera casi al instante, sin relación con cuánto dura la secuencia real de animación.
-
-**Arreglo identificado, sin implementar todavía:** cambiar la señal de espera en `wait_for_animation_then_capture` de "`ActionComponent:ActionIsEmpty()` da true" a "`pal.Controller:GetAIActionComponent():GetCurrentAction_BP()` da nil" — manteniendo la misma estructura ya armada (polling acotado vía `ExecuteInGameThreadWithDelay`, el mismo tope de seguridad generoso, y el respaldo explícito de Dragón de 5 segundos fijos si esta señal nueva resulta ilegible en algún Pal). Era el siguiente paso planeado cuando se detuvo la sesión.
-
-**3. El trigger de seguimiento no produce comportamiento visible — SIN CONFIRMAR CON EVIDENCIA DIRECTA DE LOG para el caso específico que reportó Dragón.** Dragón: "didnt work, tested it with another petallia, reaching above 50%, she never followed, only roamed around with her usual AI." El único disparo real del trigger de seguimiento en el log pegado (`[Trust] bonding bar crossed 50% (ratio=1.04)` + `[Combat] ... marked as following (bonding)`) pasó en el MISMO instante en que también se cruzó el umbral de captura (un Kinship Peach empujando 50% y 100% de un solo salto) — sin ninguna ventana real donde el comportamiento de seguimiento pudiera haberse observado; no es evidencia de un bug en ese caso puntual. La segunda Petallia que describe Dragón (cruzando 50% sin capturar) no aparece en el log pegado.
-
-Hipótesis de trabajo, SIN CONFIRMAR: el mecanismo real de seguimiento (`Combat.StartFollowing` marca `BondingState[key] = true`, después `tick_followers()` de `Trust.lua` reenvía `Combat.IssueFollowMoveOrder` → `controller:PalMoveToLocation(...)` cada ~1.5s) siempre estuvo documentado en este proyecto (incluyendo en los propios comentarios de cabecera de `Combat.lua`) como un "empujón" externo periódico que compite con la IA salvaje propia entre ticks, no un reemplazo real al estilo Otomo — es literalmente el punto 5 pendiente de Fase 2 en la lista propia de Dragón ("Seguimiento real durante el vínculo... [FOLLOW-DIAG] nunca se leyó"), de antes de esta sesión. Es posible que el trigger ya dispare bien (confirmado por log) pero el mecanismo de seguimiento en sí sea la misma aproximación débil ya conocida, no algo nuevo roto. Hace falta más evidencia de log de un caso donde el trigger dispare sin captura inmediata, o una decisión directa de Dragón sobre si reabrir ahora el trabajo pendiente de "seguimiento real durante el vínculo".
-
-**4. El trigger de friendly dispara bien (estado registrado), pero la IA real nunca cambia — DIAGNOSTICADO EN DOS CAPAS, ninguna arreglada.** Dragón: "if a pal is running away (escape) or already fighting the player (warlike), and the interaction changes its personality to friendly, it still keeps doing what it was doing... this obviously defeats the process of changing their personality." Confirmado dos veces en el log: justo después de `[WON-OVER] ... crossed the friendly-trigger fraction of its bonding bar`, la línea siguiente las dos veces es `[WON-OVER] ... has no readable AISensorComponent — cannot swap its real AI, tracked disposition still updated`.
-
-*Capa 1 (causa raíz del fallo puntual observado):* `Personality.MaybeBecomeFriendlyByBar` (renombrada/generalizada en la Continuación 164 desde la vieja `OnSuccessfulInteraction`, pero con su código interno de búsqueda de sensor heredado sin cambios) sigue llamando al viejo scan proactivo `find_sensor_component(palActor)`, ya documentado como poco confiable — el mismo mecanismo que este proyecto ya había reemplazado por un hook REACTIVO mucho más confiable (`on_sensor_select_response`, escuchando las llamadas reales del juego a `SelectResponseBySenses`) para el enforcement periódico por tier, desde la "Continuación 121". Ese arreglo nunca se trasladó a este camino de WON-OVER/trigger-por-barra, por eso sigue fallando casi siempre.
-
-*Capa 2 (un problema más profundo encontrado al investigar la capa 1, sin resolver todavía):* aunque se cambiara `MaybeBecomeFriendlyByBar` para usar el sensor del hook reactivo, quedan dos obstáculos más, ambos solo leídos esta pasada:
-- El dedup de `on_sensor_select_response` (`handledSensorKeys[sensorKey] = true`) se marca PERMANENTEMENTE la primera vez que el hook reactivo ve el sensor de un Pal — para cualquier Pal que ya estaba huyendo/peleando ANTES de que el jugador interactúe (exactamente los Pals de tier escape/warlike que está probando Dragón) esto casi seguro ya pasó durante el enforcement de su tier original. Esto bloquearía en silencio cualquier reintento de enforcement futuro para ese mismo sensor, incluso después de un cambio de disposición posterior.
-- `try_enforce_personality_with_sensor(palActor, palId, sensor)` (la función compartida a la que llegan tanto el scan proactivo como el hook reactivo) lee `state.rolledTier` — el tier ORIGINAL tirado al aparecer — no `state.disposition`, el valor actual (posiblemente ya cambiado por WON-OVER). O sea que incluso con un sensor válido en mano, esta función compartida aplicaría el tier equivocado (el original), no "friendly" — nunca fue diseñada para ser consciente de un cambio de disposición. El código de enforcement propio e inline de `MaybeBecomeFriendlyByBar` sí apunta correctamente a `TIER_TO_DONOR_PRESET_CLASS["friendly"]` — el arreglo real necesita su propia fuente confiable de sensor, no simplemente enrutar a través de `try_enforce_personality_with_sensor` tal cual.
-
-La investigación estaba a mitad de leer la lógica exacta de gate de `try_enforce_personality_with_sensor` (incluyendo un booleano separado `state.enforcementApplied`, marcado una sola vez para siempre en vez de por disposición objetivo) y todavía no se había encontrado dónde se llama periódicamente el scan proactivo `try_enforce_personality`, cuando se detuvo la sesión. No se diseñó ningún arreglo para este punto.
-
-**Pendiente, nunca atendido esta pasada:** Dragón pegó aparte un fragmento grande de log crudo y pidió explícitamente "please explain me all this" — esa explicación en lenguaje simple nunca se dio; el log se usó directo como evidencia de causa raíz para los puntos 2-4 de arriba en su lugar. Sigue pendiente si lo vuelve a pedir en una sesión futura.
-
-Sin cambios de código en esta pasada. El estado real desplegado sigue siendo exactamente el de la Continuación 164 (etiqueta confirmada bien; retraso de captura vía `ActionIsEmpty()` confirmado insuficiente; triggers de 50%/20% confirmados disparando bien a nivel de umbral, con las fallas de comportamiento de seguimiento y de swap real de IA de friendly descritas arriba todavía presentes). La entrada de la Continuación 164 debe leerse con esta corrección en mente — su arreglo de retraso de captura no se sostuvo en la prueba de seguimiento de Dragón.
-
-## Continuación 135 (2026-09-04): rebalance de personalidad + exclusión de NotInterested real
-
-Dragón confirmó que "unknown" resolvió el engaño — los Pals friendly ahora se ven friendly de verdad, y pidió no usar más fallbacks que escondan errores mientras el proyecto está en desarrollo ("no point in looking good for the user right now") — regla general a tener en cuenta de ahora en adelante para cualquier fallback nuevo.
-
-**Rebalance pedido:** warlike_anyway y warlike_without_player bajaron de 10 a 5 cada uno, friendly subió de 20 a 30. Nueva distribución: normal 35 / friendly 30 / escape 10 / notinterested 10 / warlike 5 / warlike_anyway 5 / warlike_without_player 5 (suma 100).
-
-**Nueva exclusión, confirmada posible y ya implementada:** Pals cuyo preset REAL ya es NotInterested (varios NPCs humanos lo usan) ahora quedan excluidos del roll igual que VillageNPC/Kill_All/Boss — se agregó `BP_AIResponsePreset_NotInterested_C` a `EXCLUDED_FROM_ROLLING`. Esto es completamente independiente de que "notinterested" siga siendo una opción real del roll ponderado para cualquier OTRO Pal (uno cuyo preset real sea friendly/escape/warlike/etc.) — son dos mecanismos separados que no chocan: uno decide "¿me toca tirar el dado?" (basado en el preset real actual), el otro es el resultado del dado en sí.
-
-Verificado con `luaparse`, desplegado. Detalle en `hook-points.md` ("Hundred-and-sixty-second pass").
-
-## Continuación 134 (2026-09-04): el fallback "friendly" era engañoso — reemplazado por "unknown"
-
-Dragón preguntó directo si "friendly" se estaba usando como respaldo silencioso cuando la lectura de personalidad fallaba. Confirmado que sí: `PresetClassNameToDisposition` devolvía "friendly" tanto cuando no se podía leer el preset real como cuando el preset no estaba mapeado — y como esa lectura falla casi siempre (confirmado en el log de cada sesión), la etiqueta en pantalla mostraba "friendly" para la mayoría de los Pals con tier "normal" sin que fuera un dato real. Sumado al 20% que sí rolea "friendly" de verdad, más de la mitad de las etiquetas podían decir "friendly" sin serlo.
-
-Pedido textual de Dragón: "from now on if it fails, show fail or show null or whatever it does normally, that way i know that its actually failing instead of thinking its a friendly pal."
-
-**Arreglado:** las dos ramas de fallo ahora devuelven "unknown" en vez de "friendly" — un valor distinto, no uno de los 7 tiers reales, revisado contra todo lo que consume ese dato (nada se rompe, ni el chequeo de WON-OVER ni la etiqueta). Verificado con `luaparse`, desplegado. La próxima sesión probablemente muestre "unknown" en la mayoría de los Pals "normal" — no es una regresión nueva, es el estado real que antes se escondía. Detalle en `hook-points.md` ("Hundred-and-sixty-first pass").
-
-## Continuación 133 (2026-09-04): CTRL+H causó un crash real — confirmado, arreglado (llamada sacada, no solo comentada)
-
-La primera prueba real de Dragón de CTRL+H mostró algo nuevo: el juego siguió corriendo visualmente, pero saltó un aviso de crash igual, y varias cosas dejaron de responder (CTRL+H, CTRL+J, que segundos antes había funcionado bien).
-
-**Confirmado con evidencia real, no con la descripción de Dragón solamente.** El log muestra la secuencia normal hasta "calling pal:SelectedFeedingItem(itemSlotId, 1) NOW" a las 23:01:39 — y la línea siguiente, que el propio `pcall` de esa llamada SIEMPRE debería imprimir (éxito o error de Lua, no importa cuál), nunca aparece. Existe un dump de crash real de Windows exactamente en ese mismo segundo (`crash_2026_09_04_23_01_39.1693134.dmp`). Y después de ese momento, el log de esa sesión no vuelve a registrar NINGUNA tecla presionada — ni siquiera el espía de WASD de `InputSpy`, que no tiene nada que ver con este código. `UE4SS.log` no muestra ningún "ensure"/"Fatal error" cerca — el crash ocurrió por debajo de lo que ese log de texto puede ver.
-
-**Esto es peor que cualquier crash anterior del proyecto**: los 4 crashes previos siempre mataban el proceso entero (obvio, imposible de no notar) o tiraban un error de Lua atrapable. Este dejó el juego pareciendo sano mientras nada volvía a responder — mucho más difícil de detectar sin revisar el log real.
-
-**Causa probable:** `SelectedFeedingItem` solo se había visto disparar antes como parte de una secuencia interna ya armada por el propio menú de Worker — llamarla en frío, sin esa preparación, probablemente lee algo que el flujo real siempre garantiza que existe. También podría ser una función "latente" (que nunca retorna sincrónicamente, solo por un delegado que el flujo real escucha) — cualquiera de las dos explica el "nunca vuelve" sin necesitar un crash duro.
-
-**Arreglo:** la llamada real se sacó por completo del código (no solo comentada) — todo lo de antes (encontrar el slot real, leer ContainerId/SlotIndex, armar la tabla) se queda funcionando y logueando, CTRL+H ahora se detiene justo antes de la llamada peligrosa siempre. Verificado con `luaparse`, desplegado.
-
-**Este camino (llamar `SelectedFeedingItem` directo) queda como tercer callejón sin salida confirmado**, junto a `RequestUseToCharacter` (atado al Otomo) y `SelectedFeed` (atado a la vtable). Lo único que queda por probar es lograr que el menú de Worker de verdad se abra apuntando a un Pal salvaje — un problema de elegibilidad de UI, no de seguridad de llamada nativa.
-
-**Sobre los Pals amigables huyendo esa misma sesión:** sin evidencia que lo conecte al crash — el sistema de personalidad ya tiene un hueco real y separado (~95% de éxito, Continuación 130) que podría explicarlo solo. No se investigó más esta pasada.
-
-Detalle completo en `hook-points.md` ("Crash #5"). **Prueba pendiente:** ninguna para este arreglo en particular (solo saca una llamada peligrosa) — antes de seguir con el menú de Worker, vale la pena que Dragón confirme que todo lo demás (F9/F10/Play/CTRL+K, la barra, personalidad) sigue andando normal después de reiniciar el juego, ya que esta sesión específica quedó con el estado interno roto.
-
-## Continuación 132 (2026-09-04): causa raíz real de por qué Pet funciona y Feed/Play no — y un candidato genuinamente nuevo para comida real, nunca antes probado
-
-Dragón hizo una prueba controlada y precisa (3 Pals salvajes, conteo exacto de acciones, valor final exacto de amistad) y pidió comparar contra el log real. El cruce fue exacto, sin excepciones: cada ganancia real de amistad equivale a +10 por cada Pet real, con Feed y Play aportando +0 en los 9 puntos de datos.
-
-**Causa real, sacada de las líneas de log, no inferida:** para el Sheepball, 6 de 8 presiones reales (las 4 de Pet incluidas) quedaron descartadas por nuestro propio "player is already mid-action — ignoring press" antes de llegar siquiera a `Happy()`. Aun así la amistad real seguía subiendo +10 por cada pet. La explicación más consistente: la acción real de Cariciar del juego (no nuestro `do_pet()`) está disparando directo sobre el Pal salvaje sustituido a través del menú radial, totalmente independiente de nuestro propio gate — el mismo mecanismo de sustitución que ya existe hace semanas, solo que nunca se le había atribuido el mérito real de por qué Pet funciona. Feed nunca tiene esa ayuda real (confirmado hace semanas: el sistema profundo de comida nunca se activa para un Pal sustituido), así que depende 100% de nuestro propio `Happy()` — que, cuando sí logra dispararse, igual da 0. Esto tira abajo un supuesto viejo de este proyecto (que Happy() siempre otorga amistad como efecto secundario) — no es cierto para Feed/Play.
-
-**Dragón rechazó, con razón, arreglar solo el número de hoy** (llamar `AddFriendShip` a mano para Feed/Play) — no construye hacia comida real (los kinship peaches). Preguntó si se podía aplicar el mismo truco de Pet a Feed — la respuesta, con evidencia ya generada por este mismo proyecto: no, ya se probó dos veces contra Feed específicamente (pasadas 123/124 de hook-points.md) y ambas confirmadas como callejón sin salida — el picker real de comida nunca se activa, muy probablemente porque el chequeo real es una llamada de vtable en C++ crudo, invisible para cualquier hook de Lua.
-
-**La pregunta de Dragón sobre el menú de Worker abrió un candidato genuinamente nuevo.** Nunca se había probado alimentar a un Pal salvaje por el menú de Worker (el de apuntar, para Pals de base) — y su función real de consumo, `SelectedFeedingItem`, ya estaba confirmada por Ghidra SIN ningún chequeo de propiedad en su propio cuerpo (a diferencia de `RequestUseToCharacter`, que sí está atado al Otomo activo). Investigado y confirmado (documentación real de UE4SS, no adivinado): sí se puede construir una tabla de Lua anidada para pasar un struct como argumento — la misma categoría seguro, distinta a la que causó el Crash #4 (eso era un FName, no datos planos).
-
-**Implementado: CTRL+H, tecla de prueba nueva** (las 4 teclas existentes están todas en uso activo, nada muerto para reusar esta vez). Llama `pal:SelectedFeedingItem(itemSlotId, 1)` directo sobre el Pal apuntado (salvaje incluido), reusando la técnica ya probada de CTRL+J para encontrar el stack real de Berries, y construyendo el struct nuevo solo con el mínimo necesario (el `ContainerId` real ya leído, nunca reconstruido desde cero). Verificado con `luaparse`, desplegado.
-
-**Prueba pendiente:** apuntar CTRL+H a un Pal salvaje con al menos 1 Berry en el inventario, revisar si el StackCount baja de verdad y si el Pal reacciona — los hooks `[FOOD-DIAG]`/`[SLOT-USE-DIAG]` ya existentes confirmarán independientemente si esto realmente disparó la función real. Detalle completo en `hook-points.md` ("Hundred-and-fifty-ninth pass").
-
-## Continuación 131 (2026-09-04): "¿siguen haciendo falta o es basura acumulada?" — auditoría real, un hook realmente muerto sacado
-
-Dragón cuestionó directo mi reafirmación anterior de "esos fallos son normales, funcionan después" — con razón, no lo había verificado contra los datos reales de esa sesión.
-
-**Verificado de verdad esta vez.** `[RADIAL-WATCH]` (respalda una función activa real): 14 éxitos reales confirmados, el primero en la ronda 5 — la reafirmación anterior era correcta para este caso, ahora con evidencia real. `[EMOTE-WATCH]` (los hooks para investigar el emote Cheer del jugador): **405 líneas esa sesión, cero éxitos, nunca.** Esa función ya se había abandonado dos pasadas después (crasheó dos veces, sacada del todo) pero nadie apagó los hooks que solo existían para eso. Esto sí era basura real.
-
-**Saqué el loop de EMOTE-WATCH por completo** (comentado, no borrado). También revisé WORKER-BIND-FIX/OTOMO-GETTER-WATCH/MENU-WATCH antes de asumir que también eran basura — los tres están funcionando de verdad, solo con un formato de log distinto al patrón que probé primero.
-
-Verificado con `luaparse`, desplegado. No hace falta prueba nueva para esto — solo saca volumen de log muerto, no cambia comportamiento. Detalle en `hook-points.md` ("Hundred-and-fifty-eighth pass").
-
-## Continuación 166 (2026-09-05): los 3 bugs de la Continuación 165 arreglados con evidencia real del propio Pal.hpp del juego — ninguno confirmado en vivo todavía
-
-Dragón dio permiso explícito para seguir con los tres puntos abiertos y aportó dirección directa en dos: corrigió mi diagnóstico del punto de personalidad (el swap sí funciona para un Pal idle — el problema real es solo con uno a mitad de huir/pelear) y pidió reabrir el seguimiento real durante el vínculo usando lo aprendido de los mods de referencia (PalFollowerTweaks/PalFunnelCharacter) y el propio `AIActionComponent` que `Combat.lua` ya había dejado como pista sin probar. Mid-sesión aportó además una pista propia y útil: el ícono "!" real del juego, que interrumpe visiblemente lo que un Pal está haciendo al notar al jugador acercarse — señalado como posible modelo para el problema de interrumpir una acción a mitad de camino.
-
-Se localizó el `Pal.hpp` real en la instalación del juego de Dragón (`Palworld/Pal/Binaries/Win64/ue4ss/CXXHeaderDump/Pal.hpp`) y se grepeó directo para cada arreglo, en vez de razonar solo desde los resúmenes de pasadas anteriores.
-
-**Bug 1 (captura instantánea) — arreglado tal cual el plan ya identificado.** `Trust.lua`'s `wait_for_animation_then_capture` ahora espera a `pal.Controller:GetAIActionComponent():GetCurrentAction_BP()` volviéndose nil, en vez del `ActionComponent:ActionIsEmpty()` ya confirmado poco confiable — misma estructura de sondeo cada 500ms, mismo tope de seguridad de 20s, mismo respaldo de 5s fijos si la cadena Controller/AIActionComponent no se puede leer.
-
-**Bug 4 (friendly no interrumpe una acción en curso) — dos funciones reales y nunca antes llamadas, encontradas por grep directo:** `UPalAIActionComponent:AllCancelAction_Logic_HardScript_Reaction(Instigator)` (cancela la acción de IA en curso en los niveles de prioridad donde corren las decisiones normales de huir/pelear) y `UPalAISensorComponent:RequestSightCheckAsync(...)` (declarada justo al lado de `SelectResponseBySenses` — muy probablemente la función real detrás del "!" que señaló Dragón). Nueva `Personality.interrupt_and_resense()` llama a la cancelación primero y después al chequeo de sentidos fresco, imitando la secuencia real de "notar y girar" — conectada tras cada swap de preset exitoso en los tres puntos que pueden cambiar el tier de un Pal (`try_enforce_personality_with_sensor`, `MaybeBecomeFriendlyByBar`, `ForceTier`). Es de solo-mejor-esfuerzo: un fallo acá deja el estado registrado/swap de preset intacto, solo sin la interrupción. Cada llamada nativa nueva va con su propio log antes/después, misma disciplina de siempre ante un crash.
-
-**Bug 2 (seguimiento real) — el mecanismo real confirmado en el propio header:** `UPalAIActionComponent:SetRootComposite(NuevaAcción, Prioridad)` + `UPalAIActionOtomoDefault:SetOtomoFollowAction()` — la capa de decisión real que usa un Otomo de verdad. Nueva `Combat.attempt_real_otomo_follow()`, llamada desde `Combat.StartFollowing` justo después del `[FOLLOW-DIAG]` de solo lectura ya existente: resuelve la clase nativa vía `StaticFindObject`, construye una instancia nueva propia del `AIActionComponent` del Pal (mismo patrón seguro ya probado en `apply_forced_preset` de `Personality.lua`), llama `SetOtomoFollowAction()`, y después `SetRootComposite()`. **Aditivo, no reemplaza nada:** el empujón periódico de `PalMoveToLocation` (`Trust.lua`'s `tick_followers`) sigue activo en paralelo sin cambios — si esto falla en silencio, el seguimiento no queda peor de lo que ya estaba. `EAIRequestPriority::Type` es un enum real de Unreal (no específico de Palworld, del viejo sistema Pawn Actions/AIModule) — se usó el valor "Logic" (3, por el orden estándar del engine: SoftScript=0/HardScript=1/Reaction=2/Logic=3/Ultimate=4), marcado explícitamente como la única suposición real de este arreglo, sin confirmar contra este build específico.
-
-**Dato real encontrado en el propio log YA desplegado en el juego, antes incluso de copiar los archivos de esta pasada:** `palbonds-live.log` ya tenía una línea real de `[FOLLOW-DIAG]` de una sesión pasada, nunca leída — un Petallia salvaje (`BP_FlowerDoll_C`) confirmado con `AIActionComponent` utilizable, `category=0`, `currentAction=BP_AIActionPairCall_FeedItem_C`. Responde directo la pregunta abierta desde la pasada ochenta y seis (¿un Pal salvaje siquiera tiene este componente?) — sí, al menos para esta especie/clase de controller — buena señal de que el intento de seguimiento real de este pase va a tener oportunidad real de correr, no quedar en no-op silencioso.
-
-Verificado con `luaparse` (los tres archivos, limpio), desplegado en la instalación real del juego y en el espejo de `32-PalBonds/mod/`. **Ninguno de los tres arreglos está confirmado en vivo todavía.**
-
-**Plan de prueba para la próxima sesión:** (1) alimentar a un Pal salvaje con un Kinship Peach y confirmar que la secuencia real de comer/feliz se reproduce completa antes de la captura; (2) lograr que un Pal activamente huyendo o peleando cruce el 20% y ver si deja de hacerlo poco después, revisando las líneas `[INTERRUPT]`; (3) vincularse con un Pal hasta que empiece a seguir (50%) y ver si el seguimiento se nota mejor/distinto que antes, revisando las líneas `[REAL-FOLLOW]` — si `SetRootComposite` da `ok` pero nada cambia visiblemente, eso ya sería evidencia real de que la prioridad "Logic" está mal elegida, no de que el enfoque entero falló.
-
-## Continuación 167 (2026-09-06): prueba real de los 3 arreglos de la Continuación 166 — dos bugs reales encontrados y corregidos desde el log, uno confirmado a nivel de mecanismo
-
-Dragón hizo la prueba pedida y pegó el log real completo, más cuatro preguntas directas. Se leyó el log línea por línea en vez de solo confiar en su resumen.
-
-**Interrumpir la acción en curso — seguía sin funcionar, causa real encontrada.** Para el Pal específico que se estaba vinculando (`BP_FlowerDoll_C`), el trigger de 20% ("WON-OVER") disparó bien, pero la línea siguiente fue "has no readable AISensorComponent — cannot swap its real AI" — o sea que `interrupt_and_resense` (el arreglo nuevo de la pasada anterior) nunca llegó a ejecutarse, porque el swap de preset del que depende nunca se aplicó. Confirma que el diagnóstico original de la Continuación 165 ("capa 1": `MaybeBecomeFriendlyByBar` sigue usando la búsqueda de sensor de un solo intento, sin reintento) seguía siendo el bloqueo real — la pregunta de Dragón sobre interrumpir la acción era válida, pero nunca tuvo oportunidad de probarse.
-
-**Arreglo real:** el hook reactivo que ya escucha las decisiones reales de IA del juego (`SelectResponseBySenses`) ve un sensor válido para prácticamente cualquier Pal salvaje cerca, todo el tiempo. Ahora guarda ese sensor en una caché por Pal, para CUALQUIER tier (antes solo lo hacía para tiers distintos de "normal"). `MaybeBecomeFriendlyByBar` y `ForceTier` revisan esa caché primero, antes de caer al escaneo viejo.
-
-**Captura instantánea, arreglada en la dirección correcta esta vez.** El log mostró que en las 3 capturas reales de la sesión, `GetCurrentAction_BP()` nunca se volvió nil — un Pal salvaje siempre tiene alguna acción de IA base (deambular/pastar) ocupando el componente, así que esperar "nil" simplemente quemaba siempre los 20 segundos completos del tope de seguridad (dejando que una Petallia se alejara 267870 unidades del jugador antes de capturar — justo lo que Dragón reportó). Arreglado: ahora se espera a que la IDENTIDAD de la acción cambie respecto a la que estaba corriendo al empezar a esperar (comparando `GetFullName()`), no a que llegue a nil — la acción real de Feed (`BP_AIActionPairCall_FeedItem_C`, un objeto real con su propia identidad) terminando cuenta como "lista", sin importar a qué pase la IA después.
-
-**Seguimiento real — confirmado enganchando correctamente las 3 veces** que el trigger de 50% disparó en la sesión: `StaticConstructObject(UPalAIActionOtomoDefault) ok` → `SetOtomoFollowAction() ok` → `SetRootComposite(priority=Logic) ok`, corriendo en paralelo con el empujón viejo de `PalMoveToLocation`, tal como se diseñó. Respondiendo directo la pregunta de Dragón: SÍ es un mecanismo nuevo y real, no el viejo empujón — pero si de verdad se ve/siente mejor, y si hay asistencia real en combate, sigue sin confirmarse (la clase de composite también expone `SetOtomoCombatAction()` como un modo separado, que este proyecto todavía no llama).
-
-**La idea de Dragón de reusar el mismo mecanismo para el interrupt** (ya que `SetRootComposite` funciona de verdad) es un buen instinto, pero el único modo ya probado (`SetOtomoFollowAction`) haría que cualquier Pal que se vuelva "friendly" empiece a caminar hacia el jugador de inmediato, incluso a un 20% de su barra — mezclando dos umbrales que se diseñaron separados (20% para personalidad, 50% para seguimiento real). No implementado esta pasada — queda como idea real para cuando se confirme un modo de composite más neutral, o se decida que ese efecto secundario es aceptable.
-
-Verificado con `luaparse` (Trust.lua, Personality.lua), desplegado en la instalación real del juego y en el espejo de `32-PalBonds/mod/`. **Aparte:** Dragón preguntó si el "espejo" del que hablo seguía existiendo — sí, es el único que queda (`32-PalBonds/mod/`, plano) desde que la Continuación 95 consolidó y borró el segundo espejo anidado (`palbonds-mod/`) que nunca fue pedido por él — no se dejó de espejar en ningún momento, solo se eliminó la duplicación confusa. También se encontró y se detuvo una tarea de fondo esta sesión (una búsqueda de archivo por todo el disco, ya innecesaria porque el archivo real ya se había encontrado por otra vía) que había quedado corriendo sin que aportara nada.
-
-**Ninguno de los 3 puntos originales está confirmado como completamente resuelto todavía** — los puntos 2 y 4 tienen arreglos nuevos y más certeros; el punto 3 está confirmado enganchando su mecanismo nuevo, pero su mejora real de comportamiento sigue sin confirmar.
-
-## Continuación 168 (2026-09-06): leído el log real directo del juego — dos bugs reales más encontrados y corregidos, un nerf pedido aplicado
-
-Dragón hizo una pregunta de diseño directa sobre el retraso de captura, corrió otra prueba real, y pidió que revisara el log yo mismo en vez de pegarlo — así que se leyó `palbonds-live.log` directo desde la instalación del juego.
-
-**Su pregunta ("¿no corta la reacción Happy del Pal si capturás justo cuando cambia la acción de IA?") resultó ser exactamente correcta, y peor de lo que sonaba.** El log de esta sesión (5 capturas reales) mostró tres fallas reales y distintas del arreglo anterior: una capturó sin poder confirmar que Happy (que corre en un componente completamente distinto, nunca chequeado por esta señal) ya había terminado; otra capturó A MITAD DE UN COMBATE de verdad — la "acción distinta" detectada resultó ser solo una sub-acción del MISMO combate en curso (`BP_AIAction_CombatPal_C` → una sub-acción hija de ese mismo objeto); y una tercera nunca vio ningún cambio en los 20 segundos completos, la misma falla que el arreglo pasado ya debía haber resuelto. Se abandonó por completo la idea de detectar la señal real — ya se intentó de tres formas distintas (`ActionIsEmpty`, nil-check, cambio de identidad) y las tres fallaron en vivo. Ahora es un retraso fijo de 4 segundos después de la interacción que cruza el umbral de captura — el mismo patrón ya aceptado para el seguimiento de Happy después de Play (pasada ciento cuarenta y tres), honrando el propio orden que pidió Dragón desde el principio: "esperar la animación real, y si no se puede, un retraso fijo."
-
-**El arreglo de interrumpir la acción en curso (Continuación 167) SÍ funcionó a nivel de mecanismo esta vez — 5 de 5 intentos reales, sin ninguna falla de "sensor no legible".** Pero Dragón sigue sin ver ningún cambio real de comportamiento — los Pals seguían huyendo/atacando igual después de volverse "friendly". Como las tres llamadas (swap de preset + las dos del interrupt) reportan éxito sin error de Lua, el problema real ahora es más profundo: probablemente hay un estado aparte del preset (quizás un "objetivo ya trabado" que `SelectResponseBySenses` mantiene entre llamadas, o el viejo sistema de Hate/TargetPlayers descartado hace meses como "no es esto") que sigue manteniendo al Pal en su comportamiento viejo, independiente del preset. No se investigó más a fondo esta pasada — es una pregunta de investigación genuinamente nueva.
-
-**Sobre el seguimiento:** confirmado enganchando 5 de 5 veces de nuevo, pero las 5 veces el Pal terminó capturado en la misma sesión (algunos en minutos, uno en apenas segundos). Esto explica de una sola vez las dos quejas de Dragón: la Petallia que cruzó 50% y "no siguió para nada" (el trigger sí disparó y el mecanismo sí se enganchó las 5 veces — lo más probable es que la captura llegó tan rápido después que nunca hubo tiempo real de verla moverse), y los Pals que sí siguieron pero "no ayudaron a pelear" (misma causa — nunca hubo una ventana de tiempo real para que una pelea pasara entre el inicio del seguimiento y la captura).
-
-**Nerf pedido por Dragón, aplicado:** la ganancia pasiva de confianza (mientras un Pal sigue) bajó de 5 a 2 por tick — apunta directo al problema de la ventana demasiado corta identificado arriba.
-
-Verificado con `luaparse` (Trust.lua), desplegado en la instalación real del juego y en el espejo de `32-PalBonds/mod/`.
-
-**Sigue sin confirmarse:** si el efecto real de comportamiento del interrupt es alcanzable sin investigar más a fondo qué otro estado mantiene a un Pal en su vieja conducta; si el nuevo retraso fijo de captura (4s) alcanza en la práctica para que Happy se vea completo; y si el seguimiento/asistencia en combate se ven bien ahora que el nerf de ganancia pasiva debería dar más tiempo real de observación.
-
-## Continuación 169 (2026-09-06): Dragón hizo una prueba controlada que descarta la teoría de "sin ventana de tiempo" — un valor de retorno real nunca revisado, el composite nuevo retirado, una función de reset real probada para el interrupt
-
-Dragón corrigió directo mi teoría de la pasada anterior: hizo una prueba controlada a propósito, dejando de interactuar apenas una Petallia cruzó 50%, y la observó desde lejos — nunca siguió. Con una segunda, corrió lejos a propósito — terminó despareciendo (despawn), o sea que nunca avanzó nada intentando alcanzarlo. Dos resultados negativos reales y controlados, no un artefacto de tiempo.
-
-**Hallazgo real y concreto: `Combat.IssueFollowMoveOrder` nunca revisó el valor de retorno de `PalMoveToLocation`, en ninguna pasada desde el primer intento de seguimiento de este proyecto.** El header confirma que la función SÍ devuelve algo real: `TEnumAsByte<EPathFollowingRequestResult::Type>` (el enum estándar de Unreal: 0=Failed, 1=AlreadyAtGoal, 2=RequestSuccessful). Si esta llamada viene devolviendo "Failed" en silencio todo este tiempo, eso solo explicaría los dos reportes de Dragón sin necesitar ningún misterio más profundo de estado de IA. Arreglado: el valor de retorno ahora se captura y loguea en cada llamada (`[MOVE-ORDER-RESULT]`) — una lectura simple de un byte, sin riesgo nuevo, pero la primera vez que este proyecto realmente mira si esta llamada tiene éxito.
-
-**El intento nuevo de `SetRootComposite`/`UPalAIActionOtomoDefault` (Continuación 167) se retiró para la próxima prueba** (comentado, no borrado). Se había desplegado bajo la idea de que corría "puramente en paralelo" sin interferir con las llamadas directas de `PalMoveToLocation` — pero el propósito entero de `SetRootComposite` es REEMPLAZAR el comportamiento raíz del AIController, un riesgo real de que esté bloqueando/ignorando en silencio esas mismas llamadas directas hechas sobre el mismo controller, en vez de coexistir con ellas como se pensó. Con dos mecanismos sin confirmar corriendo juntos y cero seguimiento visible en una prueba controlada, no hay forma de saber cuál (o si los dos) está fallando. Se aisló el mecanismo viejo, ahora instrumentado, para una prueba limpia.
-
-**Interrupt — Dragón preguntó directo: "¿no pueden simplemente resetear su comportamiento para que dejen de pelear/huir?"** Llevó a una función real y concreta, ya en el mismo sensor que este proyecto ya lee con seguridad: `ResetResponsedMaxBiologicalGrade()`, junto a su propio campo `ResponsedMaxBiologicalGrade` (un int32 plano). El nombre y la forma sugieren fuertemente un valor de histéresis — "el grado de amenaza más fuerte al que ya reaccioné" — pensado para evitar que un Pal reaccione de nuevo a algo más débil que una decisión que ya tomó. Esto explicaría perfecto por qué el combo de swap+cancel+resense de la pasada anterior tuvo éxito real 5 de 5 veces sin ningún cambio de comportamiento visible: el preset cambió, pero este otro valor separado nunca lo hizo, así que la próxima decisión real del juego pudo haberse descartado en silencio antes de siquiera consultar el preset nuevo. Agregada justo al lado de las otras dos llamadas ya existentes en `interrupt_and_resense`, calzando casi literal con las propias palabras de Dragón.
-
-**Retraso de captura, subido de 4 a 5 segundos**, a pedido explícito de Dragón, para seguir ajustando desde ahí.
-
-Verificado con `luaparse` (Trust.lua, Personality.lua, Combat.lua), desplegado en la instalación real del juego y en el espejo de `32-PalBonds/mod/`.
-
-**Plan de prueba para la próxima sesión:** (1) vincular un Pal hasta 50% sin sobre-alimentarlo, observar desde lejos, y revisar el log por `[MOVE-ORDER-RESULT]` — si reporta 0 (Failed) siempre, esa sería la causa raíz real y de larga data por fin encontrada; (2) llevar un Pal huyendo/atacando más allá del 20% de personalidad y observar de cerca si esta vez sí cambia algo real, revisando que `ResetResponsedMaxBiologicalGrade` reporte éxito; (3) confirmar si el retraso de captura de 5 segundos se siente bien, o avisar cuánto más ajustar.
-
-## Continuación 170 (2026-09-06): balance aplicado, una autocorrección real sobre Pet, y un plan acordado con Dragón antes de tocar el follow/interrupt/combat-assist
-
-Cambios de balance implementados y desplegados: Feed 60→50, ganancia de Play 10→25, tecla de Play movida de CTRL+J (Dragón la encontraba muy incómoda de usar, dos teclas) a F8 sola — confirmado con Dragón que F9/F10 (Pet/Feed) se quedan igual, ya que él usa el menú radial real para eso, que internamente llama a las mismas funciones.
-
-**Autocorrección real, encontrada al implementar el pedido de subir Pet a 25.** Mi afirmación de la sesión anterior ("Pet solo da 10") estaba mal. El hook `[WATCH]` sobre `AddFriendShip` es GLOBAL e incondicional — loguea cualquier regalo real de amistad en todo el juego, no solo los de este mod. Los `value=10 applyPassiveSkill=true` que veníamos leyendo como si fueran de Pet eran casi seguro la ganancia pasiva ambiental de los propios Otomos reales de Dragón (el valor real de vanilla `FriendshipPoint_AutoIncrementOtomo` es exactamente 10). Nunca hubo una lectura limpia y aislada del regalo real de Pet para un Pal salvaje específico. En vez de adivinar de nuevo, `do_interaction` ahora mide el FriendshipPoint antes y ~3 segundos después de un Pet real (solo para Pals salvajes confirmados) y ajusta — positivo o negativo — para que el total quede exactamente en 25, sea cual sea el número real de vanilla. Esto también da, por primera vez, una lectura limpia de ese número real.
-
-**El hallazgo de comportamiento más útil de todo este proyecto hasta ahora:** Dragón observó a una FlowerRabbit mirar hacia él por un instante (la orden de movimiento llegando) y volver a su propio camino un frame después, repitiéndose cada ~1.5 segundos. Confirma visualmente, por primera vez, la debilidad ya documentada del empujón viejo: compite con la IA propia del Pal en vez de reemplazarla.
-
-**Aclaración real importante:** el mecanismo nuevo (`SetRootComposite`) NO estaba activo durante esa observación — se había desactivado la pasada anterior a propósito para aislar el mecanismo viejo. Dragón pensaba que estaba probando el nuevo y se confundió con razón. Teoría real de por qué el nuevo probablemente comparte el mismo problema: solo se llamó UNA vez, al empezar a seguir, nunca de forma repetida — si la IA salvaje reafirma su propia decisión de forma continua, un solo empujón se perdería casi al instante, produciendo un resultado indistinguible de lo que se acaba de observar.
-
-**Plan acordado, NADA de esto implementado todavía (pedido explícito de Dragón):**
-1. Reactivar `SetRootComposite`, pero llamarlo REPETIDAMENTE (misma cadencia ~1.5s que el empujón viejo), no una sola vez.
-2. Desactivar el empujón viejo de `PalMoveToLocation` para esta próxima prueba, para aislar limpiamente si los empujones repetidos del composite alcanzan para ganarle a la IA salvaje — preferencia explícita de Dragón ("ideally we won't need [the old one]").
-3. Para el combat-assist (nunca implementado en ningún mecanismo — solo se llamó `SetOtomoFollowAction()`, nunca `SetOtomoCombatAction()`): antes de escribir un disparador a ciegas, releer la lógica real de `PalFunnelCharacter`/`BP_AIAction_FunnelFollow_C` del mod de referencia PalFollowerTweaks específicamente para esta pregunta (nunca revisada con este enfoque antes — Dragón tenía razón: aunque nadie hizo esto exacto, los mods pueden tener funciones/hooks reusables), y grepear `Pal.hpp` por qué código nativo llama a `SetOtomoCombatAction()`/`SetOtomoBerserker()` en un Otomo real.
-4. Interrupt: Dragón preguntó directo si arreglar el follow arreglaría el interrupt también. Respuesta: probablemente relacionado (misma forma "un solo intento vs. IA que se reafirma sola"), pero con una causa real y DISTINTA que no se puede descartar: los campos `Damaged_Player/Greater/Equal/Smaller` del preset "friendly" que se copia nunca se verificaron (solo se asumió que son pacíficos igual que los campos `Discover_*`) — si un Pal ya está enganchado en combate, su decisión puede depender de esos campos en vez de los de descubrimiento. Plan: agregar un diagnóstico que loguee los 8 valores reales copiados antes de asumir que "repetir la llamada" alcanza para arreglarlo.
-5. Confirmado por lectura de código, sin probar en vivo todavía: nada en `BondingState`/`State`/`tick_followers` limita el seguimiento a un solo Pal — varios deberían poder seguir en paralelo hoy mismo, sin necesitar ningún cambio.
-
-Verificado con `luaparse`, desplegado en la instalación real del juego y en el espejo de `32-PalBonds/mod/`.
-
-## Continuación 173 (2026-09-06): seguimiento confirmado NO funciona vía composite, Daedream/Dazzi/Floppie investigado (ya estaba resuelto en la 137), un bug real de diagnóstico post-captura arreglado, lag diagnosticado
-
-Dragón probó el composite repetido en vivo (empujón viejo apagado) — resultado negativo y limpio en las 3 veces que un Pal cruzó 50%: `SetRootComposite ok` siempre, pero cada Pal rompió la correa sin moverse hacia el jugador ni una vez. Revertido a ambos mecanismos apagados (no reactivado el empujón viejo, a pedido de Dragón — buscar algo mejor primero). Investigación de Daedream/Dazzi/Floppie retomada: el mecanismo real (`PalFunnelCharacter`/`BP_AIAction_FunnelFollow_C`) comparte el mismo `SetOtomoFollowAction()` ya confirmado que no funciona, y depende de propiedad real (`GetTrainer()`) igual que Otomo completo — ninguno de los dos es una alternativa real para un Pal todavía salvaje. Bug real encontrado y arreglado en `diagnose_post_capture_slot` (Capture.lua): resolvía el handle del Pal DESPUÉS de la captura, cuando el actor ya estaba siendo desarmado — movido a ANTES. Arreglado también un bug cosmético en `Combat.Init()` (leía un toggle antes de su declaración real, típico problema de "los locals de Lua no hacen hoisting"). Diagnosticado (sin arreglar) el lag general — candidato: `[OTOMO-GETTER-WATCH]` re-logueando casi cada llamada por comparar direcciones de wrapper crudas en vez de un valor normalizado.
-
-Verificado con `luaparse` (Combat.lua, Interaction.lua, Capture.lua), desplegado. Detalle completo en `hook-points.md` ("Two-hundred-and-fourth pass").
-
-## Continuación 174 (2026-09-06): tres correcciones reales de Dragón sobre la pasada anterior — sesión cerrada, retoma otra IA
-
-Dragón corrigió tres malentendidos de la Continuación 173, todos documentados con su cita textual en `hook-points.md` ("Two-hundred-and-fifth pass"): (1) que un Pal ya capturado siga como Otomo real NUNCA fue una pregunta abierta — estaba confirmado desde muy temprano en el proyecto; el arreglo del bug de `diagnose_post_capture_slot` se queda pero no cierra nada real. (2) El pedido del VFX era sobre el momento real de la captura (el Pal se pone feliz y luego desaparece sin nada en el medio, falta el efecto de "convertirse en luz y viajar hacia el jugador") — implementado el lado feliz (`play_join_celebration_then` en Capture.lua, Happy + corazones antes de capturar, confirmado bueno), pero el VFX de luz en sí sigue sin encontrarse (el candidato `ABP_ReturnPalEffect_C` ya estaba descartado desde la Continuación 163, así que sugerir "cambiá de Otomo para verlo" respondía la pregunta equivocada). (3) El lag sigue sintiéndose peor que el día anterior — el arreglo de `OTOMO-GETTER-WATCH` no lo cerró, sigue sin causa real encontrada. Se encontró y mató de paso un proceso `find.exe` colgado desde una sesión anterior (sin relación con el lag del juego).
-
-**Dragón pidió explícitamente cerrar la sesión acá y retomar con otra IA distinta**, citando fallas repetidas de entendimiento. Ver el banner "🔴 SESIÓN CERRADA" al principio de este archivo y el detalle completo (con las citas textuales) en `hook-points.md` ("Two-hundred-and-fifth pass") antes de tocar cualquier cosa.
-
-## Continuación 175 (2026-09-06): sesión nueva (otra IA) — auditoría inicial, un error propio corregido, y seis fuentes reales de lag encontradas y eliminadas
-
-Sesión retomada por un asistente distinto, según el pedido explícito de la Continuación 174. Se leyó el archivo completo, la lista "EMPEZAR ACÁ", `DESIGN.md` §12 y la "Two-hundred-and-fifth pass" de `hook-points.md` antes de tocar nada.
-
-**Error propio, corregido de inmediato:** la auditoría inicial reportó los Kinship Peaches como "bloqueados, sin implementar". Es falso — están implementados, balanceados y probados en vivo (`Interaction.lua`, post-hook de `RequestUseToCharacter`: 250 puntos para `AffectionFruit_02`, 500 para `AffectionFruit_01`, contra una barra de 500). El error vino de leer el estado desde `DESIGN.md` §12 (un documento de planificación del 2026-09-03) en vez de revisar el código. Dragón lo corrigió con una observación importante: el problema no es la línea equivocada en sí, sino que una línea equivocada indica que no se está viendo el trabajo más reciente completo. `DESIGN.md` §12 quedó marcado como SUPERSEDED con las cuatro correcciones concretas escritas encima, para que no vuelva a engañar a nadie.
-
-**Lag — seis causas reales encontradas y eliminadas.** Por primera vez se analizó el log real por frecuencia de etiqueta (2012 líneas en 10 minutos) en vez de suponer. Ninguna de estas se había identificado antes:
-
-1. **`Indicator.lua` — hook sobre `PalUICharacterHPGaugeBase:SetHPPercent`.** La peor de todas. El juego llama esta función continuamente para CADA barra de vida visible en pantalla. Cada llamada cruzaba a Lua y ejecutaba `describe_widget()` (una llamada real de reflexión `GetFullName()`) más un `string.format` **antes** de que el tope de logs pudiera descartar el resultado — porque Lua evalúa los argumentos antes de llamar a la función. O sea: el tope silenciaba la SALIDA, pero el trabajo real seguía ocurriendo en cada llamada, toda la sesión. Costo invisible en el log (solo aparecen 20 líneas) que escala directo con cuántos Pals hay en pantalla — exactamente la forma del lag "peor al entrar a zonas nuevas". **Eliminado.** El hook hermano `SetTargetCharacter` tenía la misma forma con dos reflexiones por llamada. **Eliminado.**
-2. **`OtomoWatch.lua` completo — 11 hooks, desactivado.** Nada del mod llama a este módulo (solo exporta `Init()`), todas sus preguntas están cerradas, y dos de sus hooks están sobre funciones calientes de verdad: `SelectResponseBySenses` (cada decisión de sentido de cada Pal — **y además duplicaba el hook que `Personality.lua` ya tiene ahí para el enforcement real**) y `TargetIsPlayerOrPlayersOtomoPal` (cada evaluación de objetivo en combate), ambos logueando incondicionalmente con reflexión. Más un poll de `FindAllOf` cada 10s cuyo propio comentario admite que no tiene uso planeado. **`OtomoWatch.Init()` comentado en `main.lua`.**
-3. **`Personality.lua` — `interrupt_and_resense` en el camino equivocado.** Disparaba sobre 43 Pals distintos en 10 minutos, porque estaba enganchado al enforcement de rutina (el que le pone su preset a cada Pal salvaje al aparecer) en vez de solo a los dos caminos que lo necesitan de verdad (`MaybeBecomeFriendlyByBar` y `ForceTier`). Un Pal recién visto no tiene ningún comportamiento viejo que interrumpir — se le estaba cancelando la acción y forzando un `RequestSightCheckAsync` (un trazo de visión asíncrono) sin motivo. **Detalle de tiempo que encaja con el reporte de Dragón:** las dos llamadas se agregaron el 2026-09-06 (Continuaciones 167 y 169), justo cuando él dijo "lag still feels a lot laggier than yesterday, im sure it was something last added". **Sacado de ese camino; el swap de preset queda intacto.**
-4. **`Indicator.lua` — `poll_prism_state` cada 2 segundos.** Dos escaneos `FindAllOf` de todo el mundo (`BP_CapturePrism_C` y `BP_CapturePrismBullet_C`) más una reflexión por instancia, para siempre. Sus throttles solo frenaban las líneas de log, nunca los escaneos. La investigación que alimentaba está cerrada. **Sacado del tick.**
-5. **`Interaction.lua` — hook `[WATCH]` global sobre `AddFriendShip`.** Logueaba con reflexión cada regalo de amistad de todo el juego, incluida la ganancia pasiva ambiental de cada Otomo y cada trabajador de base — un flujo constante en una partida real. Además era engañoso: fue justo el que produjo la conclusión equivocada corregida en la Continuación 170. **Eliminado** (la medición real y dirigida en `do_interaction` ya lo reemplaza).
-6. **`Interaction.lua` — camino ocioso de `TryGetSpawnedOtomo`.** Este hook **no se puede sacar** (es la sustitución que hace que Pet funcione sobre un Pal salvaje), pero el getter dispara ~4 veces por segundo y hacía `hook_get` + `hook_describe` (reflexión) en cada llamada antes de cualquier throttle. El arreglo de la Continuación 204 corrigió las líneas repetidas pero dejó la reflexión, que siempre fue el costo mayor. **Ahora el camino ocioso es un solo test booleano y un return.**
-
-**Aparte, misma pasada:** `Trust.lua` logueaba `[TICK]` incondicionalmente cada 1.5s (396 líneas en 10 minutos) con un logger que fuerza escritura a disco por línea — ahora se loguea una sola vez. Y `try_enforce_personality` ahora consulta primero la caché de sensores del hook reactivo antes de caer al escaneo proactivo, que reconstruía un índice de TODO el mundo (`FindAllOf("PalAISensorComponent")` + dos reflexiones por componente) cada 5 segundos.
-
-Los 11 archivos verificados con `luaparse`, desplegados en la instalación real y en el espejo de `32-PalBonds/mod/`.
-
-**Prueba pendiente, y es la que importa:** jugar normal, sobre todo entrando a zonas nuevas con muchos Pals, y decir si el lag mejoró. Ninguno de estos seis arreglos está confirmado en vivo todavía — están confirmados como costos reales por lectura de código y del log, que no es lo mismo. **Confirmar también que nada se rompió**, ya que se tocaron caminos vivos: que Pet/Feed/Play sigan funcionando, que la barra de confianza y la etiqueta de personalidad sigan apareciendo, y que los Pals salvajes sigan mostrando comportamientos variados según su tier.
-
-## Continuación 176 (2026-09-06): causa raíz de las ganancias irregulares de amistad — encontrada y arreglada; F9/F10 eliminados; enfoque nuevo para seguimiento y ayuda en combate
-
-**MODO DE VERIFICACIÓN DE BALANCE ACTIVO AHORA MISMO.** Pet/Feed/Play = 100 cada uno, multiplicador de nivel forzado a 1.0, ganancia pasiva en 0. Diseño de prueba del propio Dragón: 5 interacciones de cualquier tipo deben capturar a cualquier Pal (5 × 100 = umbral 500). Para volver a los valores reales hay que apagar DOS banderas: `BALANCE_VERIFICATION_MODE` (Interaction.lua) y `LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST` (Trust.lua). Valores reales guardados en los comentarios de ambas: Pet 25, Feed 50, Play 25, pasiva 2. Los Kinship Peach NO se tocaron a propósito (ya confirmados correctos, 250/500).
-
-**Causa raíz real de la irregularidad — no era un problema de números.** En un Pet por menú radial sobre un Pal salvaje sustituido, `closeRadialMenuActionWindow` llamaba a `do_pet()`, que entra en `do_interaction()`. La PRIMERA compuerta de esa función es "¿el jugador ya está a mitad de una acción? entonces ignorar" — un anti-spam pensado para una tecla. En el camino radial esa compuerta está directamente equivocada: el sentido entero de la sustitución es que la acción real de Cuidar del juego arranca en ese mismo instante, así que el jugador SÍ está a mitad de una acción, la compuerta dispara, y `do_interaction` regresa antes de llegar al otorgamiento de amistad Y antes de llamar a `Interaction.OnWildPalPetted(pal)`.
-
-Esa llamada es la que habilita TODO lo demás en Trust.lua: el trigger de 20% (friendly), el de 50% (seguir), el chequeo de captura, y hasta si el Pal recibe barra de confianza. Así que un Pet radial registraba todo o nada según si nuestra llamada le ganaba la carrera a la animación de vanilla. Eso explica exactamente lo que Dragón viene reportando: ganancias irregulares, barras que aparecen tarde, y varios umbrales disparando de golpe cuando por fin pasa un Feed.
-
-**Arreglo:** `grant_wild_interaction(pal, monto, etiqueta)` — la mitad de contabilidad de `do_interaction`, extraída sin compuertas de ocupado y sin `PlayActionByType`: guarda de propiedad, lee antes, `AddFriendShip`, loguea `[BALANCE-TEST]` con antes/después/intención, y llama a `OnWildPalPetted`. El camino radial ahora usa esto en vez de `do_pet()` (vanilla ya está reproduciendo la animación; nunca se quiso una segunda).
-
-**Segundo bug real: Play siempre otorgó CERO.** Dependía de que la acción Happy diera amistad como efecto secundario — algo que la Continuación 132 ya había refutado con una prueba controlada. El `AddFriendShip` explícito solo existía en una rama de respaldo que corre si falla el AGENDADO, o sea prácticamente nunca. El rebalanceo de 10→25 que pidió Dragón se aplicó a una constante que nunca se ejecutaba. Ahora otorga de verdad.
-
-**F9/F10 eliminados**, a pedido explícito de Dragón. Regla de diseño que queda fijada y NO hay que volver a discutir: **Pet y Feed son interacciones del menú radial, no teclas.** Play conserva F8 solo porque todavía no tiene equivalente en el menú radial — y según Dragón, debería mudarse ahí también cuando se pueda. Esto además elimina una fuente real de confusión en el propio diagnóstico de este proyecto: varias pasadas razonaron sobre "lo que da F9" como si fuera lo que Dragón veía en el juego, cuando él nunca la presionó.
-
-**Seguimiento — enfoque nuevo de verdad, no otro reintento.** Hallazgo decisivo: el vocabulario completo de decisiones de la IA es `EPalAIResponseType: Ignore=0, Escape=1, Battle=2, Special=3`. **No existe un valor "acercarse/seguir"** — por eso la capa de presets, por sí sola, jamás puede producir seguimiento. Pero sí puede CALLARLA: poniendo en `Ignore` las respuestas del Pal hacia el jugador, su IA deja de generar decisiones sobre él, y entonces no queda nada que pise la orden de movimiento. `Personality.ApplyCompanionPreset` hace eso, reusando la escritura de preset privado ya probada. Junto con dos cambios en Combat.lua: el empujón de movimiento vuelve a estar ENCENDIDO, y ahora cada orden va precedida por `AllCancelAction_Logic_HardScript_Reaction` — el mismo interrupt confirmado 5/5 en Pals salvajes, nunca antes combinado con movimiento.
-
-**Ayuda en combate**, con el visto bueno de Dragón, viaja en el mismo preset: las tres ranuras `Discover_*` que no son del jugador pasan a `Battle`, mientras las del jugador quedan en `Ignore` — un compañero que pelea contra otros Pals y nunca contra el jugador. Limitación honesta: pelea contra lo que detecta, no específicamente contra lo que el jugador está peleando.
-
-Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada de esto está confirmado en vivo.** Detalle completo en `hook-points.md` ("Two-hundred-and-seventh pass").
-
-## Continuación 177 (2026-09-06): números de balance VERIFICADOS en vivo, el peor tirón de rendimiento del proyecto arreglado, y la ayuda en combate corregida desde tres reportes de Dragón
-
-**Verificación de balance: PASÓ.** Las 25 ganancias registradas en la corrida de Dragón dan exactamente +100, sin una sola excepción — Pet por menú radial y Feed real por `RequestUseToCharacter`. Seguir dispara en la interacción 3 y la captura en la 5, tal como se diseñó.
-
-**Hallazgo nuevo dentro de esos mismos datos: el otorgamiento propio de vanilla al acariciar un Pal SALVAJE es +10.** Se ve en los valores "antes": tras un Pet que deja 100, la siguiente interacción arranca en 110; 210 → 220; 320 → 330; 430 → 440. La deriva es siempre exactamente 10, siempre viene después de un **Pet**, y nunca después de un Feed. Nuestro otorgamiento es inmediato al cerrar el menú; el de vanilla llega un momento después, cuando termina su animación de Cuidar. Esto corrige un supuesto viejo: el valor real es **10, no los 30** que reporta `UPalGameSetting.Petting`. **Consecuencia para el balance real: un Pet radial vale NUESTRO monto + 10.** Para que quede en los 25 que quiere Dragón, `PET_FRIENDSHIP_GAIN` debe ser 15, no 25. Anotado, no cambiado todavía, porque el modo de verificación sigue encendido.
-
-**Respuesta directa a la pregunta de Dragón ("¿son las cosas nuevas, o los 3 seguidores?"): las dos, y se pueden separar.** `[MOVE-ORDER-RESULT]` escribía 2-3 líneas cada 1.5s POR seguidor, cada una forzada a disco — eso escalaba exactamente con la cantidad de seguidores. Aparte, y más grave: `[RADIAL-REDIRECT-PERF]` (el diagnóstico agregado la pasada anterior) demostró que `find_targeted_pal` cuesta **48-74ms por escaneo**, y se recalcula 4 veces por segundo mientras el menú radial está abierto — unos 200-300ms de Lua bloqueando frames por cada segundo de menú. Ese es el peor tirón del proyecto y no tiene relación con los seguidores, pero se dispara con cada tecla "4". Causa dentro de la función: llamaba `GetFullName()` (una llamada de reflexión que construye un string) sobre CADA Pal del mundo cargado, solo para excluir a un actor. Arreglado: primero la geometría barata, y la exclusión se resuelve solo sobre el único candidato ganador.
-
-También recortados: el rastreo `[RADIAL-WATCH]` (~8 líneas por cada "4", cuatro reflexiones cada una — más de la mitad del log que pegó Dragón; ahora detrás de `VERBOSE_MENU_HOOK_TRACE`, apagado) y `[RADIAL-REDIRECT-FIELD]` (8-10 líneas por tecla, ahora una por ventana de menú).
-
-**La buena noticia de la corrida, confirmada por log:** `PalMoveToLocation` devolvió solo 2 (éxito) y 1 (ya está en el destino) en toda la sesión, **nunca 0 (fallo)**. Que domine "ya está en el destino" significa que los seguidores de verdad llegaban y se quedaban con el jugador. El enfoque del preset de compañero funcionó — el problema de seguimiento, por primera vez, se está comportando.
-
-**Ayuda en combate: tres reportes, una sola causa.** Dragón vio (1) una Petallia vinculada atacando a su Flopie vinculada sin provocación, (2) compañeros empezando peleas con Pals al azar mientras seguían, recibiendo daño y pasando a escape, y (3) tres compañeros que "seguían pero nunca atacaban, ni siquiera cuando recibían daño" de una Caprity hostil. Los reportes 1-2 y el 3 parecen contradictorios pero salen del mismo error: **`Discover_*` gobierna "noté algo" y `Damaged_*` gobierna "algo me lastimó", y solo se habían puesto en Battle las ranuras Discover.** Así que empezaban peleas con cualquier cosa que veían — incluidos entre ellos, porque otro compañero vinculado es apenas otro Pal salvaje a sus ojos — y a la vez se quedaban quietos recibiendo golpes sin responder. Los saltos a escape del punto 2 son la consecuencia: el daño dispara la penalización de Trust, que puede dejar la confianza en cero y forzar el tier escape.
-
-Corregido, y de paso es el mejor diseño: `Discover_*` = Ignore (nunca empezar una pelea — arregla el fuego amigo y la espiral de muerte) y `Damaged_*` = Battle (responder cuando de verdad los atacan — arregla la pasividad). Además ahora se marca `enforcementApplied` al aplicar el preset de compañero, para que el escaneo periódico de personalidad no lo pise después con el tier original — algo que se habría visto exactamente como un compañero volviéndose hostil solo.
-
-Limitación honesta que queda: un compañero se defiende A SÍ MISMO, no al jugador. Se suma a una pelea que empezó el jugador solo cuando el enemigo también lo ataca a él. Que ataquen directamente el objetivo del jugador necesita el sistema de Hate, todavía sin explorar para este fin.
-
-Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada confirmado en vivo.** Detalle en `hook-points.md` ("Two-hundred-and-eighth pass").
-
-## Continuación 178 (2026-09-06): el arreglo de Dragón para el deambular, ayuda en combate real vía sistema de Hate, aviso de captura con nombre, y una pista nueva de verdad para el VFX
-
-**La causa del deambular la diagnosticó Dragón, no la instrumentación.** Sus palabras: los Pals llegan hasta él, se quedan sin nada que hacer, y ahí su IA normal vuelve a activarse y los manda a un punto lejano; lo confirmó al revés — moviéndose sin parar nunca pasa, porque nunca tienen tiempo ocioso. El log lo respalda: el resultado de la orden de movimiento queda en 1 (ya está en el destino) justo cuando ocurre.
-
-**Su arreglo, implementado tal cual:** si ya está en el destino, en vez de dejarlo ocioso, hacer que reproduzca una animación para que esté ocupado. Cuando la orden devuelve "ya está en el destino" Y el ActionComponent del Pal reporta vacío, se reproduce `ACTION_TYPE_PAL_RANDOM_REST` (77), la misma acción que ya usa Play, o sea probada como segura en un Pal salvaje. **Es mejor que la alternativa que estaba por construirse** (un tick más rápido que cancela y reemite la orden 2 veces por segundo), por una razón concreta: cancelar la acción del Pal dos veces por segundo también cancelaría sus ataques, rompiendo la defensa propia recién arreglada. Ocupar a un Pal ocioso no puede interrumpir nada, porque la compuerta `ActionIsEmpty()` hace que solo corra cuando el Pal no está haciendo absolutamente nada.
-
-**Ayuda en combate, ahora con objetivo real vía el sistema de Hate.** El reporte de Dragón era que los compañeros se defienden pero "siguen sin defenderme". Lo que faltaba nunca fue la disposición (`Damaged_*` = Battle ya funciona) — era que el compañero no tenía ningún motivo para considerar suyo al enemigo del jugador. Confirmado real en el volcado de headers de esta build, no adivinado: `APalAIController::GetHateSystem()`, `UPalHate::ChangeHate(Actor, float)`, `UPalHate::FindMostHateTarget()`. Se maneja desde el hook de `PalHate:DamageEvent` que Trust.lua YA tenía instalado: cuando el jugador da o recibe daño, el otro actor de ese evento es por definición su enemigo actual, así que `Combat.OnPlayerCombatTarget(enemigo)` empuja hate sobre cada compañero que está siguiendo. Sin sondeo, sin escaneo — el juego nos entrega el actor.
-
-**Incertidumbre declarada, a resolver con la próxima prueba y no por suposición:** el hate le da un OBJETIVO al compañero, pero que su IA decida atacarlo puede seguir dependiendo del preset, cuyas ranuras `Discover_*` están a propósito en Ignore para que no empiecen peleas. Si el hate solo no alcanza, el siguiente paso es permitir Battle al descubrir únicamente mientras haya un objetivo activo del jugador, no de forma permanente. Las líneas `[HATE-ASSIST]` lo van a distinguir.
-
-**El aviso de captura ahora nombra al Pal**, según el pedido de Dragón. Para que diga "Petallia" (el nombre que él ve) y no el id interno "FlowerDoll" se usan dos piezas reales del volcado: `UPalMasterDataTablesUtility::GetLocalizedText(...)` con `EPalLocalizeTextCategory::PalMonsterName = 4` y el CharacterID del Pal. Todo protegido con pcall y doble respaldo (nombre localizado -> CharacterID crudo -> el texto genérico de antes): un aviso cosmético jamás debe romper una captura que ya salió bien.
-
-**VFX DE UNIÓN — candidato nuevo de verdad, el primer avance real desde que se descartó `ABP_ReturnPalEffect_C`.** Encontrado buscando en el volcado de headers, no reciclando una corazonada: `APalCapturedCage::StartCaptureEffect_ServerBP(APalPlayerCharacter* Player)` y, en el Blueprint `ABP_PalCapturedCage_C`, un `UNiagaraComponent* Niagara`. Coincide exactamente con lo que Dragón describe al mirar un rescate de jaula normal, y recibe al JUGADOR como argumento — consistente con un efecto que viaja hacia él. **Hallazgo estructural importante: el efecto pertenece al actor JAULA, no al Pal.** Así que no se puede llamar sin más sobre un Pal salvaje cualquiera; reproducirlo significa leer el *asset* Niagara del componente de la jaula y hacerlo aparecer en la posición del Pal vinculado. Es un próximo paso concreto y real, pero necesita una jaula viva en el mundo para leer el asset, o una lectura de ese Blueprint en FModel para sacar la ruta — no es algo para adivinar. A propósito NO se implementó a ciegas en esta pasada.
-
-Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada confirmado en vivo.** Detalle en `hook-points.md` ("Two-hundred-and-ninth pass").
-
-## Continuación 179 (2026-09-06): la animación de descanso revertida (error mío, usé una señal que el proyecto ya sabía que no es confiable), el bug del aviso de captura con causa real, y la sonda del VFX de la jaula que debió salir la pasada anterior
-
-**La animación de descanso se ELIMINÓ. Fue un error mío, y evitable.** La prueba de Dragón mostró que salió mal de tres formas distintas, todas reales: (1) interrumpía su propia interacción de Pet/Feed/Play justo cuando el Pal cruzaba el 50%; (2) una vez descansando, el Pal contaba como ocupado, así que la orden de seguimiento no podía moverlo — quedaban clavados en vez de seguir; (3) ni siquiera cumplió su objetivo: igual se iban a deambular.
-
-La causa de (1) es lo importante: la condicioné a `ActionIsEmpty()`, **una señal que este proyecto ya tenía documentada como poco confiable justo para esto.** La pasada 196 dejó escrito que "se libera casi al instante" — reporta vacío en los huecos entre los pasos de una interacción real de varias partes, que es exactamente por qué disparó a mitad de una interacción. Apoyarme en una señal que las propias notas del proyecto llaman poco confiable no fue una decisión defendible; lo correcto era revisar ese historial antes de construir encima.
-
-**Reemplazo, atacando la misma causa raíz pero por el sistema de MOVIMIENTO en vez del de acciones**, así que estructuralmente no puede interrumpir una animación ni bloquear una pelea:
-- Si el Pal tiene un objetivo de odio (`UPalHate::FindMostHateTarget`, el mismo sistema al que empuja la ayuda en combate), la lógica de seguimiento no hace nada — a un compañero peleando se lo deja en paz. Esto además evita que la orden de seguimiento compita con la ayuda en combate agregada la pasada anterior.
-- Si no, cuando la orden devuelve "ya está en el destino", se reemite hacia un punto que orbita lentamente alrededor del jugador en vez de su posición exacta. Así el Pal siempre tiene una ruta activa y nunca recibe una ventana ociosa — que es exactamente la condición que Dragón ya confirmó que funciona: moviéndose sin parar, esto nunca pasa. Ahora tienen esa misma condición aunque él esté quieto.
-
-**El bug del aviso de captura, con causa real, y es la misma clase de bug que este proyecto ya arregló una vez.** El código nuevo SÍ corrió (la línea `[NOTIFY] join message:` es nueva de esta pasada) pero cayó al texto genérico, o sea que fallaron las DOS rutas del nombre. La causa es el orden, no la búsqueda del nombre: `NotifyJoined` corre DESPUÉS de `TryDirectCapture`, y el mismo log muestra `owner AFTER the call = nil`. El actor está siendo desarmado, así que su cadena de componentes ya no resuelve y toda ruta falla en el primer paso. **Es exactamente el bug que la pasada 204 arregló en `diagnose_post_capture_slot` — la misma lección, perdida por segunda vez.** Arreglado resolviendo el nombre antes, junto a `preCaptureHandle`, y pasándolo como string que sobrevive a la captura. Regla que conviene recordar: **todo lo que necesite leer del Pal debe leerse ANTES de que corra `PalCaptureSuccess`.**
-
-**Sonda `[CAGE-VFX]` agregada — solo lectura — y su ausencia la pasada anterior fue omisión mía.** Le dije a Dragón que encontrar una jaula desbloquearía el VFX; él fue a un asentamiento enemigo y rescató un Pal ("swee") justamente para eso, pero no existía ningún diagnóstico para leer nada de ahí, así que ese viaje no produjo datos. Ahora corre al iniciar, con reintento acotado, y prueba dos rutas para el asset Niagara de `ABP_PalCapturedCage_C`: instancias vivas, y el objeto por defecto de la clase (que sirve aunque no haya jaula cerca, mientras la clase se haya cargado alguna vez — el rescate de Dragón hizo eso). Solo resuelve objetos y lee campos; nunca llama a `StartCaptureEffect_ServerBP`.
-
-**También confirmado de esta corrida:** `[HATE-ASSIST]` disparó cero veces — esperable, porque ningún compañero llegó a seguir el tiempo suficiente para que hubiera una pelea, así que la ayuda en combate sigue sin probar, no descartada. Y `find_targeted_pal` bajó a 42-47ms (era 48-74ms): sacar el GetFullName por Pal ayudó, pero lo que queda sigue siendo el tirón más grande del proyecto.
-
-Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada confirmado en vivo.** Detalle en `hook-points.md` ("Two-hundred-and-tenth pass").
-
-## Continuación 180 (2026-09-06): cuatro bugs encontrados en el log (dos míos de la pasada anterior), la regla de daño sacada a pedido de Dragón, y un primitivo de seguimiento hacia un ACTOR que responde su pregunta sobre SetActiveAI
-
-**1. El aviso de captura — el log dio el error exacto, mucho más útil que el síntoma.** Dragón reportó "no salió ningún texto", que sonaba a regresión. El log dijo lo que pasó de verdad: `attempt to concatenate a FString value (local 'palName')`. O sea que la búsqueda del nombre SÍ funciona — `GetLocalizedText` devolvió un FText real y `Conv_TextToString` devolvió un valor real, pero ese valor es un **FString (userdata), no un string de Lua**, y concatenarlo lanza error. El arreglo de la pasada anterior (resolver antes de la captura) era correcto y necesario; este era un segundo bug independiente escondido detrás, y por eso el síntoma cambió de "texto genérico" a "ningún texto". Arreglado con un helper que maneja ambos casos y que a propósito rechaza el `tostring()` tipo "FString: 0x..." en vez de mostrarle una dirección de memoria al jugador.
-
-**2. `[HATE-ASSIST]` disparó CERO veces, y la causa es un bug que introduje yo, no la falta de peleas.** Trust.lua NO tiene un local `Combat` a nivel de archivo — todos los demás lugares usan `pcall(require, "Combat")` dentro de la función. La pasada anterior escribí `Combat.OnPlayerCombatTarget(enemy)` como si el módulo estuviera en alcance, así que indexó un GLOBAL nulo, lanzó error, y `safe_call` se lo tragó siempre. **Y encima le reporté a Dragón una conclusión equivocada** ("ningún compañero siguió lo suficiente para que hubiera pelea") cuando la llamada simplemente nunca corrió. Arreglado. La ayuda en combate sigue sin haberse ejercitado nunca.
-
-**3. La regla de daño se saca para atacantes que no sean el jugador — decisión de Dragón, y el log la respalda exacto.** En su corrida: una FlowerDoll vinculada recibió 21 de daño de un PinkRabbit salvaje, se comió la penalización completa de -150, quedó en cero confianza y fue forzada a tier "escape" — o sea que huyó en vez de pelear. Su razonamiento: que solo pierdan amistad si el jugador mismo las golpea, porque hoy, para entrar en combate, primero tienen que ser golpeadas por algo. Es correcto, y la regla se había vuelto contraproducente: todo el sentido de `Damaged_*` = Battle es que el compañero reciba un golpe y responda, pero la penalización destruía el vínculo justo en ese momento. El daño de terceros ya no cuesta confianza. La traición del jugador queda intacta.
-
-**4. La sonda `[CAGE-VFX]` tenía un bug que se contradecía a sí mismo, y desperdició el viaje de Dragón.** Su log mostró "NiagaraComponent=nil Asset=nil" e inmediatamente después "asset resolved — probe done". Ambas cosas no pueden ser ciertas. La causa: la línea de log usaba `tostring(obj and obj:GetFullName() or "nil")`, que imprime "nil" tanto cuando el objeto es nulo COMO cuando existe pero falla GetFullName — así que la sonda pudo perfectamente haber tenido el asset y solo no poder imprimir su nombre, y aun así se declaró exitosa. Peor: se marcó terminada al arrancar, así que cuando Dragón fue a un segundo asentamiento a propósito para dar una jaula fresca, ya no había nada mirando. Arreglado en tres frentes: presencia y nombre se reportan por separado, el éxito exige un NOMBRE real, y el reintento dura ~30 minutos en vez de 2 — porque una jaula solo existe cuando el jugador llega hasta ella.
-
-**5. Seguimiento — respuesta a su pregunta sobre SetActiveAI, con una función real, no una variación.** Preguntó si existe algo parecido al viejo `SetActiveAI(false)` (que evitaba el deambular pero dejaba a los Pals tan inertes que se quedaban quietos muriendo) pero menos total. Buscando en `APalAIController` apareció algo mejor que un interruptor de supresión: `SimpleMoveToActorWithLineTraceGround(const AActor* GoalActor, ECollisionChannel)`. **Todos los intentos de seguimiento de este proyecto fueron siempre por UBICACIÓN** — el empujón original, el composite de Otomo y la órbita de la pasada anterior: una orden de "caminá hasta este punto" que se completa, y al completarse el Pal se queda sin objetivo y su IA toma el control. Esta recibe un ACTOR como objetivo, lo cual es continuo por naturaleza: el motor sigue dirigiéndose hacia un blanco que se mueve, que es lo que significa seguir. Además encaja mejor con la observación nueva de Dragón (que igual se van, lo que pone en duda que sea el estado ocioso lo que dispara el deambular): si el problema real es que una orden de punto completada no deja ningún objetivo, un blanco que nunca se "alcanza" elimina la clase entera de problema en vez de parchear el síntoma. Se prueba primero, detrás de un toggle, con la orden por ubicación como respaldo automático.
-
-Los 11 archivos verificados con `luaparse`, desplegados y verificados por md5. **Nada confirmado en vivo.** Detalle en `hook-points.md` ("Two-hundred-and-eleventh pass").
-
-## Dónde está el detalle real
-
-Todo el diseño técnico (los 6 subsistemas, las 6 fases, riesgos, preguntas de investigación) vive en `DESIGN.md` — este archivo es solo el resumen de seguimiento que pide la convención de `Proyectos\CLAUDE.md`. Mantener sincronizado el % de arriba cada vez que se avance en algo.
+| Companions fight the player's target | yes — 9 `[HATE-ASSIST]` pushes, 16 combat actions installed |
+| Pals wandering off | **none** — Dragón: *"i didnt see them wander off so thats good"* |
+| Pals lost / abandoned | none |
+| Recall | 2 strays, 2 returns |
+| Log volume | 263 lines, down from 913 in run 30 |
+
+Two problems remain, and they are the only two: **friendly fire** and **lag**.
+
+### Friendly fire — open, and understood
+
+Run 32: 16 and 6 companion-on-companion hits across two fights; target discipline
+cancelled 4 and 3 resulting duels. Dragón: *"they still managed to atk each
+other."*
+
+The mechanism is not a mystery. Both companions charge the same enemy in the same
+second, stand on top of each other, and melee swings land on whoever is adjacent.
+Two preset slots feed it during a fight: `Discover_Equal = Battle` (another
+companion is just another same-sized Pal it noticed) and `Damaged_* = Battle`
+(being clipped makes it hit back).
+
+Target discipline cancels the resulting duels within a tick — that is why
+Dragón sees them "stop moments after" — but it cannot stop them starting.
+
+`QUIET_RETALIATION_DURING_PLAYER_FIGHT` in `Personality.lua` is the A/B switch
+for the retaliation half. It is **on**, and the evidence so far says it buys
+little: friendly fire per fight ran ~18 (run 28, off) vs ~26 (run 29, on) vs 16
+and 6 (run 32, on). Noisy, no clear win. Deciding it needs a clean single-variable
+pair of runs, which has not happened yet because other fixes kept landing between
+runs. **Do not flip it at the same time as anything else.**
+
+### Lag — open, and the cause is now measured rather than guessed
+
+Dragón after run 32: *"still feels laggy"*. It is no longer the logging. The
+`[INSTALLS]` line added in pass 333 reports the real cost per fight:
+
+```
+that fight cost 12 follow-action rebuild(s) and 8 combat-action install(s)
+that fight cost  5 follow-action rebuild(s) and 8 combat-action install(s)
+```
+
+Each install is a `StaticConstructObject` plus a `SetAction`. **The follow action
+and the combat action share priority slot 10**, deliberately (see the pass-300
+note in `Combat.lua`), so they evict each other: combat destroys follow, the
+follow tick rebuilds it, combat destroys it again. That thrash is the remaining
+lag and it is the next thing to attack.
+
+Untried ideas, in rough order of promise:
+1. Do not rebuild follow while the player's combat window is open and the Pal is
+   still meant to be fighting. Today `resume_follow_after_combat` fires on every
+   target-discipline cancel and every recall, each causing a rebuild that combat
+   then evicts.
+2. Give the combat action a different priority so the two stop evicting each
+   other. Priority values above Logic are not in any reachable enum dump and
+   pass 224 already had to correct a wrong priority constant, so this needs
+   evidence first, not a guess.
+3. Turn `ACTION_CHANGE_PROBE` off. It is now the single largest log source (90
+   of 263 lines) and it polls every bonded Pal at 200ms during combat. It has
+   answered its questions; it is kept only because it is the best diagnostic this
+   project has. **It must be off before shipping regardless.**
+
+---
+
+## In flight right now (2026-09-12, after run 32)
+
+`DEBUG_LOGGING = true` in the **live install only** (both project trees stay
+`false`) so a session can read the run.
+
+`ACTION_CHANGE_PROBE = true` in `Combat.lua` — the `[ACTION-TRACE]` probe, 200ms
+in combat and 1000ms out of it. Turn off before shipping.
+
+`QUIET_RETALIATION_DURING_PLAYER_FIGHT = true` in `Personality.lua` — the
+unresolved A/B above.
+
+Nothing else is mid-flight. Everything from passes 323-335 is deployed to all
+three trees and md5-verified, and all six offline suites pass against the live
+install.
+
+---
+
+## The offline test harness — use it, it has paid for itself
+
+`tools/harness/` holds a fengari-based harness that runs the **real mod source**
+with the UE4SS globals stubbed. `tools/harness/README.md` has the full command
+list. Short version:
+
+```bash
+cd tools/harness && npm install fengari
+node syntaxcheck.js ../../mod/PalBonds/Scripts
+node assisttest.js  ../../mod/PalBonds/Scripts prelude_323.lua
+```
+
+It cannot prove in-game behaviour. It has still caught bugs no test run could
+have distinguished from "it didn't work again":
+
+- a loop early-out that disabled the recall for exactly the Pal that needed it
+- a recall measuring distance from the aim camera, so a failed camera read
+  silently switched it off
+- a call placed ~850 lines above its definition (a nil global, swallowed silently)
+- the pass-331 damage gate that switched combat assist off completely
+
+**The rule: a regression test must be run against the broken code too.** A test
+that passes both before and after a fix proves nothing. Every bug-driven suite
+in there was verified by reverting the fix in a throwaway copy and confirming the
+test fails. Do the same for the next one.
+
+## Never budget a retry from mod load
+
+**Third instance, and it cost a Pal (run 29, 2026-09-12).** `FOLLOW_ACTION_MAX_TOTAL = 40`
+counted follow-action installs from mod load and never reset. It ran out
+mid-session; `followActionDisabled` latched true; from that second on, no Pal
+could ever be given a follow action again. A Flopie then wandered off with
+nothing installed to hold her and was lost while Dragón stood still watching.
+
+It survived the earlier cleanup of this exact bug shape because it did not look
+like a retry budget — it is a *leak guard*. **The rule covers both.** Any
+counter that latches something off permanently, for any reason, is wrong unless
+the thing it guards is genuinely unrecoverable. Leak guards should be rolling
+rates (N per window, recovers when the window turns over), never lifetime
+allowances. Check `FOLLOW_ACTION_MAX_PER_PAL`, `TRAINER_REASSERT_MAX_TOTAL` and
+anything else shaped like them before adding another.
+
+
+**Mod load happens on the title screen.** A Blueprint hook (`/Game/...`) cannot
+be registered until that class is actually loaded, which does not happen until
+the player is in a world — and that can be ten minutes later on a slow load.
+A native hook (`/Script/...`) registers immediately and is never affected, which
+is why personality enforcement keeps working while nameplates and the radial
+menu quietly do not.
+
+Any bounded retry anchored at mod load is therefore measuring the wrong thing.
+This has now cost two separate test runs:
+
+- **Nameplates/trust bars** (pass 297): a 30-round window. On 2026-09-11 the
+  hook needed round **136**.
+- **The radial menu** (pass 301): a 60-round, five-minute window. On the same
+  day Dragón's world did not exist until 9.5 minutes in, so it gave up four and
+  a half minutes before there was anything to hook, and he could not pet or feed
+  anything for the whole session — *"i could no longer interact with the pals,
+  no matter how close i got"*.
+
+Both were invisible, because both logged under suppressed tags. Both now retry
+at a slow cadence until they succeed, and report under the non-suppressed
+`[TAGS]` / `[HOOKS]` prefixes.
+
+**The lesson that generalises:** the first fix was applied to one instance
+without checking for siblings, and the sibling broke a run a few days later. If
+a bug class is found, grep for the rest of the class before calling it fixed —
+`MAX_[A-Z_]*(ROUNDS|ATTEMPTS)` is the search that finds these.
+
+## Lua errors do NOT appear in palbonds-live.log
+
+A Lua runtime error is caught by UE4SS and printed to **its own console window**,
+in red, as `Error: [Lua::call_function] lua_pcall returned LUA_ERRRUN => ...`.
+It never reaches `palbonds-live.log`, because that file only contains what
+`Logger.log` writes — and a function that threw never got to its log line.
+
+This cost a real diagnosis on 2026-09-12: Dragón reported red lines, the mod log
+was grepped for `error`/`FAILED`/`nil value`, nothing was found, and he was told
+there were no errors. There was one, and it was serious — `close_combat_window`
+calling `pal_has_own_fight` before its definition, killing the entire
+combat-window close path. **When he reports red console lines, ask for the
+console text; do not refute it from the mod log.**
+
+## Diagnostics: the log filter hides more than you expect
+
+`Logger.lua` has `SHOW_DIAGNOSTICS = false` and a `SUPPRESSED_TAGS` list, and
+`Logger.log` **silently drops** any message matching it — everything starting
+`[DIAG`, plus `[FOLLOW-DIAG]`, `[RADIAL-WATCH]`, `[TRAINER-REASSERT]`,
+`[AIM-FREEZE]` and a couple of dozen more. Turning `DEBUG_LOGGING` on does
+**not** bring these back; `SHOW_DIAGNOSTICS` is a separate switch.
+
+This cost real time: the intermittent "personality tags missing" bug logged its
+own cause on both the success and failure paths, and every one of those lines
+was being thrown away before reaching the file, so a working session and a
+broken one produced byte-identical logs. **When a log cannot explain something
+it clearly should have logged, check this filter before theorising.** Anything
+that must survive the filter needs a tag that is not on that list — the tag
+bind-hook lines now use `[TAGS]` for exactly this reason.
+
+## Known open defects
+
+1. **A failed radial feed still grants friendship** — the `"Feed (radial
+   fallback)"` branch. Dragón hit this when a Pal fled mid-menu: the picker
+   correctly failed and the Pal gained trust anyway. Pre-existing, present in
+   v1.0.
+2. **`LoopAsync` fallbacks still present** in `Trust.lua` and `Indicator.lua` —
+   dead code that would only run in the emergency it is unsafe for. Removed once
+   in pass 278, reverted in 285 to keep that fix minimal.
+3. **World-change references never cleared:** `Indicator.trackedBars` holds
+   actors across a world change; `Interaction` writes `SpawnedOtomo` into a
+   GameInstance-lived widget and never clears it, same for
+   `pendingWildFeedTarget`. None caused the pass-285 crash, but all are real.
+4. **`FindFirstOf` exposure** — upstream UE4SS issue #1328 reads out of bounds
+   and lacks the null guard `FindAllOf` has. The death-crash fix routed the
+   8 player lookups in the hot files through the guarded path; it reduces
+   exposure and cannot fix the upstream bug.
+5. **`find_targeted_pal` costs 42-47ms per scan** and runs while the radial menu
+   is open. Improved from 74ms, still the largest single stall in the project.
+6. **No settings screen.** The F9 personality-tag toggle is session-only and
+   resets each launch; `release/README.txt` documents that.
+7. **Companions clip each other in fights** and briefly fight back before
+   target discipline cancels it (16 and 6 hits across run 32's two fights). The
+   cause is understood — see the combat-assist section — and the containment
+   works, but the hits themselves are not prevented.
+8. **Lag during fights**, caused by follow/combat action install churn, measured
+   per fight by the `[INSTALLS]` log line. Not the logging; that was cut by 71%
+   in passes 332-333 and the lag survived it.
+9. **Doc drift:** `README.md` line 18 still advertises "Pet (F9), Feed (F10)",
+   binds removed back in pass 239. `release/workshop-description.txt` never
+   documents F10 at all. Both are player-facing.
+
+---
+
+## Pending, deliberately deferred
+
+**Play's cheer emote — the recipe is now in hand (pass 325).** The Kick Keybind
+reference mod (`stale/reference-mods/`) shows how to make the PLAYER emote:
+player emotes are `/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_<N>.BP_Action_Emote_<N>_C`
+played via `APalPlayerController::ActionComponent_PlayAction_ToServer_ForPlayer(Pawn, {}, ActionClass, 0)`.
+Kick is `Emote_8`; cheer is another number in the same series and the assets are
+numbered rather than named, so it has to be identified by trying them. When Play
+is picked up: probe `Emote_1..20` with `StaticFindObject`, log which resolve, and
+have Dragón identify the cheer.
+
+**Hotkeys fire while typing in chat.** The same mod caches `PalEditableTextBox` /
+`PalMultiLineEditableTextBox` / `EditableTextBox` and checks `HasKeyboardFocus()`
+before acting. This project's F9/F10 binds have no such guard. Small, worth doing.
+
+
+**Play's target-busy gate — do not fix in isolation.** Dragón's call, 2026-09-11:
+*"lets skip it for now, but add it as a pending for when the play interaction
+gets its full development, right now there's no need to fix something thats
+just an added extra"*.
+
+The problem, so it does not need re-diagnosing later: `do_play` gates on the
+TARGET's `ActionComponent:ActionIsEmpty()`, and a wild Pal almost always has
+some idle action running, so the gate refuses nearly every press. His
+2026-09-11 log shows **4 out of 4 F8 presses refused** on it, every one having
+found its Pal correctly:
+
+```
+19:40:57  F8 pressed — starting Play
+19:40:57  target is busy or its action state couldn't be read — skipping Play
+```
+
+`ActionIsEmpty()` is the signal this project has already rejected twice as
+unreliable (it broke the rest animation in pass 179 and defeated three separate
+capture-delay attempts, because it reports empty in the gaps between steps of a
+real multi-part action). So the fix is not to tweak the gate — it is to decide
+what "the target is available" actually means, as part of giving Play a real
+implementation. Play also still has no radial-menu entry, which Dragón wants;
+these belong in the same piece of work.
+
+## Next steps
+
+In order. The first two are the only things standing between this and shipping.
+
+1. **The lag — attack the install churn.** See the combat-assist section above
+   for the measured cause and three untried ideas. Start with "do not rebuild
+   follow while the combat window is open", which is the cheapest and does not
+   touch priorities.
+2. **Friendly fire.** Understood but unsolved. The `QUIET_RETALIATION_DURING_PLAYER_FIGHT`
+   A/B is still unresolved — resolve it with a clean single-variable run pair
+   before trying anything new, and delete the losing branch when it resolves.
+3. **Turn `ACTION_CHANGE_PROBE` off** and set the live `DEBUG_LOGGING` back to
+   `false`. Both are shipping blockers, neither is urgent before then.
+4. **Fix the doc drift** (known defect 7) before any further release.
+5. **Rebuild the release zip** with the post-1.0.0 crash fixes and cut v1.0.1.
+6. **Decide on a settings screen**, which is where the tag toggle and the balance
+   knobs belong. This is the last 5% of the progress table.
+
+Deliberately NOT next: the controller swap (see "Two routes to the right brain").
+Dragón has ruled it a fallback only, to be opened if the current approach stops
+gaining ground. It is still gaining ground.
+
+## Where the real detail lives
+
+`docs/hook-points.md` is the technical log, pass by pass, with the exact class
+and function names and what each experiment proved. It is the file to search
+when you need to know whether something was already tried. `CLAUDE-archive.md`
+holds the older narrative history. `DESIGN.md` holds the original design; note
+that its §12 "Priority TODO list" is marked SUPERSEDED and should not be used to
+judge current state — **check the code, not the planning docs.**

@@ -1,57 +1,13 @@
---[[
-    Capture.lua — DESIGN.md §3.5 and §3.6
-
-    Two threshold events land here, now wired from the real Trust.lua
-    (2026-09-01) instead of being dead stubs:
-      - Rank hits CAPTURE_AT_RANK (Trust.lua, currently rank 1) ->
-        sphere-less guaranteed capture into the party.
-      - Rank drops to 0 after having bonded (damage or leaving the
-        player too far behind, per Dragón's spec) -> Pal is done: stops
-        following and is permanently flagged as no longer bondable, same
-        as DESIGN.md §3.6 originally described.
-
-    The capture side has direct precedent: "Human Mercy Bypass", "Catch
-    Gun", and "Capture the Uncapturables" on Nexus all already perform
-    sphere-less guaranteed captures. STILL A STUB as of this pass — the
-    actual capture UFunction (hook-points.md question 4) hasn't been
-    found/tried yet. OnTrustMaxed below fires and logs clearly when the
-    real threshold is met, but doesn't yet capture anything. That's the
-    next concrete piece of work once Trust.lua's rank-tracking is
-    confirmed working live.
-
-    THIRTY-EIGHTH PASS (2026-09-02): Dragón asked directly to keep moving
-    toward finishing the mod rather than researching indefinitely. Static
-    research on Question 4 hit its ceiling last pass (see hook-points.md,
-    thirty-seventh pass) — no cleaner candidate than
-    `UPalUtility.PalCaptureSuccess(Player, Monster)` exists in the
-    reflected header dump, and it's the single most-reliably-observed
-    function in the whole project (fired correctly on all three real
-    sphere captures tested). `Capture.TryDirectCapture` below is the
-    actual experiment: call it directly on a wild Pal that never went
-    through a real sphere throw, and see what happens. See the function's
-    own comment for the full risk breakdown — bound to its own dedicated
-    key (F11 in Interaction.lua), deliberately NOT wired into the
-    automatic OnTrustMaxed flow yet, so one bad result stays contained to
-    a single manual test.
-
-    THIRTY-NINTH PASS (2026-09-02): CONFIRMED LIVE. Dragón tested F11 on
-    three different wild Pals (Sheepball, Cattiva, and a Mammorest —
-    large/boss-tier) — all three joined his real party, no sphere, no
-    crash. DESIGN.md Question 4 is answered. OnTrustMaxed below now calls
-    Capture.TryDirectCapture for real instead of just logging "would
-    capture here". Only cosmetic gap noticed: no capture VFX/light-beam
-    animation played (the one that plays when freeing a Pal from a cage)
-    — not a functional problem, a possible future polish item if wanted.
-]]
-
 local Logger = require("Logger")
 local Combat = require("Combat")
+
 -- Hundred-and-fifty-sixth pass (2026-09-04): for real fleeing on trust
 -- loss (Personality.ForceTier below) — safe top-level require, no cycle:
 -- Personality.lua only ever requires Capture lazily, inside function
 -- bodies (pcall(require, "Capture")), never at file-load time, and
 -- main.lua's own require order already loads Personality before Capture.
 local Personality = require("Personality")
+
 -- Two-hundred-and-thirteenth pass: FindOrAddFName, to build real FNames for
 -- the localisation-id candidates in resolve_pal_display_name. Same bundled
 -- helper Interaction.lua already uses for exactly this reason.
@@ -60,9 +16,7 @@ local UEHelpers = require("UEHelpers")
 -- EPalLocalizeTextCategory::PalMonsterName, read from this build's own
 -- Pal_enums.hpp dump (two-hundred-and-ninth pass) — used for the join toast.
 local PAL_LOCALIZE_CATEGORY_MONSTER_NAME = 4
-
 local Capture = {}
-
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then return result end
@@ -134,7 +88,6 @@ end
 function Capture.TryDirectCapture(pal, player)
     local palName = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] TryDirectCapture starting on %s", tostring(palName)))
-
     if pal == nil or not pal:IsValid() then
         Logger.log("[PalBonds/Capture] [EXPERIMENT] target Pal is not valid — aborting, nothing risky called")
         return
@@ -143,10 +96,8 @@ function Capture.TryDirectCapture(pal, player)
         Logger.log("[PalBonds/Capture] [EXPERIMENT] no valid player — aborting, nothing risky called")
         return
     end
-
     local ownerBefore = read_owner_id(pal)
     Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] owner BEFORE the call = %s (this line is flushed to disk before the risky call below runs)", tostring(ownerBefore)))
-
     local utility = get_pal_utility()
     if utility == nil then
         Logger.log("[PalBonds/Capture] [EXPERIMENT] could not resolve PalUtility — aborting, nothing risky called")
@@ -158,10 +109,8 @@ function Capture.TryDirectCapture(pal, player)
         utility:PalCaptureSuccess(player, pal)
     end)
     Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] PalCaptureSuccess call returned — result=%s", callOk and "ok (no Lua-level error — doesn't yet mean it worked, just that nothing threw)" or ("Lua ERROR: " .. tostring(callErr))))
-
     local stillValid = safe_call(function() return pal:IsValid() end)
     Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] target actor still valid immediately after = %s", tostring(stillValid)))
-
     if stillValid then
         local ownerAfter = read_owner_id(pal)
         Logger.log(string.format(
@@ -169,7 +118,6 @@ function Capture.TryDirectCapture(pal, player)
             tostring(ownerAfter), tostring(ownerBefore)
         ))
     end
-
     Logger.log("[PalBonds/Capture] [EXPERIMENT] TryDirectCapture finished — the real answer is what you see in-game: did this Pal vanish from the world AND show up in your party or Palbox? Check both.")
 end
 
@@ -235,6 +183,7 @@ local function to_lua_string(v)
     if type(v) == "string" then return v end
     local s = safe_call(function() return v:ToString() end)
     if type(s) == "string" then return s end
+
     -- Last resort: tostring() gives "FString: 0x..." which is useless as a
     -- display name, so reject it rather than showing an address to the player.
     return nil
@@ -261,6 +210,79 @@ end
 -- So the name is now resolved up-front, next to preCaptureHandle (which
 -- exists for precisely this reason), and passed in as a plain string that
 -- survives the capture.
+-- ===================================================================
+-- NAME LOOKUP FOR VARIANT PALS
+-- (two-hundred-and-ninety-eighth pass, 2026-09-11)
+-- ===================================================================
+-- Dragón saw a bond-lost toast read "PAL_NAME_BOSS_GrassMammoth was left
+-- behind and gave up on you." — the internal localisation KEY, shown to the
+-- player. He reports the same for other special Pals (predators and the like).
+--
+-- Two separate faults produced it:
+--
+-- 1. A failed GetLocalizedText echoes the key back as its result. The old guard
+--    was `asString ~= rawId`, which compares against "BOSS_GrassMammoth" while
+--    the echo is "PAL_NAME_BOSS_GrassMammoth". Those differ, so the guard
+--    passed and the key was accepted AS the name.
+--
+-- 2. There is no loc entry under the variant id at all. Boss and predator
+--    CharacterIDs carry a prefix ("BOSS_GrassMammoth"), and only the base
+--    species ("GrassMammoth") has a name entry.
+--
+-- The prefixes are not in the header dump — they live in data tables — so
+-- rather than hardcode a list that will miss the next variant, this strips them
+-- structurally: real species ids are CamelCase ("GrassMammoth", "CuteMole",
+-- "FlowerDoll"), so a LEADING ALL-CAPS SEGMENT followed by an underscore is
+-- reliably a variant marker. That covers BOSS_, PREDATOR_, RAID_, SUMMON_ and
+-- anything added later, and it strips repeatedly for stacked prefixes.
+local function reject_if_key_echo(asString, id)
+    if asString == nil or asString == "" then return nil end
+    if asString == id then return nil end
+    if asString:find("^PAL_NAME_") ~= nil then return nil end
+    return asString
+end
+
+local function lookup_localized_name(player, textLibrary, masterData, id)
+    local key = safe_call(function() return UEHelpers.FindOrAddFName("PAL_NAME_" .. id) end)
+    if key == nil then return nil end
+    local localized = safe_call(function()
+        return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, key)
+    end)
+    local asString = to_lua_string(localized and safe_call(function()
+        return textLibrary:Conv_TextToString(localized)
+    end))
+    return reject_if_key_echo(asString, id)
+end
+
+-- "BOSS_GrassMammoth" -> { "BOSS_GrassMammoth", "GrassMammoth" }
+local function name_lookup_candidates(rawId)
+    local candidates = { rawId }
+    local current = rawId
+    for _ = 1, 3 do
+        local rest = current:match("^[A-Z][A-Z0-9]*_(.+)$")
+        if rest == nil or rest == "" then break end
+        candidates[#candidates + 1] = rest
+        current = rest
+    end
+    return candidates
+end
+
+-- Last resort, so the player never sees an internal id even if every lookup
+-- fails: strip the variant prefix and space out the CamelCase, turning
+-- "BOSS_GrassMammoth" into "Grass Mammoth". Not the localised name, but it
+-- reads as a creature rather than as data.
+local function prettify_raw_id(rawId)
+    local base = rawId
+    for _ = 1, 3 do
+        local rest = base:match("^[A-Z][A-Z0-9]*_(.+)$")
+        if rest == nil or rest == "" then break end
+        base = rest
+    end
+    base = base:gsub("_", " ")
+    local spaced = base:gsub("(%l)(%u)", "%1 %2")
+    return spaced
+end
+
 local function resolve_pal_display_name(pal, player)
     local palName = nil
     safe_call(function()
@@ -271,10 +293,10 @@ local function resolve_pal_display_name(pal, player)
         if param == nil or not param:IsValid() then return end
         local charId = param:GetCharacterID()
         if charId == nil then return end
-
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         local masterData = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility") end)
         if textLibrary ~= nil and masterData ~= nil then
+
             -- Two-hundred-and-fourteenth pass (2026-09-06) — SOLVED, format
             -- confirmed from Dragón's run. The [NAME-DIAG] probe answered it
             -- cleanly on three separate captures:
@@ -288,30 +310,44 @@ local function resolve_pal_display_name(pal, player)
             -- Hard-coded now and the candidate loop removed: it cost three
             -- GetLocalizedText round-trips per capture to re-derive a settled
             -- answer every time.
+            -- Two-hundred-and-ninety-eighth pass (2026-09-11): a candidate loop
+            -- is back, but this is NOT a re-run of the one the pass above
+            -- removed. That one re-derived the key FORMAT on every capture, a
+            -- settled question. This one tries the variant id first and then
+            -- the base species, which is a different question that pass never
+            -- saw, because it only ever tested ordinary Pals. An ordinary Pal
+            -- still resolves on the first candidate and costs exactly one
+            -- round-trip, same as before.
             local rawId = to_lua_string(safe_call(function() return charId:ToString() end))
             if rawId then
-                local key = safe_call(function() return UEHelpers.FindOrAddFName("PAL_NAME_" .. rawId) end)
-                if key ~= nil then
-                    local localized = safe_call(function()
-                        return masterData:GetLocalizedText(player, PAL_LOCALIZE_CATEGORY_MONSTER_NAME, key)
-                    end)
-                    local asString = to_lua_string(localized and safe_call(function() return textLibrary:Conv_TextToString(localized) end))
-                    if asString ~= nil and asString ~= "" and asString ~= rawId then
-                        palName = asString
+                for _, candidate in ipairs(name_lookup_candidates(rawId)) do
+                    local found = lookup_localized_name(player, textLibrary, masterData, candidate)
+                    if found ~= nil then
+                        if candidate ~= rawId then
+                            Logger.log("[PalBonds/Capture] [NOTIFY] '" .. rawId ..
+                                "' has no name entry of its own — resolved via base species '" ..
+                                candidate .. "'")
+                        end
+                        palName = found
                         return
                     end
                 end
             end
         end
 
-        -- Fallback: the raw internal id, still better than "A wild Pal".
+        -- Fallback. NOT the raw id any more: that is what put
+        -- "PAL_NAME_BOSS_GrassMammoth" on Dragón's screen. Prettified instead,
+        -- so the worst case reads as a creature and not as data.
         local raw = to_lua_string(safe_call(function() return charId:ToString() end))
-        if raw ~= nil and raw ~= "" then palName = raw end
+        if raw ~= nil and raw ~= "" then
+            palName = prettify_raw_id(raw)
+            Logger.log("[PalBonds/Capture] [NOTIFY] no localised name for '" .. raw ..
+                "' under any candidate id — using the prettified id '" .. tostring(palName) .. "'")
+        end
     end)
     Logger.log("[PalBonds/Capture] [NOTIFY] resolved display name BEFORE capture = " .. tostring(palName))
     return palName
 end
-
 function Capture.NotifyJoined(pal, player, preResolvedName)
     local ok, err = pcall(function()
         local utility = get_pal_utility()
@@ -322,6 +358,7 @@ function Capture.NotifyJoined(pal, player, preResolvedName)
         if widgetClass == nil then return end
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
+
         -- Two-hundred-and-tenth pass: the name is resolved BEFORE the
         -- capture (see resolve_pal_display_name above for why) and handed in
         -- here, so this function never touches the mid-teardown Pal actor.
@@ -346,7 +383,6 @@ function Capture.NotifyJoined(pal, player, preResolvedName)
             message = "A wild Pal has chosen to go with you."
         end
         Logger.log("[PalBonds/Capture] [NOTIFY] join message: " .. message)
-
         local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
         if text == nil then return end
         manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 2 })
@@ -423,7 +459,6 @@ local function guid_is_zero(g)
     if g == nil then return true end
     return (g.A == 0) and (g.B == 0) and (g.C == 0) and (g.D == 0)
 end
-
 function Capture.IsAlreadyOwned(pal)
     local ok, result = pcall(function()
         if pal == nil or not pal:IsValid() then return true end
@@ -437,7 +472,6 @@ function Capture.IsAlreadyOwned(pal)
         -- Assigned to a base camp: the case that produced the bug.
         local campOk, campId = pcall(function() return comp:GetBaseCampId() end)
         if campOk and not guid_is_zero(campId) then return true end
-
         local param = comp:GetIndividualParameter()
         if param == nil or not param:IsValid() then return true end
         local ownerId = param.SaveParameter and param.SaveParameter.OwnerPlayerUId
@@ -445,7 +479,7 @@ function Capture.IsAlreadyOwned(pal)
         return not guid_is_zero(ownerId)
     end)
     if ok then return result end
-    return true -- pcall itself failed -> safe default: treat as owned
+    return true 
 end
 
 -- Pals that hit 0 trust after bonding and can never be interacted with
@@ -510,22 +544,22 @@ local JOIN_VFX_CANDIDATES = {
     "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear01.NS_PalDisappear01",
     "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear02.NS_PalDisappear02",
     "/Game/Pal/Effect/Common/PalCatch/NS_PalCatch.NS_PalCatch",
-    "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear.NS_PalDisappear", -- the one already rejected, kept last for comparison
+    "/Game/Pal/Effect/Common/PalCatch/NS_PalDisappear.NS_PalDisappear", 
 }
+
 -- Which candidate the real capture uses. 1 = NS_PalCatch_Success, the most
 -- likely fit for "the Pal joined you" now that the recall-vanish is ruled out.
 local JOIN_VFX_INDEX = 1
 local JOIN_VFX_ASSET_PATH = JOIN_VFX_CANDIDATES[JOIN_VFX_INDEX]
+
 -- Alternatives, if the above reads wrong in game (swap the path, nothing else):
 --   /Game/Pal/Effect/Common/PalCatch/NS_PalCatch_Success.NS_PalCatch_Success
 --   /Game/Pal/Effect/Common/Return/NS_Return.NS_Return
 --   /Game/Pal/Effect/Common/PalCatch/NS_PalDisappear01.NS_PalDisappear01
 local loggedJoinVfxOnce = false
-
 local function spawn_niagara_at(pal, assetPath)
     safe_call(function()
         if pal == nil or not pal:IsValid() then return end
-
         local system = StaticFindObject(assetPath)
         if system == nil then
             if not loggedJoinVfxOnce then
@@ -535,54 +569,32 @@ local function spawn_niagara_at(pal, assetPath)
             end
             return
         end
-
         local niagaraLib = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary")
         if niagaraLib == nil then
             Logger.log("[PalBonds/Capture] [JOIN-VFX] could not resolve NiagaraFunctionLibrary — no effect played")
             return
         end
-
         local loc = safe_call(function() return pal:K2_GetActorLocation() end)
         if loc == nil then return end
-
         local comp = safe_call(function()
             return niagaraLib:SpawnSystemAtLocation(
-                pal,                              -- WorldContextObject
-                system,                           -- SystemTemplate
-                loc,                              -- Location
+                pal,                              
+                system,                           
+                loc,                              
                 {Pitch = 0.0, Yaw = 0.0, Roll = 0.0},
                 {X = 1.0, Y = 1.0, Z = 1.0},
-                true,                             -- bAutoDestroy
-                true,                             -- bAutoActivate
-                0,                                -- ENCPoolMethod::None
-                true                              -- bPreCullCheck
+                true,                             
+                true,                             
+                0,                                
+                true                              
             )
         end)
         Logger.log("[PalBonds/Capture] [JOIN-VFX] spawned " .. assetPath ..
             " at the joining Pal — component=" .. tostring(comp ~= nil))
     end)
 end
-
--- Two-hundred-and-fourteenth pass: CTRL+V preview. Plays the next candidate
--- effect on a given Pal and says which index it was, so Dragón can judge every
--- option in one session instead of one per test run. Temporary, and already on
--- the release-cleanup list.
-local vfxPreviewIndex = 0
-function Capture.PreviewNextJoinVfx(pal)
-    if pal == nil or not pal:IsValid() then
-        Logger.log("[PalBonds/Capture] [VFX-PREVIEW] no Pal aimed at — point at a Pal and press again")
-        return
-    end
-    vfxPreviewIndex = (vfxPreviewIndex % #JOIN_VFX_CANDIDATES) + 1
-    local path = JOIN_VFX_CANDIDATES[vfxPreviewIndex]
-    Logger.log(string.format("[PalBonds/Capture] [VFX-PREVIEW] playing candidate %d of %d: %s",
-        vfxPreviewIndex, #JOIN_VFX_CANDIDATES, path))
-    spawn_niagara_at(pal, path)
-end
-
-
-
 function Capture.Init()
+
     -- Two-hundred-and-eighty-ninth pass (2026-09-09): the cage-VFX research is
     -- retired, and it was not free. probe_cage_vfx re-ran TWO FindAllOf world
     -- scans every 10 seconds for up to CAGE_PROBE_MAX_ROUNDS = 180 rounds --
@@ -596,101 +608,6 @@ function Capture.Init()
     -- open part of the question needs an asset found via repak/FModel, which
     -- no amount of polling live cages will produce.
     Logger.log("[PalBonds/Capture] real trigger points wired (via Trust.lua) — sphere-less capture is now REAL (thirty-ninth pass), calls Capture.TryDirectCapture for real on OnTrustMaxed")
-end
-
--- DESIGN.md §3.5. `pal` is the actor (UE4SS PalCharacter object), not a
--- string ID.
---
--- THIRTY-NINTH PASS (2026-09-02): wired for real. Dragón confirmed live
--- (F11 manual test, thirty-eighth pass) that Capture.TryDirectCapture
--- actually works — three different wild species (Sheepball, Cattiva, and
--- a Mammorest, a large boss-tier Pal) all joined his real party, no
--- sphere, no crash. This is DESIGN.md Question 4, answered for real.
--- OnTrustMaxed now calls it for real instead of just logging "would
--- capture here", and stops the bonding-follow state afterward since the
--- Pal is a genuine party member from this point on, not just our own
--- approximated follow state.
-
--- Hundred-and-thirty-seventh pass (2026-09-03): the single biggest open
--- question in this whole project — does a real-captured wild Pal actually
--- FOLLOW like a genuine Otomo afterward, or does it just sit in the party
--- roster (bench) until the player manually opens the party menu and
--- selects it? Nobody has ever explicitly checked this — every prior real
--- capture (thirty-ninth/hundred-and-eighteenth passes) was only confirmed
--- via "showed up in the party screen", never "kept following afterward
--- using the game's own systems". `Combat.StopFollowing` already turns off
--- OUR approximated follow the instant this fires, on the ASSUMPTION the
--- game takes over — this diagnostic finally checks whether that
--- assumption is true.
---
--- Entirely read-only, reusing the exact same proven-safe pattern already
--- used in Interaction.lua's `diagnose_party_membership` (hundred-and-
--- thirty-third-ish pass): `FindAllOf("PalPlayerPartyPalHolder")` (a
--- real, non-Arena class confirmed since the sixth continuación), plain
--- field reads (`FirstOtomoPal`/`SecondOtomoPal`/`BenchMember`), and the
--- bool-returning query `PawnOtmoIsPartyOtomo` — nothing here writes or
--- calls a state-mutating function.
--- Two-hundred-and-fourth pass (2026-09-06): this used to resolve `handle`
--- from `pal` (the actor) INSIDE this function, called AFTER
--- `Capture.TryDirectCapture` already ran — but every real test since this
--- diagnostic was written (hundred-and-thirty-seventh pass) hit "could not
--- resolve a live handle for the just-captured Pal", including all 3 real
--- captures in the session that just confirmed the composite-follow
--- negative result. Root cause, found by re-reading `Capture.TryDirectCapture`'s
--- own log right above this: it logs the Pal's owner-field struct going
--- from a real value to `nil` right across the `PalCaptureSuccess` call —
--- i.e. the capture process is actively tearing down/reassigning the very
--- actor state this function's handle lookup depends on, in the same
--- instant. Resolving `GetIndividualCharacterHandleByActor(pal)` at that
--- point was never going to work reliably — `pal` is mid-transition from
--- "wild actor" to "party data record," not a normal live actor anymore.
---
--- Real fix: resolve the handle BEFORE the capture call instead, while
--- `pal` is still an ordinary, fully-live wild actor (the exact same
--- moment `Personality.GetStableId` already reads a stable ID off wild
--- Pals successfully, throughout this whole project) — then thread that
--- already-resolved handle through to this function instead of re-deriving
--- it from a (by then reassigned) actor reference. Zero new native-call
--- risk: same function (`GetIndividualCharacterHandleByActor`), just called
--- at a point already proven safe elsewhere in this project.
-local function diagnose_post_capture_slot(handle)
-    local ok = pcall(function()
-        if not handle or not handle:IsValid() then
-            Logger.log("[PalBonds/Capture] [POST-CAPTURE-SLOT] no usable pre-capture handle was resolved — skipping check")
-            return
-        end
-
-        local function describe(obj)
-            if obj == nil then return "nil" end
-            local dOk, name = pcall(function() return obj:GetFullName() end)
-            if dOk and name then return name end
-            return tostring(obj)
-        end
-
-        local holders = FindAllOf("PalPlayerPartyPalHolder") or {}
-        Logger.log(string.format("[PalBonds/Capture] [POST-CAPTURE-SLOT] FindAllOf(PalPlayerPartyPalHolder) found %d live instance(s)", #holders))
-        for i, holder in ipairs(holders) do
-            local validOk, isValid = pcall(function() return holder ~= nil and holder:IsValid() end)
-            if validOk and isValid then
-                local first = safe_call(function() return holder.FirstOtomoPal end)
-                local second = safe_call(function() return holder.SecondOtomoPal end)
-                local benchCount = safe_call(function()
-                    local bench = holder.BenchMember
-                    return bench and bench:GetArrayNum()
-                end)
-                local isFirst = safe_call(function() return holder:PawnOtmoIsPartyOtomo(false, handle) end)
-                local isSecond = safe_call(function() return holder:PawnOtmoIsPartyOtomo(true, handle) end)
-                Logger.log(string.format(
-                    "[PalBonds/Capture] [POST-CAPTURE-SLOT] holder[%d]: FirstOtomoPal=%s SecondOtomoPal=%s BenchMember count=%s | is-this-Pal-FirstOtomo=%s is-this-Pal-SecondOtomo=%s",
-                    i, describe(first), describe(second), tostring(benchCount), tostring(isFirst), tostring(isSecond)
-                ))
-            end
-        end
-        Logger.log("[PalBonds/Capture] [POST-CAPTURE-SLOT] if both is-this-Pal flags read false/nil above, the Pal almost certainly landed on the BENCH, not an active slot — meaning it needs an explicit activation call to actually follow, same as this project already found happens when the player switches Otomo manually (Continuación 7: InactivateCurrentOtomo + ActivateOtomo)")
-    end)
-    if not ok then
-        Logger.log("[PalBonds/Capture] [POST-CAPTURE-SLOT] diagnostic itself failed (safely contained, no risk to the real capture above)")
-    end
 end
 
 -- Two-hundred-and-fifth pass (2026-09-06): Dragón's real ask, clarified —
@@ -724,7 +641,6 @@ end
 -- the capture threshold to actually joining is now ~5s + 2s, worth
 -- retuning live if it feels too long.
 local JOIN_CELEBRATION_DELAY_MS = 2000
-
 local function play_join_celebration_then(pal, continueFn)
     local actionComp = safe_call(function() return pal.ActionComponent end)
     local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
@@ -769,25 +685,14 @@ end
 -- (1->6000, 2->13000, 3->21000, 4->30000, 5->40000, 6->55000): a Pal starting
 -- from zero lands at rank 5, just short of 6.
 local JOIN_FRIENDSHIP_POINT_GRANT = 50000
-
 function Capture.OnTrustMaxed(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
-
     local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
     if not player or not (safe_call(function() return player:IsValid() end)) then
         Logger.log("[PalBonds/Capture] no valid local player found — cannot capture, leaving Pal as a bonding-follower for now")
         return
     end
-
-    -- Two-hundred-and-fourth pass (2026-09-06): resolved HERE, BEFORE the
-    -- capture call below, while `pal` is still an ordinary live wild actor
-    -- — see diagnose_post_capture_slot's own header comment for why every
-    -- past attempt to resolve this AFTER capture failed instead.
-    local preCaptureHandle = safe_call(function()
-        local utility = get_pal_utility()
-        return utility and utility:GetIndividualCharacterHandleByActor(pal)
-    end)
 
     -- Two-hundred-and-tenth pass: resolved HERE, before the capture, for the
     -- same reason preCaptureHandle above is — after PalCaptureSuccess runs,
@@ -821,14 +726,12 @@ function Capture.OnTrustMaxed(pal)
             JOIN_FRIENDSHIP_POINT_GRANT, tostring(before), tostring(after), ok and "ok" or "FAILED"
         ))
     end)
-
     play_join_celebration_then(pal, function()
         local stillValid = safe_call(function() return pal:IsValid() end)
         if not stillValid then
             Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] Pal went invalid during the celebration delay — aborting the capture entirely")
             return
         end
-
         Capture.TryDirectCapture(pal, player)
 
         -- Hundred-and-thirtieth pass: real on-screen confirmation. Fired
@@ -843,6 +746,7 @@ function Capture.OnTrustMaxed(pal)
         -- It's a real party member now (assuming the call above worked) —
         -- stop treating it as our own approximated bonding-follow state.
         Combat.StopFollowing(pal)
+
         -- ...and drop Trust's own record too. Combat.StopFollowing only clears
         -- the follow bookkeeping; Trust kept its bonding state, and its tick
         -- then measured the distance to a Pal that no longer exists in the world
@@ -851,11 +755,6 @@ function Capture.OnTrustMaxed(pal)
             local okT, TrustMod = pcall(require, "Trust")
             if okT and TrustMod and TrustMod.ForgetBonding then TrustMod.ForgetBonding(pal) end
         end)
-
-        -- Hundred-and-thirty-seventh pass: read-only check of where the Pal
-        -- actually landed — see diagnose_post_capture_slot's own comment for
-        -- why it now takes the pre-resolved handle instead of the actor.
-        diagnose_post_capture_slot(preCaptureHandle)
     end)
 end
 
@@ -887,16 +786,22 @@ local function notify_bond_lost(pal, reason)
         if widgetClass == nil then return end
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
-
         local palName = resolve_pal_display_name(pal, player)
         local who = palName or "A Pal"
         local message
         if reason == "betrayed" then
             message = who .. " no longer trusts you. It will not bond with you again."
+
+        -- Two-hundred-and-ninety-sixth pass (2026-09-11): a companion that DIED
+        -- used to fall through to the "left behind" wording, because death was
+        -- never detected at all — the corpse simply drifted past the distance
+        -- limit and the drift check spoke for it. Dragón watched a Cawgnito die
+        -- defending him and then get told it had wandered off.
+        elseif reason == "died" then
+            message = who .. " fell while fighting alongside you."
         else
             message = who .. " was left behind and gave up on you."
         end
-
         local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
         if text == nil then return end
         manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 1 })
@@ -931,7 +836,6 @@ function Capture.ShowToast(message)
         Logger.log("[PalBonds/Capture] [NOTIFY] " .. tostring(message))
     end)
 end
-
 function Capture.NotifyTrustShaken(pal)
     pcall(function()
         local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
@@ -944,7 +848,6 @@ function Capture.NotifyTrustShaken(pal)
         if widgetClass == nil then return end
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
-
         local palName = resolve_pal_display_name(pal, player)
         local message = (palName or "A Pal") .. " flinched away from you. Its trust is shaken."
         local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
@@ -953,9 +856,9 @@ function Capture.NotifyTrustShaken(pal)
         Logger.log("[PalBonds/Capture] [NOTIFY] trust-shaken message: " .. message)
     end)
 end
-
 function Capture.OnTrustLost(pal, reason)
     notify_bond_lost(pal, reason)
+
     -- Two-hundred-and-fifty-seventh pass: Dragon asked the right question --
     -- "why before betrayed pals ran away no problem but now they still follow?
     -- what broke?" -- and the answer is that I broke it two passes ago.
@@ -981,6 +884,7 @@ function Capture.OnTrustLost(pal, reason)
         end)
     end
     local name = safe_call(function() return pal:GetFullName() end)
+
     -- Two-hundred-and-forty-eighth pass (2026-09-07): the reason is now KEPT,
     -- not just used for the toast and thrown away. Dragón wants the two
     -- outcomes labelled differently on the nameplate — "scarred for betrayed
@@ -989,72 +893,16 @@ function Capture.OnTrustLost(pal, reason)
     -- is all that was needed; PermanentlyFled was already keyed by actor name,
     -- it was just holding `true` instead of anything informative.
     Logger.log(string.format("[PalBonds/Capture] %s lost all trust (%s) — fleeing permanently", tostring(name), tostring(reason)))
-
     if name then
         PermanentlyFled[name] = reason or true
     end
-
-    -- Hundred-and-fifty-sixth pass (2026-09-04) FIX: this used to just be
-    -- an internal flag with an honest TODO admitting real flee behavior
-    -- was never attempted. Not true anymore — the personality-tier work
-    -- from earlier this session proved a real, working mechanism for
-    -- exactly this: forcing a Pal's tracked tier to "escape" and letting
-    -- the already-confirmed-live enforcement path (private AIResponse-
-    -- Preset swap) make it genuinely flee, no new native call needed.
-    -- Two-hundred-and-sixty-second pass (2026-09-07) — Dragon's idea, and it is
-    -- both the better design and the actual technical fix:
-    --   "what if instead of making them follow or not, once its scarred turn
-    --    hostile on the player? that way the player is forced to run from the pal
-    --    or kill it"
-    --
-    -- Five separate attempts to remove the follow action have now failed --
-    -- TerminateCurrentActionByClass, AllCancelPushedAction, swapping the slot
-    -- with PawnAction_Wait, cancelling the running action, and pointing Trainer
-    -- at the Pal itself. The last one is the telling one: the POST-BOND-DUMP
-    -- shows the write HELD (Trainer really is the Pal) and the action carried on
-    -- regardless, FollowState 3, still computing destinations.
-    --
-    -- Turning the Pal hostile sidesteps all of it, because COMBAT IS THE ONE
-    -- THING THAT HAS BEEN EVICTING THIS ACTION SUCCESSFULLY ALL ALONG. This
-    -- project discovered that weeks ago -- a fight destroys the follow action --
-    -- and built the whole rebuild-after-combat system around it without ever
-    -- drawing the obvious conclusion. So instead of asking the engine for a
-    -- removal API that does not seem to exist, we let the game do the eviction
-    -- itself, through the exact path already proven to work.
-    --
-    -- The two ways a bond ends now diverge, which they should:
-    --   betrayed  -> warlike_anyway. You hurt it; it comes after you. The Pal
-    --                is telling the player something, and it is unmissable.
-    --   abandoned -> escape. You neglected it; it leaves. No grudge, just gone.
-    --
-    -- "warlike_anyway" is not a guess: it is one of the seven rolled tiers, and
-    -- Dragon confirmed in play that Pals on it genuinely do attack him.
-    -- Two-hundred-and-sixty-third pass: a BETRAYED Pal is frozen where it stands.
-    -- The preset swap below is kept because it costs nothing and is correct in
-    -- principle, but this session proved it changes no behaviour on its own --
-    -- the Pal's AI will not re-derive its attitude to the player. The freeze is
-    -- what the player actually sees, and Dragon's reasoning for it is right:
-    -- better a Pal that stands motionless than one that keeps walking after the
-    -- person who just beat it.
-    --
-    -- Abandonment deliberately does NOT freeze. A Pal you merely left behind has
-    -- no reason to be paralysed; it just stops being yours.
-    -- Two-hundred-and-sixty-fourth pass (2026-09-07) — REVERTED. SetActiveAI(false)
-    -- did exactly what it says and that turned out to be far too much: Dragon's
-    -- report is that the Pal "gets stuck so hard that it doesnt even realize its
-    -- dead, it just stands there idle, not reacting to anything at all, not even
-    -- after losing all its hp". A corpse that never dies is much worse than a Pal
-    -- that walks after you, so this is off.
-    --
-    -- Instead of guessing at a seventh mechanism, the block below asks what is
-    -- ACTUALLY running on this Pal after the bond breaks. Every real breakthrough
-    -- in this project came from that question and none came from guessing.
-    safe_call(function()
-        local okC, CombatMod = pcall(require, "Combat")
-        if okC and CombatMod and CombatMod.DiagnoseAfterBondLoss then
-            CombatMod.DiagnoseAfterBondLoss(pal, reason)
-        end
-    end)
+    -- A dead Pal gets no personality tier and no sight re-check. Both exist to
+    -- change what the Pal DECIDES next, and a corpse decides nothing — forcing
+    -- 'escape' on it and asking it to re-run a sight check is pure waste, and it
+    -- was visible in Dragón's log as the mod telling a dead Cawgnito to flee.
+    if reason == "died" then
+        return
+    end
 
     local palId = safe_call(function() return Personality.GetOrInitState(pal) end)
     if palId then
@@ -1063,6 +911,7 @@ function Capture.OnTrustLost(pal, reason)
             ") — forcing tier '" .. tier .. "'" ..
             (tier == "warlike_anyway" and " so it turns on the player; the resulting combat is also what finally evicts our follow action" or ""))
         Personality.ForceTier(palId, pal, tier)
+
         -- The swap above only changes what the Pal WOULD decide; this makes it
         -- decide again, now, against the new preset. Without it the escape sits
         -- unused because our follow action occupies the Pal's decision slot and
@@ -1108,10 +957,8 @@ function Capture.ResetForNewWorld()
     PermanentlyFled = {}
     Logger.log("[PalBonds/Capture] [WORLD-RESET] dropped " .. n .. " permanently-fled record(s) from the old world")
 end
-
 function Capture.HasPermanentlyFled(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     return name ~= nil and PermanentlyFled[name] ~= nil
 end
-
 return Capture

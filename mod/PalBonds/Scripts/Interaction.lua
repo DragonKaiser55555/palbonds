@@ -1,339 +1,10 @@
---[[
-    Interaction.lua — DESIGN.md §3.2
-
-    NINETY-FIRST PASS (2026-09-03) — Dragón supplied the actual missing
-    insight, from direct in-game observation: "i cannot choose which menu
-    to open, i can just press 4, the menu itself opens depending on what i
-    target, if its a base pal it opens the worker menu, if not then its
-    the other one." That reframes everything from the eighty-eighth
-    through ninetieth passes: the Worker Menu was never gated on wild-vs-
-    owned — it's gated on whether the aimed Pal is assigned as a BASE
-    WORKER. A wild Pal can never trigger it no matter how correct the
-    OnClose/IndividualHandle fix is, because the game decides which menu
-    to even construct before any of that code runs. Dragón's own framing
-    of the next step: "we need to find that [decision] and trigger it too
-    for wild pals so it can open the worker menu as well" — find the real
-    eligibility check and make it treat an aimed wild Pal as eligible too.
-
-    Found a strong, concrete candidate in the SDK dump:
-    `UPalCharacterParameterComponent` (the same component
-    get_individual_parameter/get_individual_handle already read from)
-    has a plain field, `WorkAssignId` (`FPalWorkAssignHandleId{FGuid
-    WorkId; int32 LocationIndex; EPalWorkAssignType AssignType}`), plus a
-    getter `GetWorkAssign()` — exactly the kind of "is this Pal a
-    registered base worker" state the menu-choice logic would plausibly
-    read. Added a READ-ONLY diagnostic (`[WORKASSIGN-DIAG]`, a plain field/
-    getter read, same safe pattern as every other component read in this
-    file) that logs this for whatever's aimed at on every real "4" press,
-    so the next live test — pressing 4 on both a real base worker AND a
-    wild Pal — gives real evidence on whether this field is really the
-    differentiator, BEFORE attempting to override anything (overriding a
-    Pal's actual work-assignment state blind would risk corrupting real
-    base-management bookkeeping, a MUCH bigger blast radius than anything
-    touched so far — this project's hard-learned rule, per the eighteenth
-    and eighty-second pass incidents, is real evidence first, always).
-
-    NINETIETH PASS (2026-09-03) — REAL BREAKTHROUGH: the Worker Menu
-    finally opened live (Dragón pressed "4" repeatedly aiming at different
-    things), giving a full confirmed real sequence in the log:
-    Construct→OnSetup→CreateContent(x5)→SetupContents→OnAnyUIPushed→
-    OnClosed→OnSelectedEvent(index=5=Pet)→Destruct. But the eighty-ninth
-    pass's diagnostic showed the eighty-eighth pass's hook point
-    (`PushWidgetStackableUI`/`PalHUDService:Push`) had ZERO calls anywhere
-    near that timestamp — proving those two functions are NOT how this
-    menu's dispatch Parameter is delivered, despite matching the SDK's
-    documented signature. `OnSetup` fired with every argument nil, meaning
-    it takes no meaningful parameters — so the Parameter almost certainly
-    isn't passed as an argument to ANY function at all; it's a plain
-    Blueprint variable set directly on the widget (matching the
-    `Parameter` name from `PushWidgetStackableUI`'s own signature).
-
-    New real hook: `WBP_WorkerRadialMenu_Overlay_C:OnSetup`, reading
-    `self.Parameter` directly off the widget instance handed to us via
-    Context — no function argument needed. Given its own retry loop (same
-    as every other Worker Menu Blueprint hook — the class isn't loaded at
-    Init() time). The actual field-rewrite logic (find the aimed wild Pal,
-    gate on Capture.IsAlreadyOwned, set IndividualHandle, bind OnClose) was
-    extracted into `apply_wild_fix_to_worker_parameter()` so both this new
-    hook and the old (likely dead, kept as a free diagnostic fallback)
-    Push-based one can share it. This is the first attempt with a hook
-    point actually PROVEN to fire during a real Worker Menu open — the
-    eighty-eighth pass's logic was sound, it just needed the right door.
-
-    EIGHTY-NINTH PASS (2026-09-03) — DIAGNOSTIC ADDED after three real
-    live tests of the eighty-eighth pass's fix all came back with ZERO
-    [WORKER-BIND-FIX] fires. Dragón tested carefully (clean ground, no
-    nearby logs/stones, close range, direct aim, repeated "4" presses on a
-    wild Lamball) and confirmed directly: "the radial menu that popped up
-    was always the one from the active pal." `WORKER-WATCH` also still
-    gives up after all 8 rounds every session — `WBP_WorkerRadialMenu_C`
-    genuinely never loads at all in current play, on any target. That
-    means the eighty-eighth pass's fix never got a chance to run, and
-    raises a bigger open question: does `PushWidgetStackableUI` /
-    `PalHUDService:Push` even fire AT ALL during a "4" press (for the
-    Player Menu or anything), or is EVERY radial menu actually dispatched
-    through some other, still-unidentified function? Added an unconditional
-    (deduped-on-change) diagnostic log, `[WORKER-BIND-FIX-DIAG]`, that
-    prints the class of literally every widget pushed through either
-    hooked function — the next live "4" press will show directly whether
-    this hook point sees ANY radial-menu traffic at all, which is the
-    fact needed before deciding whether to keep pursuing this hook point
-    or look elsewhere entirely.
-
-    EIGHTY-EIGHTH PASS (2026-09-03) — THE FIRST REAL FIX ATTEMPT for "the
-    real vanilla Worker Radial Menu ('4' wheel — Pet/Feed/Move to
-    box/etc.) does nothing when aimed at a wild Pal." This had been an
-    open question since the seventy-eighth pass.
-
-    Root cause, found by comparing two real Live-View JSON dumps of
-    PalHUDDispatchParameter_WorkerRadialMenu (one from pressing 4 on the
-    real owned Otomo, one from pressing 4 on a wild Foxparks):
-
-        owned: IndividualHandle = PalIndividualCharacterHandle_2147480691
-               OnClose          = (BP_Kitsunebi_C_2147425992.OnSelectedOrderWorkerRadialMenu)
-        wild:  IndividualHandle = PalIndividualCharacterHandle_2147480691  <- SAME object
-               OnClose          = ()                                      <- empty
-
-    Two things are broken for the wild case: OnClose (a single/dynamic
-    delegate) is never bound to anything, AND IndividualHandle is the
-    exact same shared handle in both dumps — never actually re-pointed at
-    whatever Pal you're aiming at.
-
-    Fix: a new RegisterHook on `/Script/Pal.PalHUDInGame:PushWidgetStackableUI`
-    (and its likely-equivalent `/Script/Pal.PalHUDService:Push`) — both
-    confirmed real in the SDK dump, both take
-    (TSubclassOf<UPalUserWidgetStackableUI> WidgetClass,
-    UPalHUDDispatchParameterBase* Parameter). This fires right as the
-    already-built Parameter object is handed off to actually open a
-    widget — late enough that every field is already set, early enough
-    that nothing has read them yet. The hook bails out immediately unless
-    the Parameter's class name contains "WorkerRadialMenu" (every other
-    UI push in the game — chest, inventory, dialogs — is a no-op here).
-    When it IS a WorkerRadialMenu Parameter, and find_targeted_pal (the
-    same proven look-based targeting F9/F10 use) finds a wild Pal
-    (Capture.IsAlreadyOwned gate) being aimed at, it rewrites BOTH fields:
-    `Parameter.IndividualHandle` gets that wild Pal's own real handle
-    (read via a new get_individual_handle() field-read helper, same
-    pattern as get_individual_parameter), and `Parameter.OnClose` gets
-    bound to that wild Pal's own `OnSelectedOrderWorkerRadialMenu`
-    (confirmed on APalMonsterCharacter — the base class of every Pal
-    actor, wild or owned, so this exact function already exists on it).
-
-    STILL UNCONFIRMED, first live attempt: the exact UE4SS Lua syntax for
-    binding a delegate property — used `Parameter.OnClose:Bind(wildPal,
-    "OnSelectedOrderWorkerRadialMenu")` as the best-evidenced guess. Both
-    the IndividualHandle write and the OnClose bind are wrapped in pcall
-    and log their own ok/FAILED result separately, tagged
-    [WORKER-BIND-FIX], so a live test immediately shows which of the two
-    (if either) actually worked, and any error text from a wrong method
-    name/signature comes straight into the log to iterate from. Owned-Pal
-    behavior is untouched either way — the isWild gate means this hook
-    does nothing at all unless the aimed Pal is confirmed wild.
-
-    TWELFTH PASS (2026-09-01) — added Feed, and a first attempt at "don't
-    run away afterward":
-
-    1. FEED (F10). Same shape as pet, refactored into one shared
-       do_interaction() function instead of duplicating targeting/busy-
-       gating/logging twice. The only real difference is the PLAYER's own
-       "reach out" action type: HumanFeeding (49, from Pal_enums.hpp)
-       instead of HumanPetting (55). The TARGET's reaction is still Happy
-       (38) — same proven-safe, single-grant mechanism from the eleventh
-       pass, not the untested Eat (6) action type. This is a deliberate,
-       documented approximation: real vanilla feeding lets you pick a
-       specific food item from your inventory first (there's a whole
-       SelectedFeedingItem(ItemSlotId, Num) call for that elsewhere in the
-       SDK dump), and different foods likely grant different amounts. This
-       mod doesn't touch inventory/item-selection at all yet — F10 just
-       plays the feeding gesture and grants the same Happy-triggered +10
-       as a pet does. Good enough to prove wild Pals CAN be fed at all;
-       real food-item wiring is a separate future step if wanted.
-
-    2. "CALM DOWN" ATTEMPT (try_calm_target). Dragón asked: once an
-       interaction succeeds, can the Pal be made to not run away
-       afterward (like Daedream, which just watches curiously instead of
-       fleeing)? The real per-species "disposition" field DESIGN.md's Q1
-       asks about is STILL not confirmed — Pal_enums.hpp has promising
-       enum names (EWildPalAIMoveMode, EWarningPalAIMoveType,
-       EWildPalAIRestType) but their individual VALUES have no names in
-       the dump (they're not UENUM-exposed with display metadata), and
-       none of the three are referenced anywhere in Pal.hpp as an actual
-       field type — meaning they're Blueprint-graph-only, not something
-       the static C++ SDK dump can show us. Rather than guess at a value,
-       this pass does two things:
-
-       a. A best-effort, HONEST first attempt at the observable symptom,
-          using fields that ARE confirmed real (Pal.hpp, APalAIController):
-          TargetPlayers / TargetNPCs (TArray<AActor*> — who the AI is
-          currently tracking) get cleared, and HateSystem:ChangeHate() is
-          pushed hard negative. This is the aggression/target-tracking
-          system, not necessarily the same thing as a skittish species'
-          flee trigger — it may or may not actually stop a Pal from
-          running off. Treat it as an experiment, not a fix. Same
-          "field access safe, whole-struct-by-value calls risky" pattern
-          from the eighth pass — everything here is a direct field read
-          or a plain void function with simple params, wrapped in pcall.
-
-       b. A read-only, filtered property dump (dump_interesting_properties)
-          modeled on the bundled ConsoleCommandsMod/dump_object.lua
-          pattern: Class:ForEachProperty() walking up GetSuperStruct(),
-          which — unlike Pal.hpp — also surfaces Blueprint-ADDED variables
-          on the specific species Blueprint (e.g. whatever BP_Daedream_C
-          adds on top of APalCharacter). Filtered to property names
-          containing keywords like "warning", "escape", "flee", "hate",
-          "personality", etc., logged once per successful interaction.
-          Purely diagnostic — reads scalar values only, changes nothing —
-          so a handful of real play sessions (ideally one on a Pal known
-          to flee and one on a Daedream, which doesn't) should hand us
-          real field names/values to close Q1 with, instead of guessing.
-
-    ---- Eleventh-pass notes (two real bugs found via tenth-pass instrumentation) ----
-
-    1. THE MOD HAD BEEN PETTING THE PLAYER'S OWN CHARACTER. A live session
-       showed `targeted BP_Player_Female_C` repeatedly, always at the
-       exact same 264 units / 18.7 degrees — the fixed third-person
-       camera offset to the player's own body. `PalPlayerCharacter` is
-       itself a `PalCharacter` subclass, so `FindAllOf("PalCharacter")`
-       legitimately includes the player — and the `pal ~= excludeActor`
-       check meant to filter that out doesn't reliably work: two separate
-       UE4SS Lua wrappers for the SAME underlying UObject aren't
-       guaranteed `~=`-comparable. This explains basically every
-       confusing observation from that testing session: "petting the air"
-       with nothing nearby (it silently hit the player instead, every
-       time — 0 "not looking at any Pal" results across 51 presses in
-       one session), and friendship climbing to unexpectedly high values
-       (a single persistent target — the player — instead of many
-       different wild Pals). Fixed by comparing `GetFullName()` strings
-       instead of Lua object identity in `find_targeted_pal()`.
-
-    2. DOUBLE FRIENDSHIP GRANT. The AddFriendShip watcher added last pass
-       caught it directly: every successful pet fired TWO real
-       AddFriendShip calls — ours (value=10, applyPassiveSkill=false)
-       immediately, then a SECOND one (value=10, applyPassiveSkill=true)
-       ~2-3 seconds later that this mod never made. That second call is a
-       side effect of the target's Happy animation itself completing (its
-       own internal logic, independent of what triggered Happy) —
-       confirmed across every species tested, boss included, 100% of the
-       time. So every pet was granting 20 friendship, not 10. Fixed by
-       removing our own explicit AddFriendShip call entirely — triggering
-       Happy already produces the correct single grant on its own, and it
-       even matches the real vanilla shape exactly (value=10,
-       applyPassiveSkill=true, same as the original Spy.lua observation
-       of the actual in-game Pet/Feed menu).
-
-    Both fixes confirmed live afterward — see hook-points.md.
-
-    ---- Tenth-pass notes (readable log identity + AddFriendShip watcher) ----
-
-    Live-tested the ninth pass: worked, no crash, but two open questions
-    came out of reading the log: (a) the raw FName/pointer logging made it
-    impossible to tell whether repeat presses hit the same Pal or
-    different ones, and (b) friendship sometimes jumped by MORE than
-    PET_FRIENDSHIP_GAIN between two of our own presses. Added a permanent
-    RegisterHook watcher directly on the real AddFriendShip function (see
-    Interaction.Init(), same safe pattern as Spy.lua) so we can SEE every
-    real grant fire, by anyone. Also switched species/actor logging from a
-    raw FName pointer to `:ToString()`/`:GetFullName()` (confirmed
-    available via grepping bundled mods) so individual Pals are now
-    actually identifiable in the log.
-
-    ---- Ninth-pass notes (CONFIRMED WORKING: pet a wild Pal, no crash) ----
-    This is the milestone Dragón asked for. Full log analysis in
-    hook-points.md.
-
-    1. Cleanup: find_targeted_pal used to log every single
-       FindAllOf(PalCharacter) candidate (up to 20/press) via Logger.log,
-       which flushes to disk on every call — that's what caused a
-       framerate dip while spamming F9. Trimmed back down to just a count
-       + result line.
-
-    2. Real interaction, not spammable: added the player's OWN "reach
-       out" gesture — self-directed PlayActionByType(pal, HumanPetting=55)
-       on the PLAYER's ActionComponent, targeting the Pal. Spam
-       prevention is structural rather than a cooldown timer: do_pet()
-       checks the PLAYER's OWN ActionComponent:ActionIsEmpty() FIRST — a
-       second F9 press while the reach-out/reaction animations are still
-       playing is simply ignored. The target-busy check (added sixth
-       pass) is also checked BEFORE granting anything, not just before
-       the reaction animation.
-
-       NOT yet attempted: the full synced `BP_ActionPairBehavior_Petting`
-       cinematic Dragón originally described (camera cut, a distinct
-       "being petted" pose on the target rather than reusing Happy,
-       automatic camera/player/Pal reset once it's over). That's real
-       Blueprint-graph pair-action machinery this project has deliberately
-       avoided calling directly since crash #1 — worth revisiting later,
-       but it's a bigger, separate research step (reading
-       BP_AIActionPairCall_Petting's OnStartPair / the Camera field setup
-       via FModel's Blueprint export), not something to bolt on blind.
-       What ships is a solid approximation: player reaches out, Pal reacts
-       with Happy, both sides gated so nothing can be spammed or
-       interrupted mid-animation.
-
-    ---- Eighth-pass notes (root cause found) ----
-    GetSaveParameter() copies an 880-byte struct by value across the Lua
-    boundary. See hook-points.md, "Crash #3 root cause" for the full
-    writeup. Removed the call; read `param.SaveParameter.OwnerPlayerUId`
-    directly off the object instead (same data, no function call, no
-    whole-struct copy). This function had been present in every single
-    crash-triggering version since the third pass.
-
-    ---- Seventh-pass notes (instrumentation added, found the crash site) ----
-    Added a Logger.log() call before and after literally every single
-    native/engine call in do_pet() and find_targeted_pal(), so a crash
-    would have an exact last-known-good line in palbonds-live.log
-    immediately before it. This is what actually found the real bug.
-
-    ---- Sixth-pass notes (busy/sleeping guard, superseded above) ----
-    Added a check on the TARGET's ActionComponent:ActionIsEmpty() before
-    calling PlayActionByType on it. The check itself is still good
-    practice (matches vanilla, costs nothing) so it's kept.
-
-    ---- Third-pass targeting fix (kept, still believed correct) ----
-    Replaced "closest PalCharacter anywhere in the loaded world" with real
-    look-based targeting: camera location + control rotation build a
-    forward vector, and only a Pal within both PET_RANGE and
-    PET_MAX_ANGLE_DEG of that vector qualifies, picking the most centered
-    match.
-
-    PET_KEY is F9, FEED_KEY is F10 (not 'P'/'F', which open game menus;
-    not accented/layout-dependent keys, not guaranteed to exist the same
-    way in UE4SS's Key table across setups).
-]]
-
 local Logger = require("Logger")
 local Trust = require("Trust")
 local Capture = require("Capture")
 local Personality = require("Personality")
-local UEHelpers = require("UEHelpers") -- hundred-and-eighty-third pass: FindOrAddFName, needed to safely pass a real FName (not a raw Lua string) into GetStaticItemData — see run_item_balance_diagnostic
-
+local UEHelpers = require("UEHelpers") 
 local Interaction = {}
 
--- Tunable — adjust once we can see real distances/feedback in-game.
-local PET_KEY = "F9"
-local FEED_KEY = "F10"
--- THIRTY-EIGHTH PASS (2026-09-02): a dedicated, deliberately separate key
--- for Capture.TryDirectCapture — the project's first genuinely
--- experimental live call. See Capture.lua's own comment for the full
--- risk breakdown. Kept off F9/F10's shared do_interaction() path on
--- purpose: this is a manual, one-off test action, not part of normal
--- pet/feed play.
---
--- FORTY-FIRST PASS (2026-09-02) FIX: originally bound to plain F11.
--- Dragón reported it was actually toggling Palworld's fullscreen mode
--- instead (F12, considered for the now-removed rank-table dump key, has
--- the same problem — it's the Steam screenshot key). Plain F-keys past
--- F10 collide with OS/platform/engine-level bindings that fire
--- independently of whatever UE4SS's RegisterKeyBind does — UE4SS gets
--- the keypress too, but so does everything else listening for that raw
--- key. Fixed by switching to a CONTROL+letter combo instead (the same
--- pattern UE4SS's own bundled Keybinds mod uses for its tools, e.g.
--- CONTROL+J, CONTROL+H) via RegisterKeyBindAsync — a modifier
--- combination is far less likely to already mean something to either
--- Palworld or the OS. Picked K (not otherwise used in this project or,
--- as far as tested, by Palworld/Windows).
-local TEST_CAPTURE_KEY = Key.K
-local TEST_CAPTURE_MODIFIERS = {ModifierKey.CONTROL}
 -- Hundred-and-thirty-eighth pass (2026-09-04): CTRL+J, repurposed. Used
 -- to be TEST_FEED_ITEM_KEY (the real-food-item test) — that thread is
 -- confirmed dead-end for wild Pals (hundred-and-nineteenth pass:
@@ -349,38 +20,49 @@ local TEST_CAPTURE_MODIFIERS = {ModifierKey.CONTROL}
 -- calls these same do_pet/do_feed functions anyway (see do_interaction) —
 -- so this claims F8 instead, a single plain key, same shape as F9/F10.
 local PLAY_KEY = "F8"
--- Two-hundred-and-twenty-ninth pass (2026-09-07) — Dragon's own idea, and a
--- better experiment than the one this file was about to get.
+
+-- Cheer is emote 0, identified by Dragón with the F7 probe. Declared up here
+-- rather than next to the emote code because do_play uses it far above that
+-- point, and Lua locals are not hoisted.
+local CHEER_EMOTE_INDEX = 0
+local play_player_emote   -- forward: defined with the other emote helpers below
+-- How far past PET_RANGE a Pal's ROOT may be before we stop bothering to read
+-- its capsule. A Pal whose root is further than this cannot have a body within
+-- range, so it is rejected on the cheap distance test alone and never costs the
+-- two capsule reads. Sized for the largest Pals in the game with room to spare.
+local CAPSULE_COARSE_MARGIN = 600.0
+
+-- Species already reported by the [AIM] line, so it prints once each
+-- instead of once per Pal per scan.
+local capsuleReported = {}
+
+-- Two-hundred-and-ninety-ninth pass (2026-09-11): 500 -> 900, from a measurement
+-- rather than a feel.
 --
--- The problem with every follow test so far: the follow only ever installs as
--- a SIDE EFFECT of crossing the bonding bar, which means the Pal has to be
--- petted three times first. Dragon then pointed out something the log could
--- never have shown -- pet and feed OUTRANK whatever a Pal is doing ("if a pal
--- is fighting or moving around i can use the radial menu to pet and feed and
--- they will drop everything they're doing and come to me"). That makes them
--- high-priority interactions, and it makes a STUCK PETTING ACTION a complete
--- explanation for the frozen Petallia of the previous run, entirely
--- independent of whether the follow action itself works.
+-- Dragón could not pet a Mammorest "no matter how close" he got. The [AIM]
+-- diagnostic added last pass says why, and it is not the angle: at his closest
+-- approach the Mammorest's actor ROOT was 628 units away, already past the old
+-- 500 limit. A giant Pal's own body stops the player from getting nearer, and
+-- its root sits at the centre of the creature rather than at the surface — so
+-- the range was being measured from the player to a point deep inside a Pal he
+-- was standing against.
 --
--- So petting is a CONFOUND, not merely a setup step. F9 removes it: aim at a
--- Pal that has never been touched, press once, and its bonding bar jumps
--- straight past the follow threshold with no game action played at all -- no
--- pair-call, no animation, nothing that can occupy the action stack. Whatever
--- happens next is the follow mechanism alone.
+-- The capsule work from the previous pass could not rescue this, because the
+-- same diagnostic proved the capsule is not size data at all: BOSS_GrassMammoth,
+-- BOSS_Anubis, FlowerRabbit and PinkRabbit ALL report radius=30 halfHeight=30.
+-- Palworld does not scale the ACharacter capsule to the creature; it is a fixed
+-- placeholder. So there is no per-Pal size available on the live actor yet (see
+-- the [AIM] bounds probe for the attempt to find some), and a single range that
+-- is generous enough for the largest Pals is the honest interim answer.
 --
--- F9 is genuinely free: it used to be the manual Pet key, the radial menu
--- replaced it, and the bind was removed (the PET_KEY constant above is a dead
--- leftover that was never deleted). InputSpy, which used to watch every F-key,
--- is disabled.
---
--- Listed under the release cleanup with the other test keys -- this never ships.
-local INSTANT_BOND_KEY = "F9"
--- Fraction of the Pal's OWN bonding bar to grant, so this stays correct if the
--- balance numbers or the level multiplier change later. FOLLOW_TRIGGER_RATIO in
--- Trust.lua is 0.5 and the comparison there is >=, so exactly half crosses it.
-local INSTANT_BOND_BAR_FRACTION = 0.5
-local PET_RANGE = 500.0       -- Unreal units (cm). ~5 meters.
-local PET_MAX_ANGLE_DEG = 25  -- how far off-center the camera can be and still count as "looking at" a Pal.
+-- Why raising it is not as loose as it sounds: selection is still gated by
+-- PET_MAX_ANGLE_DEG, a 25-degree cone around the crosshair, and among everything
+-- in that cone the NEAREST Pal wins. A normal-sized Pal 800 units away is only
+-- reachable if the player is looking almost directly at it and nothing closer is
+-- in the way.
+local PET_RANGE = 900.0
+local PET_MAX_ANGLE_DEG = 25  
+
 -- Two-hundred-and-first pass: Play-specific now (Pet has its own
 -- PET_FRIENDSHIP_GAIN/top-up mechanism below) — bumped 10 -> 25 per
 -- Dragon's balance ask.
@@ -442,7 +124,7 @@ local FEED_FRIENDSHIP_BASE = 75
 -- slower". The early game is where it matters most, because that is where a
 -- player decides whether the mod is fun.
 local PET_FRIENDSHIP_GAIN = 50
-local PET_GRANT_CHECK_DELAY_MS = 3000
+
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón moved off the raw
 -- real vanilla FloatValue1 numbers (2000/20000) to clean values sized
 -- directly against his own BONDING_TRIGGER_THRESHOLD_BASE=500 (Trust.lua)
@@ -450,48 +132,9 @@ local PET_GRANT_CHECK_DELAY_MS = 3000
 -- one use (a clean one-shot at equal level, matching Dragón's "it is
 -- indeed a one shot killer for friendship"), self-limiting against abuse
 -- since a much-higher-level Pal's own bonding threshold scales up too.
-local KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = 250   -- AffectionFruit_02
-local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     -- AffectionFruit_01
-
--- ===================================================================
--- BALANCE VERIFICATION MODE (two-hundred-and-seventh pass, 2026-09-06)
--- ===================================================================
--- Dragón's own test design, to prove the three interaction types actually
--- pay out the numbers they claim before any real balancing is done on top:
--- set Pet, Feed and Play all to the same round number, turn the level-gap
--- multiplier off so every Pal behaves identically, and check that exactly
--- 5 interactions of ANY type capture a Pal (5 x 100 = the 500 bonding
--- threshold). If a type takes more or fewer than 5, that type's grant is
--- wrong, and the [BALANCE-TEST] log line says by how much.
---
--- Flip this ONE flag back to false to restore the real balance values.
--- Nothing else needs changing — every real number is preserved in the
--- REAL_* constants below, untouched.
--- The real values, for when this flag goes back to false:
---   Pet 25, Feed 50, Play 25, Kinship Peach 250/500 (peaches are NOT
---   overridden below — they are already confirmed correct, and leaving
---   them real keeps the one-shot peach behaviour testable too).
--- Two-hundred-and-thirty-ninth pass (2026-09-07) — RELEASE PREP. Dragón:
--- "lets turn back up the balance mode once more and lets remove the f9 instant
--- bond shortcut, also any other shortcut we are not using also remove it, just
--- leave the play interaction shortcut for now ... this is already endgame".
--- Verification is finished: the 5-interactions-per-Pal runs confirmed Pet, Feed
--- and Play all grant exactly what they intend. Back to the real values —
--- Pet 25 (self-correcting: it measures vanilla's own grant around the
--- interaction and adjusts so the net is exactly 25), Feed 50, Play 25.
-local BALANCE_VERIFICATION_MODE = false
-
--- Two-hundred-and-eighth pass: set true to restore the very verbose
--- per-menu-hook trace ([RADIAL-WATCH]/[WORKER-WATCH] "X fired — self=... "
--- lines). Off by default: ~8 lines per "4" press, each with four reflection
--- calls and a forced disk write, for a mapping question closed long ago.
-local VERBOSE_MENU_HOOK_TRACE = false
-
-if BALANCE_VERIFICATION_MODE then
-    PET_FRIENDSHIP_GAIN  = 100
-    FEED_FRIENDSHIP_BASE = 100
-end
-local PLAY_FRIENDSHIP_GAIN = BALANCE_VERIFICATION_MODE and 100 or 50
+local KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = 250   
+local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     
+local PLAY_FRIENDSHIP_GAIN = 50
 
 -- Forward declaration. The real definition lives next to
 -- closeRadialMenuActionWindow (it needs the radial-menu state), but do_play
@@ -500,11 +143,6 @@ local PLAY_FRIENDSHIP_GAIN = BALANCE_VERIFICATION_MODE and 100 or 50
 -- so even a missing assignment degrades to a logged failure, not an error.
 local grant_wild_interaction = nil
 
--- EPalActionType values, from Pal_enums.hpp.
--- HumanPetting/HumanFeeding: the PLAYER's own "reach out" gesture,
--- self-targeted on the player's own ActionComponent, aimed at the Pal.
-local ACTION_TYPE_HUMAN_PETTING = 55
-local ACTION_TYPE_HUMAN_FEEDING = 49
 -- Happy: confirmed via Spy.lua/the [WATCH] hook to be exactly what the
 -- target Pal's own ActionComponent plays, self-targeted, after every real
 -- AddFriendShip call during a vanilla Pet/Feed interaction, and to itself
@@ -512,12 +150,14 @@ local ACTION_TYPE_HUMAN_FEEDING = 49
 -- effect (see eleventh-pass notes). Reused for both pet and feed so both
 -- interactions share the one proven-safe reaction/grant mechanism.
 local ACTION_TYPE_HAPPY = 38
+
 -- Hundred-and-thirty-eighth pass (2026-09-04): PalRandomRest, confirmed
 -- real in Pal_enums.hpp (value 77) — the same simple int enum every
 -- other reaction in this file already plays through PlayActionByType.
 -- Used for the new Play interaction's Pal-idle half: no new calling
 -- mechanism needed, just a different EPalActionType value than Happy.
 local ACTION_TYPE_PAL_RANDOM_REST = 77
+
 -- Hundred-and-forty-third pass (2026-09-04): how long to wait after the
 -- Pal-idle animation before sequencing the Happy follow-up (the hearts
 -- VFX, confirmed baked into BP_ActionHappy's own graph — see hook-points.
@@ -530,7 +170,6 @@ local ACTION_TYPE_PAL_RANDOM_REST = 77
 -- some idle animations off before they'd finished playing properly.
 -- Bumped to 6s per his direct request.
 local PLAY_HAPPY_FOLLOWUP_DELAY_MS = 6000
-
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then
@@ -538,15 +177,12 @@ local function safe_call(fn, ...)
     end
     return nil, result
 end
-
 local function vec_sub(a, b)
     return { X = a.X - b.X, Y = a.Y - b.Y, Z = a.Z - b.Z }
 end
-
 local function vec_length(v)
     return math.sqrt(v.X * v.X + v.Y * v.Y + v.Z * v.Z)
 end
-
 local function vec_normalize(v)
     local len = vec_length(v)
     if len < 1e-6 then
@@ -554,7 +190,6 @@ local function vec_normalize(v)
     end
     return { X = v.X / len, Y = v.Y / len, Z = v.Z / len }
 end
-
 local function vec_dot(a, b)
     return a.X * b.X + a.Y * b.Y + a.Z * b.Z
 end
@@ -623,7 +258,7 @@ end
 -- a despawned Pal is skipped rather than crashing anything.
 local palScanCache = nil
 local palScanCacheAge = 0
-local PAL_SCAN_CACHE_MAX_AGE = 4   -- calls, not seconds; at the 0.5s recompute that is ~2s
+local PAL_SCAN_CACHE_MAX_AGE = 4   
 
 -- Two-hundred-and-sixty-ninth pass (2026-09-07). Dragon, reading his own log:
 -- "this thing that seemed to spam often ... why create a log about it everytime
@@ -644,7 +279,6 @@ local function redirect_idle_log(reason, msg)
     lastRedirectIdleReason = reason
     Logger.log(msg .. "  (logged once until this changes)")
 end
-
 local function find_targeted_pal(originLoc, forwardVec, excludeActor)
     local pals = palScanCache
     if pals == nil or palScanCacheAge >= PAL_SCAN_CACHE_MAX_AGE then
@@ -686,11 +320,141 @@ local function find_targeted_pal(originLoc, forwardVec, excludeActor)
             if loc then
                 local toTarget = vec_sub(loc, originLoc)
                 local dist = vec_length(toTarget)
-                if dist <= PET_RANGE and dist > 1e-3 then
+
+                -- Two-hundred-and-ninety-sixth pass (2026-09-11): aim at the
+                -- Pal's BODY, not at its actor root.
+                --
+                -- Dragón: "range of interaction needs to be bumped a bit, since
+                -- bigger pals have a weird hitbox which sometimes doesnt match
+                -- their model". The range was never really the problem. Every
+                -- test here was against `K2_GetActorLocation()`, which is the
+                -- actor root — for a Pal that is down at its feet. On a big Pal
+                -- the body you are actually looking at is metres above that
+                -- point, so the angle is measured to somewhere near the ground
+                -- and the check fails while the crosshair is squarely on the
+                -- creature. This is the same single-point weakness recorded
+                -- long ago as "large bosses are effectively impossible to aim
+                -- at".
+                --
+                -- Every Pal is an APalCharacter, which inherits ACharacter, so
+                -- every Pal has a CapsuleComponent with its real scaled size.
+                -- Treat the Pal as a sphere at root + halfHeight, of the
+                -- capsule's radius, and measure to that sphere's SURFACE:
+                --
+                --   * distance becomes centre distance minus radius, so range
+                --     is measured to the body rather than through it;
+                --   * the sphere subtends a real angular radius, so a big Pal
+                --     is genuinely easier to point at, in proportion to how
+                --     big it is.
+                --
+                -- A normal-sized Pal barely moves (small radius, low capsule),
+                -- so this is not a blanket range increase — it is targeted
+                -- exactly at the Pals that were hard to hit. Read only for
+                -- Pals that already passed a cheap coarse distance test, so
+                -- the hot loop keeps the pass-208 cost profile.
+                local radius, halfHeight = 0.0, 0.0
+                if dist <= PET_RANGE + CAPSULE_COARSE_MARGIN then
+                    local capsule = safe_call(function() return pal.CapsuleComponent end)
+                    if capsule and safe_call(function() return capsule:IsValid() end) then
+                        radius = safe_call(function() return capsule:GetScaledCapsuleRadius() end) or 0.0
+                        halfHeight = safe_call(function() return capsule:GetScaledCapsuleHalfHeight() end) or 0.0
+                    end
+                end
+                if radius > 0.0 or halfHeight > 0.0 then
+                    local centre = { X = loc.X, Y = loc.Y, Z = loc.Z + halfHeight }
+                    toTarget = vec_sub(centre, originLoc)
+                    dist = vec_length(toTarget)
+                end
+
+                -- Two-hundred-and-ninety-eighth pass (2026-09-11): report the
+                -- capsule ONCE per species, because the fix above has a silent
+                -- failure mode and Dragón reported "no significant difference".
+                --
+                -- If pal.CapsuleComponent does not resolve, radius and
+                -- halfHeight stay 0 and every line below behaves exactly as the
+                -- old root-point code did — with nothing in the log to say so.
+                -- That is a fallback that hides a failure, which this project
+                -- forbids, and it is the most likely reason the change was not
+                -- felt. This line settles it: if the numbers come back as zeros
+                -- the fix never ran, and if they come back real the geometry is
+                -- live and the tuning is the thing to argue about.
+                --
+                -- Keyed by species so it is a handful of lines per session
+                -- rather than one per Pal per scan, and NOT tagged [DIAG...] so
+                -- Logger's suppression list cannot swallow it.
+                if radius > 0.0 or halfHeight > 0.0 or dist <= PET_RANGE then
+                    local speciesKey = safe_call(function()
+                        local comp = pal.CharacterParameterComponent
+                        if comp == nil or not comp:IsValid() then return nil end
+                        local p = comp:GetIndividualParameter()
+                        if p == nil or not p:IsValid() then return nil end
+                        local cid = p:GetCharacterID()
+                        return cid and cid:ToString()
+                    end)
+                    local sk = tostring(speciesKey)
+                    if not capsuleReported[sk] then
+                        capsuleReported[sk] = true
+
+                        -- Two-hundred-and-ninety-ninth pass (2026-09-11): hunt
+                        -- for REAL per-Pal size, since the capsule turned out to
+                        -- be a fixed 30x30 placeholder on every species and the
+                        -- range is now a blanket 900 as a result.
+                        --
+                        -- AActor::GetActorBounds is a real UFUNCTION in this
+                        -- build (Engine.hpp) but it returns its answer through
+                        -- OUT PARAMETERS, and whether this UE4SS build hands
+                        -- those back to Lua is exactly the kind of thing this
+                        -- project has been burned by guessing at. So it is
+                        -- probed, once per species, inside pcall, and whatever
+                        -- comes back is printed verbatim. If real extents appear
+                        -- here, per-Pal sizing becomes possible and the blanket
+                        -- range can go back down.
+                        local boundsDesc = "unreadable"
+                        safe_call(function()
+                            local o, e = pal:GetActorBounds(false)
+                            if e ~= nil and e.X ~= nil then
+                                boundsDesc = string.format("extent=(%.0f, %.0f, %.0f)", e.X or 0, e.Y or 0, e.Z or 0)
+                            elseif o ~= nil then
+                                boundsDesc = "returned something, but not a readable extent: " .. tostring(o)
+                            end
+                        end)
+                        Logger.log("[PalBonds/Interaction] [AIM] " .. sk ..
+                            " GetActorBounds probe -> " .. boundsDesc)
+                        Logger.log(string.format(
+                            "[PalBonds/Interaction] [AIM] %s capsule radius=%.0f halfHeight=%.0f | root dist=%.0f -> body dist=%.0f (limit %.0f)%s",
+                            sk, radius, halfHeight, vec_length(vec_sub(loc, originLoc)),
+                            math.max(0.0, dist - radius), PET_RANGE,
+                            (radius == 0.0 and halfHeight == 0.0)
+                                and "  <-- ZEROS: capsule unreadable, aiming fell back to the old root-point behaviour"
+                                or ""
+                        ))
+                    end
+                end
+
+                local surfaceDist = math.max(0.0, dist - radius)
+                if surfaceDist <= PET_RANGE and dist > 1e-3 then
                     local dir = vec_normalize(toTarget)
                     local dot = math.max(-1.0, math.min(1.0, vec_dot(dir, forwardVec)))
                     local angle = math.deg(math.acos(dot))
+
+                    -- How wide the Pal looks from here. asin is only defined
+                    -- for |x| <= 1; a player standing inside a huge Pal's
+                    -- capsule clamps to 90 degrees, which is the right answer
+                    -- (it fills the view).
+                    local angularRadius = 0.0
+                    if radius > 0.0 and dist > radius then
+                        angularRadius = math.deg(math.asin(math.min(1.0, radius / dist)))
+                    elseif radius > 0.0 then
+                        angularRadius = 90.0
+                    end
+                    angle = math.max(0.0, angle - angularRadius)
+
+                    -- Ranking still uses the surface distance, so the Pal whose
+                    -- BODY is nearest wins rather than the one whose root
+                    -- happens to be closest.
+                    dist = surfaceDist
                     if angle <= PET_MAX_ANGLE_DEG then
+
                         -- Two-hundred-and-fifty-seventh pass (2026-09-07) --
                         -- Dragon's idea, and it is better than what I had been
                         -- doing: "cant we make that simply doesnt count it as a
@@ -741,10 +505,8 @@ local function find_targeted_pal(originLoc, forwardVec, excludeActor)
             end
         end
     end
-
     return best, bestDist, bestAngle
 end
-
 local function get_individual_parameter(pal)
     local comp = pal.CharacterParameterComponent
     if not comp or not comp:IsValid() then
@@ -768,845 +530,6 @@ local function get_individual_handle(pal)
         return nil
     end
     return safe_call(function() return comp.IndividualHandle end)
-end
-
--- ---------------------------------------------------------------------
--- Hundred-and-twenty-first pass (2026-09-03): correcting a candidate the
--- hundred-and-twentieth pass proposed, and testing a better one instead.
---
--- CORRECTION: that pass's leading candidate for "the deeper ownership
--- gate real Feed checks", `TArray<FPalInstanceID> OtomoIndividualIdList`,
--- is real in Pal.hpp — but re-checking exactly which struct declares it
--- shows it's a field of `FPalArenaPlayerInitializeParameter` (every
--- sibling field on that struct is Arena-prefixed: ArenaRank, bIsNpc,
--- OtomoPicks, bPartySelected). This project already made and corrected
--- this exact mistake once before (twenty-first pass: `GetOtomoHolder
--- (PlayerState)` looked generically useful but "turned out to belong to
--- an Arena/PvP-test-only class"). Same shape of error, same fix: this
--- field is very unlikely to be read during ordinary wild-Pal Feed play,
--- and isn't worth Dragón spending a test on.
---
--- BETTER CANDIDATE, found by searching Pal.hpp for every non-Arena
--- TArray<FPalInstanceID>/TArray<UPalIndividualCharacterHandle*> field or
--- getter: `class UPalPlayerPartyPalHolder : public UObject` — the same
--- real, non-Arena class this project already confirmed back in the
--- sixth continuación (FirstOtomoPal/SecondOtomoPal/BenchMember, the
--- "two simultaneous Otomo slots" finding that explained Daedream/Dazzi/
--- Flopie following as secondaries). It also has, undocumented until now:
--- `void GetPartyMember(TArray<UPalIndividualCharacterHandle*>&
--- OutPartyMember)` (a real membership query) and — the strongest
--- candidate this project has found for this question so far —
--- `bool PawnOtmoIsPartyOtomo(bool SecondPal, UPalIndividualCharacterHandle*
--- IDHandle)`. That name and shape (bool return, takes a handle directly
--- as a parameter) reads exactly like "is this specific handle actually
--- my registered party Otomo" — the real question this whole thread has
--- been trying to answer since the hundred-and-twentieth pass.
---
--- No getter anywhere else in Pal.hpp exposes a `UPalPlayerPartyPalHolder*`
--- by name (grepped the whole file) — meaning either it's reached through
--- a generically-typed field the dump doesn't tag, or the safest way to
--- find a live instance is the same technique already proven repeatedly
--- in this project for exactly this situation (`WBP_PalNPCHPGauge_C`,
--- fiftieth pass): `FindAllOf` the class name directly and see what's
--- really alive, rather than assume a wiring path from static reflection
--- alone.
---
--- This is a ONE-SHOT diagnostic (called once per newly-aimed wild Pal,
--- from inside the existing dedup gate below — never per-tick, per this
--- project's own hard-learned lag lesson from the thirty-third/eightieth/
--- hundred-and-second passes) — not a permanent watch, and it calls
--- nothing that mutates anything: `FindAllOf` (read), plain field reads
--- (FirstOtomoPal/SecondOtomoPal/BenchMember — pointers, same safe
--- pattern as every other field access in this file), and
--- `PawnOtmoIsPartyOtomo` (a bool-returning query, structurally the same
--- risk class as `TargetIsPlayerOrPlayersOtomoPal`, already called safely
--- elsewhere in this project). No write of any kind. If this comes back
--- `false` for the substituted wild Pal (expected) while the real Otomo's
--- own handle reads `true` on the SAME holder instance, that's real
--- confirmation this is the actual gate — and a safe, well-evidenced
--- function to test calling FOR REAL on a wild Pal's handle in a future
--- pass, once Dragón is ready to consider that (this pass only ever reads
--- its result, never acts on it).
-local function diagnose_party_membership(wildPal, wildHandle)
-    -- Self-contained describe helper (not the shared hook_describe — that
-    -- one is declared further down in this file, after this function, so
-    -- referencing it here would resolve as an undefined global, not the
-    -- local — same "field access safe, whole-struct calls risky" pattern
-    -- as everywhere else, just describing an object rather than reading
-    -- SaveParameter).
-    local function describe(obj)
-        if obj == nil then return "nil" end
-        local ok, name = pcall(function() return obj:GetFullName() end)
-        if ok and name then return name end
-        return tostring(obj)
-    end
-    local ok, err = pcall(function()
-        local holders = FindAllOf("PalPlayerPartyPalHolder") or {}
-        Logger.log(string.format(
-            "[PalBonds/Interaction] [PARTY-DIAG] FindAllOf(PalPlayerPartyPalHolder) found %d live instance(s)",
-            #holders
-        ))
-        for i, holder in ipairs(holders) do
-            local validOk, isValid = pcall(function() return holder ~= nil and holder:IsValid() end)
-            if validOk and isValid then
-                local first = safe_call(function() return holder.FirstOtomoPal end)
-                local second = safe_call(function() return holder.SecondOtomoPal end)
-                local benchCount = safe_call(function()
-                    local bench = holder.BenchMember
-                    return bench and bench:GetArrayNum()
-                end)
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] [PARTY-DIAG] holder[%d]: FirstOtomoPal=%s SecondOtomoPal=%s BenchMember count=%s",
-                    i, describe(first), describe(second), tostring(benchCount)
-                ))
-                if wildHandle then
-                    local firstOk, firstResult = pcall(function() return holder:PawnOtmoIsPartyOtomo(false, wildHandle) end)
-                    local secondOk, secondResult = pcall(function() return holder:PawnOtmoIsPartyOtomo(true, wildHandle) end)
-                    Logger.log(string.format(
-                        "[PalBonds/Interaction] [PARTY-DIAG] holder[%d]:PawnOtmoIsPartyOtomo(false, wild %s) = %s | (true, ...) = %s",
-                        i, describe(wildPal),
-                        firstOk and tostring(firstResult) or ("CALL FAILED: " .. tostring(firstResult)),
-                        secondOk and tostring(secondResult) or ("CALL FAILED: " .. tostring(secondResult))
-                    ))
-                end
-            end
-        end
-    end)
-    if not ok then
-        Logger.log("[PalBonds/Interaction] [PARTY-DIAG] scan failed (non-fatal, caught): " .. tostring(err))
-    end
-end
-
--- ---------------------------------------------------------------------
--- HUNDRED-AND-THIRD PASS (2026-09-03): first research step toward real
--- food-item feeding. Dragón's actual ask: F10/the wild-Pal Feed action
--- should consume a real food item from the player's inventory (and open
--- the real inventory to pick one), instead of the twelfth pass's
--- approximation (just plays the feeding gesture, no item involved).
---
--- SDK dump findings (Pal.hpp / Pal_enums.hpp), all real, none guessed:
---   - `APalMonsterCharacter:SelectedFeedingItem(FPalItemSlotId, int64
---     Num)` — same base class as OnSelectedOrderWorkerRadialMenu (every
---     Pal actor, wild or owned) — looks like THE function that actually
---     delivers a chosen food item to a Pal.
---   - `FPalItemSlotId { FPalContainerId ContainerId; int32 SlotIndex }`
---     — what SelectedFeedingItem needs. We don't have a proven way to
---     build one for an arbitrary food item yet (needs the player's own
---     inventory container ID + the slot index actually holding that
---     item) — that's the next research step, not done this pass.
---   - `UPalItemUtility` (a BlueprintFunctionLibrary, same CDO-call
---     pattern already proven in Capture.lua/Personality.lua for
---     UPalUtility) has `CollectLocalPlayerControllableItemInfos_ByTypeB`
---     — lets us ask "what food/friendship items does the player
---     actually have" WITHOUT needing any UI. Its `OutItemInfos` is an
---     out-param array, and this project has no proven UE4SS Lua pattern
---     yet for reading one back — first live test below, unconfirmed.
---   - `EPalItemTypeB` (Pal_enums.hpp) has real, separate values for
---     general Pal food (FoodMeat=47, FoodVegetable=48, FoodFish=49,
---     FoodDishMeat=50, FoodDishVegetable=51, FoodDishFish=52,
---     FoodProcessed=53) AND a DEDICATED friendship-treat category,
---     ConsumePalGainFriendshipPoint=45 — likely what Dragón meant by
---     "kinship peaches." `UPalStaticConsumeItemData` (the base food-item
---     class) only carries RestoreHP/SP/Satiety/Sanity fields — no
---     visible per-item friendship amount — so vanilla feeding's
---     friendship gain may come from the interaction itself (same fixed
---     amount regardless of food), same as this mod's current approach,
---     not from the item. Unconfirmed either way.
---
--- This pass ships READ-ONLY diagnostics only, per this project's own
--- rule (never write real inventory/item state before confirming via
--- read-only checks first) — nothing about existing Pet/Feed behavior
--- changes. Two additions: (1) a passive watch-hook on
--- SelectedFeedingItem, to see if/when it fires naturally; (2) an F10-
--- triggered dump of what real food/friendship items the player is
--- currently carrying, to prove out (or correct) the CollectLocal-
--- PlayerControllableItemInfos_ByTypeB calling convention with real
--- data before anything tries to act on it.
-
-local PalItemUtilityCDO = nil
-local function get_pal_item_utility()
-    if PalItemUtilityCDO then return PalItemUtilityCDO end
-    PalItemUtilityCDO = safe_call(function()
-        return StaticFindObject("/Script/Pal.Default__PalItemUtility")
-    end)
-    return PalItemUtilityCDO
-end
-
--- Hundred-and-eighty-first pass (2026-09-05): balance research, requested
--- by Dragón directly ("i need the real values of friendship that these
--- items give" / real Petting value). Static extraction (repak against
--- Pal-Windows.pak) found the real per-rank friendship-point CURVE
--- (DT_FriendshipRankTable — a genuinely new, previously-lost find, see
--- CLAUDE.md/hook-points.md this same pass) and the real balance CLASS
--- that holds a dedicated `FriendshipPoint_Petting` field
--- (UPalGameSetting, confirmed in the header dump) — but not the actual
--- CURRENT NUMBER for that field, nor the AffectionFruit items' own
--- friendship bonus field name (its static item data class,
--- UPalStaticItemDataBase, has no obviously-named friendship field —
--- likely a generic reused field whose meaning depends on item type,
--- not confirmable from the header dump alone). Both are plain field
--- reads on already-safe object categories (a CDO int32, and a resolved
--- item's own properties) — same risk class as every other CDO/field
--- read already trusted in this project, just needs a live session to
--- actually run.
-local PalUtilityCDO2 = nil -- Personality.lua has its own cached copy; kept separate on purpose rather than cross-requiring for a one-shot diagnostic
-local function get_pal_utility_for_balance_diag()
-    if PalUtilityCDO2 then return PalUtilityCDO2 end
-    PalUtilityCDO2 = safe_call(function()
-        return StaticFindObject("/Script/Pal.Default__PalUtility")
-    end)
-    return PalUtilityCDO2
-end
-
-local function dump_all_properties_unfiltered(obj, label)
-    local ok, err = pcall(function()
-        if obj == nil or not obj:IsValid() then return end
-        local class = obj:GetClass()
-        local seen = {}
-        while class ~= nil and class:IsValid() do
-            local classNameOk, className = pcall(function() return class:GetFName():ToString() end)
-            Logger.log(string.format("[PalBonds/Interaction] [BALANCE-DIAG] === %s (class %s) ===", label, classNameOk and className or "?"))
-            class:ForEachProperty(function(prop)
-                local propOk, propName = pcall(function() return prop:GetFName():ToString() end)
-                if not (propOk and propName) or seen[propName] then return end
-                seen[propName] = true
-                local typeOk, typeName = pcall(function() return prop:GetClass():GetFName():ToString() end)
-                typeName = typeOk and typeName or "?"
-                local valueStr = "(not read)"
-                local readOk, result = pcall(function()
-                    if typeName == "BoolProperty" or typeName == "ByteProperty" or typeName == "IntProperty" or typeName == "FloatProperty" then
-                        return tostring(obj[propName])
-                    elseif typeName == "NameProperty" then
-                        local v = obj[propName]
-                        return v and v:ToString()
-                    end
-                    return nil
-                end)
-                if readOk and result ~= nil then valueStr = tostring(result) end
-                Logger.log(string.format("[PalBonds/Interaction] [BALANCE-DIAG]   %s (%s) = %s", propName, typeName, valueStr))
-            end)
-            class = safe_call(function() return class:GetSuperStruct() end)
-        end
-    end)
-    if not ok then
-        Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] dump failed (non-fatal, caught): " .. tostring(err))
-    end
-end
-
-local hasRunBalanceDiag = false
-local function run_balance_diagnostic_once()
-    if hasRunBalanceDiag then return end
-    hasRunBalanceDiag = true
-
-    -- Real vanilla balance constants, read directly off the confirmed-real
-    -- UPalGameSetting class default object.
-    local gameSettingOk, gameSetting = pcall(function() return StaticFindObject("/Script/Pal.Default__PalGameSetting") end)
-    if gameSettingOk and gameSetting ~= nil and gameSetting:IsValid() then
-        local fields = {
-            "FriendshipPoint_Min", "FriendshipPoint_Max", "FriendshipPoint_Petting",
-            "FriendshipPoint_AutoIncrementOtomo", "FriendshipPoint_AutoIncrementActiveOtomo",
-            "FriendshipPoint_AutoIncrementWorker", "FriendshipPoint_Starvation",
-            "FriendshipPoint_Sick", "FriendshipPoint_Dead", "FriendshipPoint_SleepOnSide",
-        }
-        for _, f in ipairs(fields) do
-            local ok, v = pcall(function() return gameSetting[f] end)
-            Logger.log(string.format("[PalBonds/Interaction] [BALANCE-DIAG] UPalGameSetting.%s = %s", f, ok and tostring(v) or "FAILED"))
-        end
-    else
-        Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] could not resolve Default__PalGameSetting: " .. tostring(gameSetting))
-    end
-
-    -- Kinship Peach real item data — full unfiltered dump since the exact
-    -- field name isn't confirmed yet (see comment above).
-    --
-    -- CRASH FOUND AND FIXED (same pass, Dragón's very next test): this
-    -- call originally passed `utility` itself (the Default__PalUtility
-    -- CLASS DEFAULT OBJECT) as the WorldContextObject argument —
-    -- `utility:GetItemIDManager(utility)`. A CDO isn't a live, in-world
-    -- object; it has no real UWorld to walk to. The native function
-    -- almost certainly dereferences whatever GetWorld() returns off that
-    -- argument internally, and got garbage — a real
-    -- EXCEPTION_ACCESS_VIOLATION crash, confirmed happening right after
-    -- the UPalGameSetting reads succeeded and before any item-related log
-    -- line printed (this project's pcall can catch a Lua-level error, but
-    -- not a native crash below it — same limitation already documented
-    -- for the SelectedFeedingItem crash, hook-points.md "Crash #5").
-    -- Fixed by passing the real, live player character instead — the
-    -- same actor this file already resolves via FindFirstOf everywhere
-    -- else for exactly this reason (a genuinely valid, in-world object).
-    local utility = get_pal_utility_for_balance_diag()
-    if utility == nil then
-        Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] could not resolve PalUtility CDO — skipping item dump")
-        return
-    end
-
-    -- Confirmed live (2026-09-05): Interaction.Init() runs before the
-    -- player character actually exists in-world (still at the main menu/
-    -- loading), so a single FindFirstOf("PalPlayerCharacter") attempt at
-    -- Init() time found nothing and the item dump was skipped every time.
-    -- Same "class/actor not loaded yet" race this project has hit and
-    -- fixed with a bounded retry loop many times before (Radial Menu,
-    -- Worker Menu, Indicator's BindFromHandle, EMOTE-WATCH) — applying
-    -- the same fix here instead of a single attempt.
-    local BALANCE_ITEM_DIAG_MAX_ROUNDS = 40
-    local BALANCE_ITEM_DIAG_RETRY_MS = 3000
-
-    local function run_item_balance_diagnostic(round)
-        round = round or 1
-        local player = FindFirstOf("PalPlayerCharacter")
-        if not player or not player:IsValid() then
-            if round >= BALANCE_ITEM_DIAG_MAX_ROUNDS then
-                Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] giving up after " .. round .. " rounds — no live player character ever appeared")
-                return
-            end
-            local rescheduleOk = pcall(function()
-                ExecuteInGameThreadWithDelay(BALANCE_ITEM_DIAG_RETRY_MS, function()
-                    safe_call(function() run_item_balance_diagnostic(round + 1) end)
-                end)
-            end)
-            if not rescheduleOk then
-                Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] could not schedule a retry round — stopping after round " .. round)
-            end
-            return
-        end
-
-        Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] (round " .. round .. ") live player found — about to call GetItemIDManager NOW")
-        local managerOk, manager = pcall(function() return utility:GetItemIDManager(player) end)
-        Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] GetItemIDManager call returned — result=" .. (managerOk and "ok" or tostring(manager)))
-        if not (managerOk and manager ~= nil and manager:IsValid()) then
-            Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] GetItemIDManager failed or invalid: " .. tostring(manager))
-            return
-        end
-        for _, itemId in ipairs({ "AffectionFruit_01", "AffectionFruit_02" }) do
-            -- CRASH FOUND AND FIXED (same pass, Dragón's second crash):
-            -- passing the raw Lua string `itemId` directly where the
-            -- native function expects a real `FName` crashed inside the
-            -- call itself (confirmed: the "about to call" line printed,
-            -- no "returned" line ever followed — same
-            -- caught-nothing-because-it's-native signature as the CDO/
-            -- WorldContextObject crash earlier this same pass). This is
-            -- the first time this project has passed a Lua string
-            -- directly INTO a native function call as an FName argument
-            -- (every prior FName use only ever READ one back via
-            -- :ToString()/:Equals(), e.g. ItemId.StaticId comparisons).
-            -- Real, proven fix found in this UE4SS install's own bundled
-            -- mods (BPModLoaderMod, ConsoleEnablerMod): construct a real
-            -- FName first via `UEHelpers.FindOrAddFName(string)`, never
-            -- pass a raw Lua string where an FName is expected.
-            local itemIdFName = UEHelpers.FindOrAddFName(itemId)
-            Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] about to call GetStaticItemData(" .. itemId .. ") NOW (as a real FName via FindOrAddFName)")
-            local itemOk, itemData = pcall(function() return manager:GetStaticItemData(itemIdFName) end)
-            Logger.log("[PalBonds/Interaction] [BALANCE-DIAG] GetStaticItemData(" .. itemId .. ") returned — result=" .. (itemOk and "ok" or tostring(itemData)))
-            if itemOk and itemData ~= nil and itemData:IsValid() then
-                dump_all_properties_unfiltered(itemData, itemId)
-            else
-                Logger.log(string.format("[PalBonds/Interaction] [BALANCE-DIAG] GetStaticItemData(%s) failed or invalid: %s", itemId, tostring(itemData)))
-            end
-        end
-    end
-
-    run_item_balance_diagnostic(1)
-end
-
--- EPalItemTypeB values that plausibly count as "feed this to a Pal":
--- general food (satiety) plus the dedicated friendship-treat category.
-local FOOD_ITEM_TYPE_B_VALUES = {
-    45, -- ConsumePalGainFriendshipPoint ("kinship peach"-style treats)
-    47, -- FoodMeat
-    48, -- FoodVegetable
-    49, -- FoodFish
-    50, -- FoodDishMeat
-    51, -- FoodDishVegetable
-    52, -- FoodDishFish
-    53, -- FoodProcessed
-}
-
--- [FOOD-DIAG] First live attempt at reading the player's real food
--- inventory via UPalItemUtility. Everything here is a GUESS about UE4SS
--- Lua's exact calling convention for a BlueprintFunctionLibrary function
--- with a TArray<enum> in-param and a TArray<struct> OUT-param — wrapped
--- pcall-per-step so the log shows exactly which step (if any) fails,
--- same iterate-from-the-error approach used for the Worker Menu's
--- OnClose:Bind() discovery. Does not write anything — CollectLocal-
--- PlayerControllableItemInfos_ByTypeB is a pure query in the SDK dump.
--- Hundred-and-eighth pass: the hundred-and-seventh pass's fix worked —
--- the out-param table now comes back with real entries (2 items, both
--- live tests). Each entry is a wrapped FPalStaticItemIdAndNum struct
--- (`StaticItemId` FName + `Num` int32, confirmed in the SDK dump) — a
--- plain field read, the same proven-safe pattern this whole file
--- already uses everywhere else (never GetSaveParameter()-style
--- whole-struct-by-value calls). Reading the actual fields now instead
--- of just logging the opaque handle.
--- Hundred-and-ninth pass: the hundred-and-eighth pass's field reads
--- (entry.StaticItemId, entry.Num) came back nil on every one of 6 real
--- entries in a live test — no crash, just nil, exactly the kind of
--- silent failure safe_call() is built to hide the reason for. Switched
--- to explicit pcall-per-step here (not safe_call) so the log shows the
--- REAL error text if the field access itself is throwing, rather than
--- just "nil" with no way to tell a genuine null field apart from a
--- wrong access pattern on this "LocalUnrealParam"-wrapped struct type
--- (a kind of entry this project hasn't read fields from before — every
--- prior struct field read in this file has been on a direct component/
--- object field, not an entry pulled out of a TArray-of-structs
--- returned through an out-param).
-local function log_food_result(label, result)
-    Logger.log(string.format("[PalBonds/Interaction] [FOOD-DIAG] %s returned (raw): %s", label, tostring(result)))
-    local okIter, iterErr = pcall(function()
-        if type(result) == "table" then
-            for i, entry in ipairs(result) do
-                local okId, itemIdOrErr = pcall(function() return entry.StaticItemId end)
-                local idFieldStr = okId and tostring(itemIdOrErr) or ("FIELD-READ-FAILED: " .. tostring(itemIdOrErr))
-                local idToStringStr = "n/a"
-                if okId and itemIdOrErr ~= nil then
-                    local okToStr, toStrOrErr = pcall(function() return itemIdOrErr:ToString() end)
-                    idToStringStr = okToStr and tostring(toStrOrErr) or (":ToString() FAILED: " .. tostring(toStrOrErr))
-                end
-                local okNum, numOrErr = pcall(function() return entry.Num end)
-                local numStr = okNum and tostring(numOrErr) or ("FIELD-READ-FAILED: " .. tostring(numOrErr))
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] [FOOD-DIAG] %s item[%d]: StaticItemId(raw field)=%s StaticItemId:ToString()=%s Num=%s (entry=%s)",
-                    label, i, idFieldStr, idToStringStr, numStr, tostring(entry)
-                ))
-            end
-        end
-    end)
-    if not okIter then
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] could not iterate " .. label .. " result table: " .. tostring(iterErr))
-    end
-end
-
--- Hundred-and-seventh pass: the hundred-and-sixth pass's live test settled
--- both open questions about this call's shape. Attempt B (omitting the
--- out-param) FAILED outright with a real, precise UE4SS error —
--- "UFunction expected 4 parameters, received 3" — hard confirmation
--- that the SDK dump's 4-parameter signature is exactly right and must
--- be called with all 4 arguments; that guess is now dead, not
--- resurrected. Attempt A (4 args, `{}` placeholder for the out-param)
--- ran with no arity error and no crash, but its RETURN value was nil —
--- expected once you account for `CollectLocalPlayerControllableItemInfos_ByTypeB`
--- being declared `void` in the header dump: a void UFunction has no
--- return value to capture, so `local result = obj:Fn(...)` was always
--- going to be nil regardless of whether the call did anything useful.
--- The real data (if this call worked at all) would have to have been
--- written INTO the table passed as the out-param argument — UE4SS's
--- Lua bindings mutate TArray-typed arguments in place rather than
--- returning them. Fixed by keeping a named local table, passing THAT
--- same variable in, and reading it back afterward instead of the
--- call's (necessarily empty, for a void function) return value.
--- Hundred-and-eleventh pass: Dragón correctly called out that the field
--- reads coming back clean-nil (no error) meant the array-of-structs
--- approach was genuinely stuck, and asked to go investigate the game's
--- own files directly instead of guessing at Lua syntax further — this
--- project's own established fallback (repak) already used successfully
--- in the seventy-third/seventy-eighth/ninety-third/ninety-fifth passes.
--- Extracted `Pal/Content/Pal/DataTable/Item/DT_ItemDataTable_Common.uasset`
--- from the real game .pak with repak and read its embedded name table
--- with `strings` (the .uexp holds only packed binary row DATA — no
--- readable text; the .uasset holds the package's Name Table, which is
--- where every FName string referenced by the table's rows actually
--- lives). Found real, plausible row names: "BerryRed", "MeatRaw",
--- "MeatMarbledRaw", "Milk", "Honey", "Egg" (ordinary food) and, notably,
--- "AffectionFruit_01"/"AffectionFruit_02" — "Affection" strongly matches
--- EPalItemTypeB.ConsumePalGainFriendshipPoint (the dedicated friendship-
--- treat category found in the hundred-and-fourth pass's SDK research)
--- and is very likely the real item(s) behind Dragón's "kinship peach"
--- idea. These are asset/visual-model-adjacent names, not confirmed
--- as the EXACT StaticItemId strings the game's inventory system uses
--- internally — a real possibility, not yet proven.
---
--- Rather than keep fighting the broken struct-array read, this pass
--- tries a completely different, much simpler function instead:
--- `CountLocalPlayerInventoryItemNum64(WorldContextObject, StaticItemId)`
--- returns a plain int64 — no TArray, no out-param, no struct wrapping
--- at all — for each of these real candidate names. If even one comes
--- back non-zero and matching what Dragón is actually carrying, that
--- both confirms the exact string format the game expects AND gives a
--- confirmed-working, much simpler path forward for Stage 2 than the
--- array approach ever was.
-local FOOD_CANDIDATE_ITEM_IDS = {
-    "BerryRed", "MeatRaw", "MeatMarbledRaw", "Milk", "Honey", "Egg",
-    "AffectionFruit_01", "AffectionFruit_02",
-}
-
--- !!! DO NOT CALL THIS FUNCTION LIVE !!! (as of the hundred-and-twelfth
--- pass, 2026-09-03). One of the two calls inside it — most likely the
--- CountLocalPlayerInventoryItemNum64 loop below, passing a plain Lua
--- string where the native function wants an FName — caused a REAL,
--- reproducible (2/2) game crash (EXCEPTION_ACCESS_VIOLATION, near-null
--- read). This is left here only as a record of what was tried and why
--- it's dangerous. Disconnected from do_feed() — see that function's own
--- comment and DESIGN.md's "Crash #4" writeup before ever re-enabling
--- any part of this.
-local function log_available_food_items(player)
-    local utility = get_pal_item_utility()
-    if not utility then
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] could not resolve PalItemUtility CDO — skipping food inventory dump")
-        return
-    end
-
-    -- Keep running the hundred-and-seventh-pass array call too — it
-    -- still proves entries exist even though we can't read their
-    -- fields, and costs nothing extra to keep logging for comparison.
-    local outItemInfos = {}
-    local ok, err = pcall(function()
-        utility:CollectLocalPlayerControllableItemInfos_ByTypeB(
-            player, FOOD_ITEM_TYPE_B_VALUES, outItemInfos, 0 -- EPalItemInfoCollectType.InventoryOnly = 0
-        )
-    end)
-    if ok then
-        log_food_result("out-param table after call", outItemInfos)
-    else
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] CollectLocalPlayerControllableItemInfos_ByTypeB call FAILED: " .. tostring(err))
-    end
-
-    -- New this pass: the simpler, named-item count check.
-    for _, itemId in ipairs(FOOD_CANDIDATE_ITEM_IDS) do
-        local okCount, countOrErr = pcall(function()
-            return utility:CountLocalPlayerInventoryItemNum64(player, itemId)
-        end)
-        if okCount then
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FOOD-DIAG] CountLocalPlayerInventoryItemNum64(\"%s\") = %s",
-                itemId, tostring(countOrErr)
-            ))
-        else
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FOOD-DIAG] CountLocalPlayerInventoryItemNum64(\"%s\") FAILED: %s",
-                itemId, tostring(countOrErr)
-            ))
-        end
-    end
-end
-
--- ---------------------------------------------------------------------
--- Twelfth-pass additions: "calm down" attempt + diagnostic property dump.
--- See file header for the full reasoning. Both are best-effort/read-only
--- respectively, and both are wrapped in pcall at every native call.
--- ---------------------------------------------------------------------
-
-local INTERESTING_KEYWORDS = {
-    "warning", "alert", "escape", "flee", "run", "curious", "timid",
-    "skittish", "personality", "temper", "nature", "disposition",
-    "caution", "notice", "aware", "hate", "target", "mood",
-}
-
-local function name_looks_interesting(name)
-    local lower = name:lower()
-    for _, kw in ipairs(INTERESTING_KEYWORDS) do
-        if lower:find(kw, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
--- Read-only. Walks Class:ForEachProperty() up the GetSuperStruct() chain
--- (same technique ConsoleCommandsMod/dump_object.lua uses), which
--- surfaces Blueprint-ADDED variables too — not just what's in the static
--- Pal.hpp SDK dump. Filtered to names that look relevant to AI mood/
--- reaction-to-player so the log doesn't get flooded with the hundreds of
--- unrelated properties every Actor/Pawn/Character has. Only scalar types
--- (bool/byte/int/float/name/enum) have their VALUE read; anything else
--- just logs its name+type so we at least know it exists.
-local function dump_interesting_properties(obj, label)
-    local ok, err = pcall(function()
-        if obj == nil or not obj:IsValid() then
-            return
-        end
-        local class = obj:GetClass()
-        local seen = {}
-        while class ~= nil and class:IsValid() do
-            class:ForEachProperty(function(prop)
-                local propOk, propName = pcall(function() return prop:GetFName():ToString() end)
-                if propOk and propName and not seen[propName] and name_looks_interesting(propName) then
-                    seen[propName] = true
-                    local typeOk, typeName = pcall(function() return prop:GetClass():GetFName():ToString() end)
-                    local valueStr = "(not read — non-scalar type)"
-                    if typeOk then
-                        local readOk, value = pcall(function()
-                            if typeName == "BoolProperty" or typeName == "ByteProperty"
-                                or typeName == "IntProperty" or typeName == "FloatProperty" then
-                                return obj[propName]
-                            elseif typeName == "NameProperty" then
-                                local v = obj[propName]
-                                return v and v:ToString()
-                            elseif typeName == "EnumProperty" then
-                                local v = obj[propName]
-                                local enumOk, enumName = pcall(function()
-                                    return prop:GetEnum():GetNameByValue(v):ToString()
-                                end)
-                                if enumOk then
-                                    return string.format("%s(%s)", enumName, tostring(v))
-                                end
-                                return v
-                            end
-                            return nil
-                        end)
-                        if readOk and value ~= nil then
-                            valueStr = tostring(value)
-                        end
-                    end
-                    Logger.log(string.format(
-                        "[PalBonds/Interaction] [DIAG] %s.%s (%s) = %s",
-                        label, propName, tostring(typeName), valueStr
-                    ))
-                end
-            end)
-            class = safe_call(function() return class:GetSuperStruct() end)
-        end
-    end)
-    if not ok then
-        Logger.log("[PalBonds/Interaction] [DIAG] property scan failed (non-fatal, caught): " .. tostring(err))
-    end
-end
-
--- Best-effort attempt to stop the target from treating the player as
--- something to react to (flee from / fight) right after a successful
--- interaction. Uses REAL fields confirmed in Pal.hpp on APalAIController:
--- TargetPlayers / TargetNPCs (TArray<AActor*>, direct field access — same
--- safe pattern as SaveParameter, not a value-returning function call) and
--- HateSystem:ChangeHate(Attacker, PlusHateValue) (plain void function,
--- simple pointer+float params). NOT confirmed to be the actual
--- flee/curious "disposition" switch DESIGN.md's Q1 asks about — that's
--- still open, see dump_interesting_properties above. Treat this as an
--- experiment to test live, not a proven fix.
-local function try_calm_target(pal, player)
-    local ok, err = pcall(function()
-        local controller = pal.Controller
-        if controller == nil or not controller:IsValid() then
-            Logger.log("[PalBonds/Interaction] calm-down: target has no valid Controller, skipping")
-            return
-        end
-
-        local targetPlayers = controller.TargetPlayers
-        if targetPlayers ~= nil then
-            local okNum, n = pcall(function() return targetPlayers:GetArrayNum() end)
-            if okNum and n and n > 0 then
-                local okClear = pcall(function() targetPlayers:Clear() end)
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] calm-down: TargetPlayers had %d entr%s, Clear() %s",
-                    n, (n == 1) and "y" or "ies", okClear and "succeeded" or "FAILED (method may not exist on this TArray wrapper)"
-                ))
-            end
-        end
-
-        local targetNPCs = controller.TargetNPCs
-        if targetNPCs ~= nil then
-            local okNum, n = pcall(function() return targetNPCs:GetArrayNum() end)
-            if okNum and n and n > 0 then
-                local okClear = pcall(function() targetNPCs:Clear() end)
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] calm-down: TargetNPCs had %d entr%s, Clear() %s",
-                    n, (n == 1) and "y" or "ies", okClear and "succeeded" or "FAILED (method may not exist on this TArray wrapper)"
-                ))
-            end
-        end
-
-        local hate = controller.HateSystem
-        if hate ~= nil and hate:IsValid() and player ~= nil then
-            local okHate = pcall(function() hate:ChangeHate(player, -999999.0) end)
-            Logger.log("[PalBonds/Interaction] calm-down: HateSystem:ChangeHate toward player " .. (okHate and "called" or "FAILED"))
-        end
-    end)
-    if not ok then
-        Logger.log("[PalBonds/Interaction] calm-down attempt failed (non-fatal, caught): " .. tostring(err))
-    end
-end
-
--- Shared body for both F9 (pet) and F10 (feed) — twelfth pass folds what
--- used to be a single do_pet() into this, parameterized on the PLAYER's
--- own "reach out" action type and a label for the log. Targeting, both
--- busy-gates, the target's Happy reaction (and the friendship grant that
--- comes from it), the calm-down attempt, and the diagnostic dump are all
--- identical between pet and feed.
-local function do_interaction(playerActionType, actionLabel, keyName)
-    Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting %s", keyName, actionLabel))
-
-    local player = FindFirstOf("PalPlayerCharacter")
-    if not player or not player:IsValid() then
-        Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
-        return
-    end
-
-    -- Gate on the PLAYER's own action state FIRST, before anything else.
-    -- This is what makes F9/F10 non-spammable: a second press while the
-    -- reach-out/reaction animations are still playing is just ignored.
-    local playerActionComp = player.ActionComponent
-    if playerActionComp and playerActionComp:IsValid() then
-        local playerIdle = safe_call(function() return playerActionComp:ActionIsEmpty() end)
-        if playerIdle == false then
-            Logger.log("[PalBonds/Interaction] player is already mid-action — ignoring press")
-            return
-        end
-    end
-
-    -- Prefer the actual camera's location for the look-origin (over-the-
-    -- shoulder cameras are offset from the character root); fall back to
-    -- the player actor's own location if that component isn't reachable.
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-    if not originLoc then
-        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
-    end
-    if not originLoc then
-        Logger.log("[PalBonds/Interaction] could not read player/camera location")
-        return
-    end
-
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then
-        Logger.log("[PalBonds/Interaction] could not read player control rotation")
-        return
-    end
-    local forward = rotator_to_forward(controlRot)
-
-    local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
-    if not pal then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
-            PET_RANGE, PET_MAX_ANGLE_DEG
-        ))
-        return
-    end
-
-    -- Fifteenth pass: a Pal that already lost all its bonded trust
-    -- (Capture.OnTrustLost — damage or distance, see Trust.lua) is done.
-    -- Refuse the whole interaction rather than let it quietly re-earn
-    -- trust as if nothing happened.
-    if Capture.HasPermanentlyFled(pal) then
-        Logger.log("[PalBonds/Interaction] this Pal already lost all its trust and fled permanently — refusing interaction")
-        return
-    end
-
-    -- Gate on the TARGET's action state too, and do it BEFORE granting
-    -- anything at all — matches vanilla: a busy/sleeping Pal skips the
-    -- whole interaction, not just the reaction clip.
-    local actionComp = pal.ActionComponent
-    local targetIdle = nil
-    if actionComp and actionComp:IsValid() then
-        targetIdle = safe_call(function() return actionComp:ActionIsEmpty() end)
-    end
-    if targetIdle ~= true then
-        Logger.log("[PalBonds/Interaction] target is busy or its action state couldn't be read — skipping entire interaction (matches vanilla: can't pet/feed a busy/sleeping Pal)")
-        return
-    end
-
-    local param = get_individual_parameter(pal)
-    if not param or not param:IsValid() then
-        Logger.log("[PalBonds/Interaction] targeted Pal has no IndividualParameter — can't read/modify friendship")
-        return
-    end
-
-    local speciesId = safe_call(function() return param:GetCharacterID() end)
-    local speciesName = safe_call(function() return speciesId and speciesId:ToString() end)
-    local actorName = safe_call(function() return pal:GetFullName() end)
-    local before = safe_call(function() return param:GetFriendshipPoint() end)
-    -- NOTE: deliberately NOT calling param:GetSaveParameter() here. That
-    -- function returns the ENTIRE FPalIndividualCharacterSaveParameter
-    -- struct BY VALUE (0x370 = 880 bytes, embeds dynamic arrays/strings).
-    -- Copying a struct like that across the Lua/native boundary was the
-    -- actual cause of all three crashes this project had (see
-    -- hook-points.md, "Crash #3 root cause"). `SaveParameter` is a plain
-    -- field directly on `param` itself.
-    local ownerId = safe_call(function()
-        return param.SaveParameter and param.SaveParameter.OwnerPlayerUId
-    end)
-
-    Logger.log(string.format(
-        "[PalBonds/Interaction] targeted %s (species=%s) at %.0f units (%.1f deg off-center), owner GUID: %s, Friendship=%s",
-        tostring(actorName), tostring(speciesName), dist, angle, tostring(ownerId), tostring(before)
-    ))
-
-    -- Player's own "reach out" gesture. Self-directed on the PLAYER's own
-    -- ActionComponent, targeting the Pal.
-    if playerActionComp and playerActionComp:IsValid() then
-        Logger.log(string.format("[PalBonds/Interaction] player reaching out: PlayActionByType(pal, %s=%d) NOW", actionLabel, playerActionType))
-        local pOk, pErr = safe_call(function()
-            playerActionComp:PlayActionByType(pal, playerActionType)
-        end)
-        Logger.log(string.format("[PalBonds/Interaction] player %s call returned — result=%s", actionLabel, tostring(pErr or "ok")))
-    end
-
-    -- NOTE: deliberately NOT calling param:AddFriendShip() here. See
-    -- eleventh-pass notes in the file header — Happy's own internal logic
-    -- already fires exactly one real AddFriendShip(10, true) as a side
-    -- effect, and that's the correct, vanilla-accurate amount.
-
-    -- Target's own reaction. THIS is what actually grants friendship now
-    -- (via Happy's own internal side effect), not an explicit call.
-    --
-    -- BUG FOUND (2026-09-01, thirteenth pass): this used to go through
-    -- safe_call(), which on SUCCESS returns the wrapped function's own
-    -- return value as its first result — and PlayActionByType's call site
-    -- here returns nothing, so `okAction` was always nil (falsy) whether
-    -- the call succeeded or failed. That silently skipped try_calm_target()
-    -- and dump_interesting_properties() on every single interaction this
-    -- whole pass, which is exactly why a full test session (skittish Pal,
-    -- Chikipi, Cattiva) showed zero "calm-down:"/"[DIAG]" log lines at
-    -- all — not the game ignoring the attempt, our own code never
-    -- attempting it. Fixed by calling pcall() directly here so `actionOk`
-    -- is pcall's own real success boolean, not a re-wrapped return value.
-    Logger.log(string.format("[PalBonds/Interaction] target reacting: PlayActionByType(pal, Happy=%d) NOW", ACTION_TYPE_HAPPY))
-    local actionOk, actionErr = pcall(function()
-        actionComp:PlayActionByType(pal, ACTION_TYPE_HAPPY)
-    end)
-    Logger.log(string.format("[PalBonds/Interaction] target Happy call returned — result=%s (the [WATCH] hook will log the real friendship grant a couple seconds from now)", actionOk and "ok" or tostring(actionErr)))
-
-    if actionOk then
-        try_calm_target(pal, player)
-        dump_interesting_properties(pal, tostring(actorName))
-        local controller = safe_call(function() return pal.Controller end)
-        if controller then
-            dump_interesting_properties(controller, tostring(actorName) .. ".Controller")
-        end
-    end
-
-    -- Two-hundred-and-first pass (2026-09-06): see PET_FRIENDSHIP_GAIN's
-    -- own comment above for the full reasoning. Scoped to Pet specifically
-    -- (this function is shared with Feed's old raw-key path, which already
-    -- has its own separate, real, working grant elsewhere and needs no
-    -- touching) and to a confirmed WILD Pal only — an owned real Otomo's
-    -- Pet interaction is left completely alone, same boundary this whole
-    -- project has kept since the eighty-second pass.
-    if actionOk and actionLabel == "HumanPetting" then
-        local isOwned = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
-        if isOwned == false then
-            local scheduleOk = pcall(function()
-                ExecuteInGameThreadWithDelay(PET_GRANT_CHECK_DELAY_MS, function()
-                    local stillValid = safe_call(function() return pal:IsValid() end)
-                    local paramStillValid = stillValid and safe_call(function() return param:IsValid() end)
-                    if not paramStillValid then
-                        Logger.log("[PalBonds/Interaction] [PET-FRIENDSHIP] target no longer valid — skipping the top-up check")
-                        return
-                    end
-                    local afterPoint = safe_call(function() return param:GetFriendshipPoint() end)
-                    if before == nil or afterPoint == nil then
-                        Logger.log("[PalBonds/Interaction] [PET-FRIENDSHIP] could not read before/after friendship point — skipping the top-up check")
-                        return
-                    end
-                    local realDelta = afterPoint - before
-                    local adjustment = PET_FRIENDSHIP_GAIN - realDelta
-                    if adjustment ~= 0 then
-                        safe_call(function() param:AddFriendShip(adjustment, false) end)
-                    end
-                    Logger.log(string.format(
-                        "[PalBonds/Interaction] [PET-FRIENDSHIP] real vanilla Pet grant observed = %d (first clean isolated read of this) — adjusted by %d to land on the target %d",
-                        realDelta, adjustment, PET_FRIENDSHIP_GAIN
-                    ))
-                end)
-            end)
-            if not scheduleOk then
-                Logger.log("[PalBonds/Interaction] [PET-FRIENDSHIP] could not schedule the top-up check")
-            end
-        end
-    end
-
-    if Interaction.OnWildPalPetted then
-        Interaction.OnWildPalPetted(pal)
-    end
-end
-
-local function do_pet()
-    do_interaction(ACTION_TYPE_HUMAN_PETTING, "HumanPetting", PET_KEY)
 end
 
 -- Hundred-and-thirty-eighth pass (2026-09-04): Play — item 1 on the
@@ -1634,13 +557,11 @@ end
 -- about TWO calls firing for the same press).
 local function do_play()
     Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting Play", PLAY_KEY))
-
     local player = FindFirstOf("PalPlayerCharacter")
     if not player or not player:IsValid() then
         Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
         return
     end
-
     local playerActionComp = player.ActionComponent
     if playerActionComp and playerActionComp:IsValid() then
         local playerIdle = safe_call(function() return playerActionComp:ActionIsEmpty() end)
@@ -1649,7 +570,6 @@ local function do_play()
             return
         end
     end
-
     local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
     if not originLoc then
         originLoc = safe_call(function() return player:K2_GetActorLocation() end)
@@ -1658,14 +578,12 @@ local function do_play()
         Logger.log("[PalBonds/Interaction] could not read player/camera location")
         return
     end
-
     local controlRot = safe_call(function() return player:GetControlRotation() end)
     if not controlRot then
         Logger.log("[PalBonds/Interaction] could not read player control rotation")
         return
     end
     local forward = rotator_to_forward(controlRot)
-
     local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
     if not pal then
         Logger.log(string.format(
@@ -1674,12 +592,10 @@ local function do_play()
         ))
         return
     end
-
     if Capture.HasPermanentlyFled(pal) then
         Logger.log("[PalBonds/Interaction] this Pal already lost all its trust and fled permanently — refusing Play")
         return
     end
-
     local actionComp = pal.ActionComponent
     local targetIdle = nil
     if actionComp and actionComp:IsValid() then
@@ -1689,68 +605,16 @@ local function do_play()
         Logger.log("[PalBonds/Interaction] target is busy or its action state couldn't be read — skipping Play")
         return
     end
-
     local param = get_individual_parameter(pal)
     if not param or not param:IsValid() then
         Logger.log("[PalBonds/Interaction] targeted Pal has no IndividualParameter — can't grant trust")
         return
     end
-
     local actorName = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format(
         "[PalBonds/Interaction] Play targeting %s at %.0f units (%.1f deg off-center)",
         tostring(actorName), dist, angle
     ))
-
-    -- Hundred-and-forty-first pass (2026-09-04): Dragón reported the
-    -- Pal-idle animation sometimes looking like the Feed gesture and
-    -- asked whether PalRandomRest rolls among only idle animations or
-    -- among all of the Pal's animations. Real evidence, not a guess:
-    -- APalCharacter has a plain field, StaticCharacterParameterComponent
-    -- (confirmed in Pal.hpp, same safe direct-field-read pattern as
-    -- ActionComponent/CharacterParameterComponent above), which carries
-    -- `RandomRestMontageInfos` (TArray<FPalRandomRestInfo> — each entry a
-    -- plain struct: RandomRestMontage, Weight, LoopNum_Min/Max,
-    -- AfterIdleTime). This IS a curated, per-species "rest" pool by
-    -- design, not "every animation the Pal has" — logging it here proves
-    -- (or disproves) whether this specific Pal's authored pool already
-    -- includes something that looks feeding-like (plausible for
-    -- herbivore-type Pals with a grazing/foraging idle pose), rather
-    -- than assuming either way. Per the hundred-and-fortieth pass's fresh
-    -- crash lesson, this NEVER calls a method on the RandomRestMontage
-    -- asset reference — only tostring() on it, same as the fix above.
-    -- Hundred-and-forty-second pass (2026-09-04) FIX: the previous
-    -- version guessed `restInfos:Get(idx)` to pull elements out of this
-    -- native TArray field — wrong method name, so every entry silently
-    -- came back nil (safe_call swallowed the error) and not a single
-    -- [REST-POOL-DIAG] entry line ever printed, only the top-level count.
-    -- This project already has a PROVEN pattern for iterating a native
-    -- TArray field, used successfully in Indicator.lua's own property
-    -- dumper: `:ForEach(function(index, elem) ... end)`, with each
-    -- element needing `:get()` to unwrap before reading its fields.
-    -- Reused verbatim instead of guessing a second time.
-    local staticParam = safe_call(function() return pal.StaticCharacterParameterComponent end)
-    if staticParam and staticParam:IsValid() then
-        local restInfos = safe_call(function() return staticParam.RandomRestMontageInfos end)
-        local restCount = safe_call(function() return restInfos and restInfos:GetArrayNum() end)
-        Logger.log(string.format("[PalBonds/Interaction] [REST-POOL-DIAG] %s: RandomRestMontageInfos has %s real entr%s", tostring(actorName), tostring(restCount), (restCount == 1) and "y" or "ies"))
-        if restInfos and restCount and restCount > 0 then
-            pcall(function()
-                restInfos:ForEach(function(index, elemParam)
-                    local eOk, entry = pcall(function() return elemParam:get() end)
-                    if eOk and entry then
-                        local montage = safe_call(function() return entry.RandomRestMontage end)
-                        local weight = safe_call(function() return entry.Weight end)
-                        Logger.log(string.format("[PalBonds/Interaction] [REST-POOL-DIAG] entry[%s]: RandomRestMontage=%s Weight=%s", tostring(index), tostring(montage), tostring(weight)))
-                    else
-                        Logger.log(string.format("[PalBonds/Interaction] [REST-POOL-DIAG] entry[%s]: could not unwrap (:get() failed)", tostring(index)))
-                    end
-                end)
-            end)
-        end
-    else
-        Logger.log(string.format("[PalBonds/Interaction] [REST-POOL-DIAG] %s: no valid StaticCharacterParameterComponent — could not read its rest pool", tostring(actorName)))
-    end
 
     -- Hundred-and-forty-fifth pass (2026-09-04) REMOVED: the player-Cheer
     -- attempt (PlayAction + :GetClass() on a CDO) that lived here across
@@ -1776,6 +640,29 @@ local function do_play()
     -- the [EMOTE-WATCH] live hooks in Interaction.Init() are left
     -- running (harmless, read-only/hook-registration only) for whenever
     -- that research resumes.
+    -- ===============================================================
+    -- THE PLAYER CHEERS TOO (2026-09-12)
+    -- ===============================================================
+    -- Play has always been able to make the PAL react and never the player, and
+    -- the player-emote half was deferred for many passes because the call was
+    -- unproven and this file has a crash history. The Kick Keybind reference
+    -- mod Dragón supplied settled it: that mod ships this exact call and works.
+    --
+    -- Which emote was still unknown, because the assets are numbered rather
+    -- than named. The F7 probe answered it from his own run: cheer is index 0.
+    --
+    -- ORDERING, AND IT IS THE WHOLE SAFETY ARGUMENT. The cheer fires at the
+    -- very END of this function, not here. Read the hundred-and-forty-fifth
+    -- pass note directly above: the previous player-Cheer attempt sat at this
+    -- exact spot and killed do_play silently every single time -- no idle
+    -- animation, no Happy follow-up, no trust -- because an uncaught error here
+    -- takes the whole rest of the function with it, swallowed by the outer
+    -- safe_call in the keybind handler.
+    --
+    -- Putting it last makes that failure mode structurally impossible: by the
+    -- time the cheer runs, the Pal has already played its animation and the
+    -- trust has already been granted or scheduled. The worst case is a missing
+    -- player emote, not a dead interaction.
     Logger.log(string.format("[PalBonds/Interaction] target playing: PlayActionByType(pal, PalRandomRest=%d) NOW", ACTION_TYPE_PAL_RANDOM_REST))
     local actionOk, actionErr = pcall(function()
         actionComp:PlayActionByType(pal, ACTION_TYPE_PAL_RANDOM_REST)
@@ -1811,6 +698,7 @@ local function do_play()
                     Logger.log("[PalBonds/Interaction] Play: target no longer valid when Happy follow-up was due — skipping")
                     return
                 end
+
                 -- Hundred-and-forty-fourth pass (2026-09-04) FIX: Dragón's
                 -- real test showed the busy-gate check above meant Happy
                 -- never fired at all — some species' random-rest montages
@@ -1844,7 +732,6 @@ local function do_play()
                     actionComp:CancelActionByType(ACTION_TYPE_PAL_RANDOM_REST)
                 end)
                 Logger.log(string.format("[PalBonds/Interaction] Play: CancelActionByType call returned — result=%s", cancelOk and "ok" or tostring(cancelErr)))
-
                 Logger.log("[PalBonds/Interaction] Play: target playing Happy follow-up (hearts) NOW")
                 local happyOk, happyErr = pcall(function()
                     actionComp:PlayActionByType(pal, ACTION_TYPE_HAPPY)
@@ -1891,337 +778,26 @@ local function do_play()
             Interaction.OnWildPalPetted(pal)
         end
     end
-end
 
-local function do_feed()
-    do_interaction(ACTION_TYPE_HUMAN_FEEDING, "HumanFeeding", FEED_KEY)
-    -- HUNDRED-AND-TWELFTH PASS (2026-09-03): REMOVED — real game crash.
-    -- The hundred-and-fifth-through-hundred-and-eleventh passes' call
-    -- into log_available_food_items() (specifically the hundred-and-
-    -- eleventh pass's new CountLocalPlayerInventoryItemNum64 loop, most
-    -- likely — though the CollectLocalPlayerControllableItemInfos_ByTypeB
-    -- call before it is not cleared either) caused a REAL, hard game
-    -- crash (EXCEPTION_ACCESS_VIOLATION reading address 0x70 — a
-    -- near-null pointer dereference inside native code) on Dragón's very
-    -- next live feed, reproduced twice. This is a fundamentally
-    -- different, more dangerous category of bug than anything else
-    -- found in this project: pcall/safe_call can only catch Lua-level
-    -- errors — a hard access violation inside a native function call
-    -- crashes the whole game process regardless of how the Lua call site
-    -- is wrapped. Every earlier "unconfirmed guess" in this file (the
-    -- Worker Menu's OnClose:Bind, the various field reads) was safe to
-    -- try live because a wrong guess just produced a catchable Lua
-    -- error; this one was not, and should never have been shipped for a
-    -- live test without a much higher bar of confidence given it's a
-    -- native BlueprintFunctionLibrary call with FName-typed parameters
-    -- (a type this project had not previously passed FROM Lua INTO a
-    -- native call by constructing it from a plain string — every prior
-    -- FName use in this file has been READING one off an existing live
-    -- object, never constructing one to pass as an argument).
+    -- ===============================================================
+    -- THE PLAYER CHEERS TOO (2026-09-12)
+    -- ===============================================================
+    -- Play could always make the PAL react and never the player. The
+    -- player-emote half was deferred for many passes because the call was
+    -- unproven and this file has a crash history; the Kick Keybind reference
+    -- mod Dragón supplied settled it, since that mod ships this exact call and
+    -- works in production. Note what it does NOT do: call :GetClass() on a CDO,
+    -- which was the leading suspect for the hundred-and-forty-fifth pass's
+    -- silent death. The class object from StaticFindObject is passed straight
+    -- through, exactly as the reference mod passes it.
     --
-    -- Disconnected entirely from the live hot path. log_available_food_
-    -- items() and its two calls (the array-of-structs read and the new
-    -- named-item count loop) are left defined below for reference/future
-    -- investigation, but MUST NOT be called again without first
-    -- confirming — via something safer than a live game session, if at
-    -- all possible — that passing a Lua string as an FName argument to a
-    -- native UFunction is actually safe in this UE4SS build. See
-    -- DESIGN.md's "Crash #4" writeup and hook-points.md's hundred-and-
-    -- twelfth pass for the full incident report.
-end
-
--- THIRTY-EIGHTH PASS (2026-09-02): F11, the direct-capture experiment.
--- Reuses the same look-based targeting as pet/feed (find_targeted_pal)
--- but does NOT reuse do_interaction() — no busy-gating, no Happy
--- reaction, no friendship math. Just: find what you're looking at, hand
--- it to Capture.TryDirectCapture, done. See Capture.lua for the actual
--- risky call and its full reasoning.
--- Two-hundred-and-fourteenth pass: see the CTRL+V binding in Init for why.
-local function do_preview_join_vfx()
-    local player = FindFirstOf("PalPlayerCharacter")
-    if not player or not player:IsValid() then return end
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-        or safe_call(function() return player:K2_GetActorLocation() end)
-    if not originLoc then return end
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then return end
-    local pal = find_targeted_pal(originLoc, rotator_to_forward(controlRot), player)
-    local okReq, Capture = pcall(require, "Capture")
-    if okReq and Capture and Capture.PreviewNextJoinVfx then
-        Capture.PreviewNextJoinVfx(pal)
-    end
-end
-
-local function do_test_capture()
-    Logger.log("[PalBonds/Interaction] CTRL+K pressed — starting Capture.TryDirectCapture experiment")
-
-    local player = FindFirstOf("PalPlayerCharacter")
-    if not player or not player:IsValid() then
-        Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
-        return
-    end
-
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-    if not originLoc then
-        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
-    end
-    if not originLoc then
-        Logger.log("[PalBonds/Interaction] could not read player/camera location")
-        return
-    end
-
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then
-        Logger.log("[PalBonds/Interaction] could not read player control rotation")
-        return
-    end
-    local forward = rotator_to_forward(controlRot)
-
-    local pal = find_targeted_pal(originLoc, forward, player)
-    if not pal then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] %s: not looking at any Pal (need within %.0f units and %.0f degrees of center)",
-            "CTRL+K", PET_RANGE, PET_MAX_ANGLE_DEG
-        ))
-        return
-    end
-
-    Capture.TryDirectCapture(pal, player)
-end
-
--- Hundred-and-fifty-ninth/sixtieth passes (2026-09-04), condensed: CTRL+H
--- was a direct-call test for `SelectedFeedingItem` (the Worker Menu's own
--- consumption function, confirmed via Ghidra to have NO ownership check
--- in its own body — unlike `RequestUseToCharacter`, which IS gated to the
--- Otomo only). Calling it cold produced a REAL crash — a Windows crash
--- dump at the exact second of the call, and the entire Lua/input layer
--- (not just this key — InputSpy's unrelated WASD listener too) went dead
--- for the rest of that session while the game kept looking alive. That
--- call is gone from this file entirely; `SelectedFeedingItem` is now a
--- confirmed-dangerous dead end for a cold direct call, full stop. Full
--- writeup in hook-points.md, "Crash #5."
---
--- CTRL+H is reused below for a different, follow-on idea rather than
--- left dead.
-local TEST_SELECTED_FEEDING_KEY = Key.H
-local TEST_SELECTED_FEEDING_MODIFIERS = {ModifierKey.CONTROL}
-local TEST_FOOD_ITEM_STATIC_ID = "Berries" -- same confirmed-real item name already proven end-to-end for CTRL+J (hundred-and-seventeenth/eighteenth passes)
-
--- Same proven technique as the old CTRL+J test (hundred-and-seventeenth
--- pass): scan every live PalItemSlot in the world and pick the ONE
--- matching candidate with the highest StackCount — confirmed live to
--- reliably pick the player's own real stash over small amounts other
--- nearby Pals happen to be carrying.
-local function find_best_food_slot(itemStaticId)
-    local best, bestCount = nil, -1
-    local slots = FindAllOf("PalItemSlot")
-    if not slots then return nil, nil end
-    for _, slot in ipairs(slots) do
-        safe_call(function()
-            if not slot or not slot:IsValid() then return end
-            local sidObj = slot.ItemId and slot.ItemId.StaticId
-            local sidStr = sidObj and sidObj:ToString()
-            if sidStr ~= itemStaticId then return end
-            local count = slot.StackCount
-            if count and count > bestCount then
-                bestCount = count
-                best = slot
-            end
-        end)
-    end
-    return best, bestCount
-end
-
--- Hundred-and-seventy-sixth pass (2026-09-05): first-ever write to real,
--- persisted save data (inventory quantity) in this project — every prior
--- field write (BaseCampId, IndividualHandle, resultType) touched only
--- ephemeral UI/interaction state. Requested directly by Dragón, after
--- confirming AffectionFruit_02 (the lesser Kinship Peach) grants zero real
--- vanilla friendship via the new real-Feed path, to get more of the item
--- for further testing without needing a separate spawn/cheat mod — same
--- "try our own tool first, fall back to a known-working mod if it doesn't
--- pan out" framing Dragón himself set.
---
--- Reuses find_best_food_slot() as-is (already proven safe, already used
--- for Berries) — the only new part is writing StackCount instead of only
--- reading it, on a real, already-existing, already-live slot object (never
--- constructing a new item or slot from scratch, same "reuse a real object,
--- never fabricate one" discipline as every other write in this file).
--- Conservative target count (not an extreme number) — no idea yet whether
--- this item has an unusual one-stack cap, and this is genuinely new
--- territory, so staying modest first is the responsible move.
-local KINSHIP_PEACH_ITEM_ID = "AffectionFruit_02"
-local KINSHIP_PEACH_TEST_TARGET_COUNT = 10
-
-local function do_test_multiply_kinship_peach()
-    Logger.log("[PalBonds/Interaction] CTRL+H pressed — starting Kinship Peach StackCount test")
-
-    local slot, currentCount = find_best_food_slot(KINSHIP_PEACH_ITEM_ID)
-    if not slot then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] [PEACH-TEST] no live PalItemSlot found holding %s — do you still have at least one? aborting",
-            KINSHIP_PEACH_ITEM_ID
-        ))
-        return
-    end
-
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [PEACH-TEST] found the real slot — current StackCount=%s, target=%d",
-        tostring(currentCount), KINSHIP_PEACH_TEST_TARGET_COUNT
-    ))
-
-    if currentCount and currentCount >= KINSHIP_PEACH_TEST_TARGET_COUNT then
-        Logger.log("[PalBonds/Interaction] [PEACH-TEST] already at or above the target count — nothing to do, aborting")
-        return
-    end
-
-    local writeOk, writeErr = pcall(function()
-        slot.StackCount = KINSHIP_PEACH_TEST_TARGET_COUNT
-    end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [PEACH-TEST] StackCount write returned — result=%s",
-        writeOk and "ok" or tostring(writeErr)
-    ))
-
-    local afterCount = safe_call(function() return slot.StackCount end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [PEACH-TEST] StackCount after write=%s (was %s) — go check your real inventory now to see if this actually reflects there, and whether it looks/behaves normal",
-        tostring(afterCount), tostring(currentCount)
-    ))
-end
-
--- Hundred-and-sixty-third pass (2026-09-04): Dragón's own real-world
--- observation — a Pal can sit in a base with NO job assigned at all, and
--- even human NPCs can belong to a base. That means "is this Pal a member
--- of my base" is very likely a separate, simpler concept from "does this
--- Pal have a specific job" (`WorkAssignId`/`UPalWorkAssign`, the much
--- bigger, riskier object this project backed away from — see the prior
--- pass's discussion). Confirmed real and separate in Pal.hpp: a plain
--- `FGuid BaseCampId` field lives on `UPalIndividualCharacterParameter` —
--- the exact object `get_individual_parameter(pal)` already returns for
--- every single interaction in this file (friendship reads, etc.) — with
--- its own real update delegate (`OnUpdateBaseCampIdDelegate`), completely
--- separate from `WorkAssignId` (which lives on a different class,
--- `UPalCharacterParameterComponent`).
---
--- This is a much lower-risk write than the WorkAssign idea: no new
--- object is constructed, no existing Pal's specific job gets stolen —
--- this just copies a REAL, currently-valid base ID (read off some other
--- real Pal already confirmed to be a member of a real base) onto the
--- target's own BaseCampId field. Same "reuse a real live value, never
--- fabricate one" discipline already proven safe throughout this file
--- (e.g. FPalItemSlotId's ContainerId). Still a genuinely new field to
--- write for the first time, so this is watched closely, one field write,
--- fully isolated on its own key — no other system touches this value.
-local function find_donor_base_camp_id()
-    local characters = FindAllOf("PalCharacter")
-    if not characters then return nil end
-    for _, char in ipairs(characters) do
-        local found = safe_call(function()
-            if not char or not char:IsValid() then return nil end
-            local comp = char.CharacterParameterComponent
-            if not comp or not comp:IsValid() then return nil end
-            local param = comp:GetIndividualParameter()
-            if not param or not param:IsValid() then return nil end
-            local baseCampId = param.BaseCampId
-            if baseCampId == nil then return nil end
-            local isZero = (baseCampId.A == 0) and (baseCampId.B == 0) and (baseCampId.C == 0) and (baseCampId.D == 0)
-            if isZero then return nil end
-            return baseCampId
-        end)
-        if found then return found end
-    end
-    return nil
-end
-
-local function do_test_base_camp_membership()
-    Logger.log("[PalBonds/Interaction] CTRL+H pressed — starting BaseCampId membership experiment")
-
-    local player = FindFirstOf("PalPlayerCharacter")
-    if not player or not player:IsValid() then
-        Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
-        return
-    end
-
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-    if not originLoc then
-        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
-    end
-    if not originLoc then
-        Logger.log("[PalBonds/Interaction] could not read player/camera location")
-        return
-    end
-
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then
-        Logger.log("[PalBonds/Interaction] could not read player control rotation")
-        return
-    end
-    local forward = rotator_to_forward(controlRot)
-
-    local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
-    if not pal then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] [BASECAMP-TEST] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
-            PET_RANGE, PET_MAX_ANGLE_DEG
-        ))
-        return
-    end
-
-    local actorName = safe_call(function() return pal:GetFullName() end)
-    local ownedAlready = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [BASECAMP-TEST] targeting %s at %.0f units (%.1f deg off-center) — already owned=%s",
-        tostring(actorName), dist, angle, tostring(ownedAlready)
-    ))
-
-    local comp = safe_call(function() return pal.CharacterParameterComponent end)
-    if not comp or not comp:IsValid() then
-        Logger.log("[PalBonds/Interaction] [BASECAMP-TEST] no valid CharacterParameterComponent on target — aborting")
-        return
-    end
-    local param = safe_call(function() return comp:GetIndividualParameter() end)
-    if not param or not param:IsValid() then
-        Logger.log("[PalBonds/Interaction] [BASECAMP-TEST] no valid IndividualParameter on target — aborting")
-        return
-    end
-
-    local beforeBaseCampId = safe_call(function() return param.BaseCampId end)
-    local beforeIsZero = safe_call(function()
-        return beforeBaseCampId ~= nil
-            and beforeBaseCampId.A == 0 and beforeBaseCampId.B == 0
-            and beforeBaseCampId.C == 0 and beforeBaseCampId.D == 0
-    end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [BASECAMP-TEST] target's current BaseCampId is-zero=%s (before)",
-        tostring(beforeIsZero)
-    ))
-
-    local donorBaseCampId = find_donor_base_camp_id()
-    if not donorBaseCampId then
-        Logger.log("[PalBonds/Interaction] [BASECAMP-TEST] no live Pal found nearby with a real, non-empty BaseCampId — need at least one Pal genuinely placed in a real base nearby to borrow a real ID from — aborting")
-        return
-    end
-
-    Logger.log("[PalBonds/Interaction] [BASECAMP-TEST] found a real donor BaseCampId — about to write it into the target's own IndividualParameter.BaseCampId NOW")
-    local writeOk, writeErr = pcall(function()
-        param.BaseCampId = donorBaseCampId
-    end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [BASECAMP-TEST] param.BaseCampId write returned — result=%s",
-        writeOk and "ok" or tostring(writeErr)
-    ))
-
-    local afterBaseCampId = safe_call(function() return param.BaseCampId end)
-    local afterIsZero = safe_call(function()
-        return afterBaseCampId ~= nil
-            and afterBaseCampId.A == 0 and afterBaseCampId.B == 0
-            and afterBaseCampId.C == 0 and afterBaseCampId.D == 0
-    end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [BASECAMP-TEST] target's BaseCampId is-zero=%s (after, was %s) — now try pressing \"4\" on this same Pal and see which menu opens",
-        tostring(afterIsZero), tostring(beforeIsZero)
-    ))
+    -- Which emote was still unknown, because the assets are numbered rather
+    -- than named. The F7 probe answered it from Dragón's own run: cheer is 0.
+    --
+    -- Deliberately the last statement in the function, and double-guarded
+    -- (safe_call here, pcall inside play_player_emote) so that Play keeps
+    -- working exactly as it did even if the emote fails outright.
+    safe_call(function() play_player_emote(CHEER_EMOTE_INDEX) end)
 end
 
 -- Hundred-and-seventy-first pass (2026-09-05): REAL CRASH FOUND — a second,
@@ -2275,110 +851,6 @@ local radialMenuActionWindowOpen = false
 -- made twice this session with other shared flags, not repeating it a
 -- third time).
 local pendingWildFeedTarget = nil
-
--- Hundred-and-sixty-fifth pass (2026-09-05): CTRL+H repurposed a third time.
--- BaseCampId (above) turned out to be inconclusive, not a real answer — the
--- native per-Pal aim-lock never engaged on any wild Pal in 9 real attempts,
--- so the question of "does the Worker Menu accept a wild Pal" was never
--- actually reached. Rather than keep fighting that aim-lock gate (which
--- looks tied to real Pal ownership — a much bigger, declined risk), this
--- goes around it entirely: skip "4"/the aim system altogether and invoke
--- the Worker Menu's own real selection-handler directly.
---
--- Found via Ghidra (PyGhidra, reusing the same analyzed project from the
--- hundred-and-thirty-third/fourth passes): `APalMonsterCharacter::
--- OnSelectedOrderWorkerRadialMenu` (the exact function this file already
--- binds as `parameter.OnClose:Bind(pal, "OnSelectedOrderWorkerRadialMenu")`
--- in apply_wild_fix_to_worker_parameter/WORKER-BIND-FIX, confirmed real and
--- universal — declared on the base class of every Pal, wild or owned) reads
--- a single byte at a fixed offset off its passed parameter (`resultType`,
--- matching the EPalWorkerRadialMenuResult enum this project already mapped
--- live: Cancel=0, Feed=1, ShowDetail=2, MoveToBox=3, MoveToOtomo=4, Pet=5 —
--- independently cross-confirmed here, since Ghidra's own decompile branches
--- on cVar3=='\x01' calling SelectedFeedingItem and cVar3=='\x05' calling a
--- separate Pet function, an exact match). Its own top-level dispatch has NO
--- ownership check anywhere — only a type-check on the passed parameter.
---
--- For the Feed branch specifically, register-level disassembly at the real
--- call site (inside OnSelectedOrderWorkerRadialMenu, right before it calls
--- SelectedFeedingItem) shows only ONE register (RCX = "this", the Pal) gets
--- loaded before that call — no ItemSlotId/Num setup at all. So the real
--- flow is genuinely two separate steps: (1) OnSelectedOrderWorkerRadialMenu
--- → SelectedFeedingItem(self) ALONE, which — per the hundred-and-thirty-
--- third pass's decompile of THAT function's own body — just builds and
--- shows a real "pick an item" popup, no item info needed yet, no ownership
--- check either; (2) only once the player actually picks something in that
--- popup does the popup's own delegate fire the SEPARATE, already-hooked-and-
--- confirmed-real UFunction `SelectedFeedingItem(ItemSlotId, Num)` — the one
--- that crashed (Crash #5) when this project tried to skip straight to step
--- 2 cold, with a fabricated ItemSlotId and no popup ever having existed.
---
--- This test only ever attempts step 1, through the SAME real dispatcher the
--- vanilla Worker Menu itself uses (never a raw/reconstructed native call on
--- our end) — Unreal's own reflected UFunction marshaling handles the actual
--- calling convention, removing the exact class of risk that caused Crash
--- #5. If step 1 succeeds, the real item-picker popup should visibly open on
--- screen; if the player then picks something, the ALREADY-INSTALLED
--- [FOOD-DIAG] watch hook (SelectedFeedingItem, ItemSlotId/Num) and the
--- [SLOT-USE-DIAG] watch (RequestUseToCharacter) will show whether the real
--- consumption path completes for a wild Pal too.
---
--- Needs a live PalHUDDispatchParameter_WorkerRadialMenu instance to exist
--- in memory to reuse (this project has never constructed one of these from
--- scratch, and reusing a real one — same "borrow a real value, don't
--- fabricate" discipline as BaseCampId/ContainerId above — is safer). One
--- becomes available in memory the first time ANY real Worker Menu opens
--- this session (e.g. pressing "4" on any actual base worker once) and stays
--- resolvable via FindAllOf after that, even once closed — confirmed by this
--- project's own experience with these widgets persisting after close.
---
--- Honest, explicit risk: this is the first time this project calls
--- OnSelectedOrderWorkerRadialMenu directly ourselves rather than only
--- binding it as a delegate target for the game to call. The dispatch logic
--- itself is now well understood via two independent Ghidra passes, but
--- SelectedFeedingItem's own internal resolution of "what HUD/UI service do
--- I attach my popup to" (the pwVar8 chain in its decompile) has not been
--- fully traced end to end — a genuine, if smaller, unknown remains. Per
--- Dragón's explicit go-ahead (2026-09-05): proceed anyway, heavily logged,
--- one Pal at a time, same recoverable-crash discipline as every other real
--- experiment in this file.
--- UNUSED as of the hundred-and-seventieth pass — kept for reference, not
--- called from do_test_direct_feed_dispatch anymore. Reusing an existing
--- object turned out unsafe the moment it gets rebound to a DIFFERENT Pal
--- than it was last used for (see that pass's note above the real call
--- site) — real hang, reproduced live. Reusing it for the SAME Pal again is
--- still fine in principle, just not worth the added complexity of tracking
--- "which Pal was this object last bound to" when always-fresh is simple
--- and already proven safe.
-local function find_any_worker_menu_parameter()
-    -- Silent-failure fix (2026-09-05 retest): the first live attempt logged
-    -- "targeting..." and then produced NOTHING else at all — not even the
-    -- "no live instance found" branch's own log line, which only makes
-    -- sense if FindAllOf itself threw a raw Lua error here (this class name
-    -- had never been passed to FindAllOf anywhere in this project before —
-    -- every prior use of this class went through a hook Context, never a
-    -- direct lookup) and the outer safe_call() swallowed it with zero
-    -- output, per this project's own safe_call() definition (pcall, no
-    -- logging on failure). Wrapping the lookup itself now so a real error
-    -- message shows up next time instead of silence.
-    local ok, instances = pcall(function() return FindAllOf("PalHUDDispatchParameter_WorkerRadialMenu") end)
-    if not ok then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] FindAllOf('PalHUDDispatchParameter_WorkerRadialMenu') itself errored: " .. tostring(instances))
-        return nil
-    end
-    if not instances then return nil end
-    local total = 0
-    for _, inst in ipairs(instances) do
-        total = total + 1
-        local validOk, valid = pcall(function() return inst ~= nil and inst:IsValid() end)
-        if validOk and valid then
-            Logger.log(string.format("[PalBonds/Interaction] [DIRECT-FEED-TEST] FindAllOf found %d instance(s) total, using the first valid one (index %d)", #instances, total))
-            return inst
-        end
-    end
-    Logger.log(string.format("[PalBonds/Interaction] [DIRECT-FEED-TEST] FindAllOf found %d instance(s) total, but none were valid", total))
-    return nil
-end
 
 -- Hundred-and-sixty-eighth pass (2026-09-05): Dragón's real, direct
 -- question after the first success — does this permanently depend on
@@ -2441,13 +913,11 @@ end
 -- Deliberately NOT cleared by ResetForNewWorld: surviving the world change is
 -- the entire point.
 local cachedWorkerMenuParameter = nil
-
 local function construct_worker_menu_parameter()
     if cachedWorkerMenuParameter ~= nil
        and safe_call(function() return cachedWorkerMenuParameter:IsValid() end) then
         return cachedWorkerMenuParameter
     end
-
     local classOk, paramClass = pcall(function() return StaticFindObject("/Script/Pal.PalHUDDispatchParameter_WorkerRadialMenu") end)
     if not classOk or not paramClass or not paramClass:IsValid() then
         Logger.log("[PalBonds/Interaction] [FEED-PARAM] StaticFindObject('/Script/Pal.PalHUDDispatchParameter_WorkerRadialMenu') failed: " .. tostring(paramClass))
@@ -2463,7 +933,6 @@ local function construct_worker_menu_parameter()
         outer = paramClass
         outerLabel = "the parameter class (GameInstance unavailable)"
     end
-
     local constructOk, newParam = pcall(function()
         return StaticConstructObject(paramClass, outer, 0, 0, 0x0E000000, false, false, nil, nil, nil)
     end)
@@ -2471,137 +940,12 @@ local function construct_worker_menu_parameter()
         Logger.log("[PalBonds/Interaction] [FEED-PARAM] StaticConstructObject(WorkerRadialMenu parameter) FAILED (caught, non-fatal): " .. tostring(newParam))
         return nil
     end
-
     cachedWorkerMenuParameter = newParam
     Logger.log("[PalBonds/Interaction] [FEED-PARAM] built the WorkerRadialMenu parameter once for this session, outered to " ..
         outerLabel .. " so it outlives a world change like the HUD that stores it")
     return newParam
 end
-
-local WORKER_RESULT_FEED = 1 -- confirmed twice over: live index mapping (pass 56) AND this pass's Ghidra decompile agree
-
-local function do_test_direct_feed_dispatch()
-    Logger.log("[PalBonds/Interaction] CTRL+H pressed — starting direct OnSelectedOrderWorkerRadialMenu(Feed) experiment")
-
-    local player = FindFirstOf("PalPlayerCharacter")
-    if not player or not player:IsValid() then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] no local PalPlayerCharacter found — are you in-world?")
-        return
-    end
-
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-    if not originLoc then
-        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
-    end
-    if not originLoc then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] could not read player/camera location")
-        return
-    end
-
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] could not read player control rotation")
-        return
-    end
-    local forward = rotator_to_forward(controlRot)
-
-    local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
-    if not pal then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] [DIRECT-FEED-TEST] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
-            PET_RANGE, PET_MAX_ANGLE_DEG
-        ))
-        return
-    end
-
-    local actorName = safe_call(function() return pal:GetFullName() end)
-    local ownedAlready = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [DIRECT-FEED-TEST] targeting %s at %.0f units (%.1f deg off-center) — already owned=%s",
-        tostring(actorName), dist, angle, tostring(ownedAlready)
-    ))
-
-    -- Hundred-and-seventieth pass (2026-09-05): REAL, REPRODUCED HANG FOUND
-    -- — reusing an already-used parameter object is fine when re-fired on
-    -- the SAME Pal (confirmed safe, hundred-and-sixty-eighth pass), but
-    -- rebinding one to a DIFFERENT Pal (Sheepball -> Chickenpal, same
-    -- session) never returned from OnSelectedOrderWorkerRadialMenu at all
-    -- — the only such call in this project's history to not log "call
-    -- returned" — and permanently wedged the CTRL+H keybind itself for the
-    -- rest of that session (confirmed: zero "CTRL+H pressed" lines ever
-    -- appeared again, despite Dragón pressing it twice more). Matches the
-    -- same silent-hang shape as Crash #5, just narrower in blast radius.
-    -- No longer worth the risk of finding out which reuse patterns are
-    -- "safe enough" — always construct fresh now, every single time,
-    -- never reuse any existing object (real or our own).
-    local parameter = construct_worker_menu_parameter()
-    if not parameter then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] fresh construction failed — aborting")
-        return
-    end
-    -- Not using hook_describe() here on purpose: that helper is declared
-    -- LATER in this file (Lua locals aren't hoisted), so calling it from
-    -- code declared earlier resolves to a nil global, not the real
-    -- function — exactly what crashed the first retest. Same safe pattern
-    -- inlined directly instead.
-    local paramDesc = safe_call(function() return parameter:GetFullName() end) or tostring(parameter)
-    Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] using freshly-constructed WorkerRadialMenu parameter: " .. tostring(paramDesc))
-
-    local handle = get_individual_handle(pal)
-    if handle then
-        local setHandleOk, setHandleErr = pcall(function() parameter.IndividualHandle = handle end)
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] IndividualHandle write: " .. (setHandleOk and "ok" or ("FAILED: " .. tostring(setHandleErr))))
-    else
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] no readable IndividualHandle on target — continuing anyway, Feed's own dispatch branch doesn't appear to read this field")
-    end
-
-    local setResultOk, setResultErr = pcall(function() parameter.resultType = WORKER_RESULT_FEED end)
-    Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] resultType write: " .. (setResultOk and "ok" or ("FAILED: " .. tostring(setResultErr))))
-    if not setResultOk then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] aborting before the risky call — resultType write failed, calling with a wrong/unset value is not worth the risk")
-        return
-    end
-
-    -- Hundred-and-sixty-ninth pass (2026-09-05): Dragón's own theory ("the
-    -- ctrl+h made the wild pal eligible as an owned pal") is directly
-    -- testable — Capture.IsAlreadyOwned reads the real save-backed
-    -- OwnerPlayerUId GUID. Logging it (raw components, not just the bool)
-    -- right before AND right after this call tells us for real whether the
-    -- call flips actual ownership data (his theory) or leaves it alone
-    -- (pointing instead toward a narrower, Feed-specific pending-request
-    -- mechanism). Read-only, zero risk either way.
-    local function describe_ownership()
-        local isOwned = safe_call(function() return Capture.IsAlreadyOwned(pal) end)
-        local guid = safe_call(function()
-            local comp = pal.CharacterParameterComponent
-            local param = comp and comp:IsValid() and comp:GetIndividualParameter()
-            local ownerId = param and param:IsValid() and param.SaveParameter and param.SaveParameter.OwnerPlayerUId
-            if not ownerId then return "nil" end
-            return string.format("{A=%s,B=%s,C=%s,D=%s}", tostring(ownerId.A), tostring(ownerId.B), tostring(ownerId.C), tostring(ownerId.D))
-        end)
-        return string.format("IsAlreadyOwned=%s OwnerPlayerUId=%s", tostring(isOwned), tostring(guid))
-    end
-    Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] [OWNERSHIP-CHECK] before call: " .. describe_ownership())
-
-    -- Hundred-and-seventy-first pass (2026-09-05): real crash found —
-    -- pressing "4" while this function is still mid-execution let the
-    -- game's own real Otomo-menu system run concurrently with this call on
-    -- the SAME Pal, which crashed the game. Bail out here instead of
-    -- racing it if the real "4" menu is (now) active — see the note above
-    -- this function's own comment block for the full incident writeup.
-    if radialMenuActionWindowOpen then
-        Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] ABORTING — the real \"4\" menu is active right now (radialMenuActionWindowOpen=true). Calling into OnSelectedOrderWorkerRadialMenu while that's happening is what crashed the game last time. Wait a couple of seconds after this message before pressing \"4\" (or don't press it at all — CTRL+H may not need it), then retry CTRL+H.")
-        return
-    end
-
-    Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] about to call pal:OnSelectedOrderWorkerRadialMenu(parameter) NOW")
-    local callOk, callErr = pcall(function() pal:OnSelectedOrderWorkerRadialMenu(parameter) end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [DIRECT-FEED-TEST] call returned — result=%s. CONFIRMED (2026-09-05): this works standalone, no \"4\" needed at all — but the real popup can take several seconds to actually become visible/clickable after this line. Wait before assuming it failed.",
-        callOk and "ok" or tostring(callErr)
-    ))
-    Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] [OWNERSHIP-CHECK] right after call: " .. describe_ownership())
-end
+local WORKER_RESULT_FEED = 1 
 
 -- Hundred-and-twenty-seventh pass (2026-09-03): Dragón hit a real practical
 -- wall trying to test Skittish→Curious — he can't tell which wild Pals
@@ -2642,13 +986,11 @@ local function hook_get(param)
     if ok then return value end
     return nil
 end
-
 local function hook_describe(obj)
     if obj == nil then return "nil" end
     local ok, name = pcall(function() return obj:GetFullName() end)
     if ok and name then return name end
     return tostring(obj)
-end
 
 -- Eighty-first pass (2026-09-03): remembers whatever
 -- `PalInteractComponent:StartTriggerInteract` last saw as
@@ -2657,6 +999,8 @@ end
 -- Pal's own interactable sphere" — the exact case that opens
 -- WBP_WorkerRadialMenu). Read by the real (non-watch-only) selection hook
 -- below to know WHICH Pal a Worker-menu Pet/Feed selection was actually
+end
+
 -- for. Only ever meaningful for the aimed-Pal case — the "press 4 with no
 -- aim target" Player-menu path never fires StartTriggerInteract at all
 -- (confirmed seventy-sixth pass), so there's no cross-contamination risk
@@ -2679,6 +1023,7 @@ local lastAimedInteractTarget = nil
 -- can read it — not redeclared here, same variable.
 local radialMenuWindowGeneration = 0
 local radialMenuRedirectedThisWindow = false
+
 -- Ninety-sixth pass: tracks the aimed Pal's name for the dedup described
 -- above, reset each time a new window opens so a new "4" press always
 -- re-announces even if you happen to aim at the same Pal as last time.
@@ -2694,6 +1039,7 @@ local lastRedirectedWildPalName = nil
 -- and re-validated with IsValid() at the point of use, since a wild Pal can
 -- despawn between the menu opening and the action resolving.
 local lastRedirectedWildPalActor = nil
+
 -- Two-hundred-and-eighth pass: throttles [RADIAL-REDIRECT-FIELD] to one
 -- line per menu window (it fired 8-10 times per '4' press). Reset when a
 -- window opens, same as the two above.
@@ -2755,6 +1101,7 @@ local lastDecidedInstruction = nil
 -- less common, less expensive case).
 local cachedRedirectWildPal = nil
 local lastRedirectComputeClock = nil
+
 -- Two-hundred-and-fourteenth pass: 0.25 -> 0.5. find_targeted_pal still costs
 -- 42-70ms per scan even after removing the GetFullName-per-Pal waste (the
 -- remainder is FindAllOf plus a location read per Pal, with no cheaper route
@@ -2777,7 +1124,6 @@ local REDIRECT_RECOMPUTE_INTERVAL_S = 0.5
 -- this exact widget's own cached `SpawnedOtomo` variable (confirmed real
 -- via the `RemoteAccessEverything` string dump, sixty-fifth pass).
 local lastOpenMenuWidget = nil
-
 local function openRadialMenuActionWindow(widget)
     radialMenuWindowGeneration = radialMenuWindowGeneration + 1
     local myGen = radialMenuWindowGeneration
@@ -2797,7 +1143,6 @@ local function openRadialMenuActionWindow(widget)
             end
         end)
     end)
-end
 
 -- do_pet/do_feed are declared earlier in this same file (the F9/F10
 -- shared do_interaction() body) so they're already valid upvalues here —
@@ -2806,6 +1151,8 @@ end
 -- scratch, doesn't trust anything cached from earlier in the window),
 -- its busy-gate (a call while an animation is still playing just no-ops,
 -- so an accidental double-fire here is harmless), and the Trust.lua
+end
+
 -- ownership guard already sitting at the end of that call chain
 -- (Capture.IsAlreadyOwned, added after the eighty-second pass's
 -- incident) — the exact three protections that make this safe to wire up
@@ -2844,13 +1191,11 @@ local function do_real_wild_feed_via_worker_menu()
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] [REAL-FEED] no valid cached wild Pal to target — falling back to the approximation")
         return false
     end
-
     local parameter = construct_worker_menu_parameter()
     if not parameter then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] [REAL-FEED] fresh parameter construction failed — falling back to the approximation")
         return false
     end
-
     local handle = get_individual_handle(wildPal)
     if handle then
         pcall(function() parameter.IndividualHandle = handle end)
@@ -2866,7 +1211,6 @@ local function do_real_wild_feed_via_worker_menu()
     -- earlier), so this flag needs to survive until whenever the real
     -- RequestUseToCharacter actually fires — not cleared here, only set.
     pendingWildFeedTarget = wildPal
-
     Logger.log("[PalBonds/Interaction] [WILD-ACTION] [REAL-FEED] calling OnSelectedOrderWorkerRadialMenu(Feed) on the real wild Pal now — the item-picker popup may take a few seconds to actually appear")
     local callOk, callErr = pcall(function() wildPal:OnSelectedOrderWorkerRadialMenu(parameter) end)
     if not callOk then
@@ -2875,7 +1219,6 @@ local function do_real_wild_feed_via_worker_menu()
     end
     Logger.log("[PalBonds/Interaction] [WILD-ACTION] [REAL-FEED] call returned ok")
     return true
-end
 
 -- Two-hundred-and-seventh pass (2026-09-06) — THE ROOT CAUSE OF THE
 -- IRREGULAR FRIENDSHIP GAINS, and the fix.
@@ -2884,6 +1227,8 @@ end
 -- called `do_pet()`, which routes into `do_interaction()`. But
 -- `do_interaction`'s FIRST gate is "is the player already mid-action? if
 -- so, ignore this press" — an anti-spam guard written for a raw keypress.
+end
+
 -- On the radial path that guard is not just useless but actively wrong:
 -- the whole point of the substitution is that the game's OWN Cuidar action
 -- is starting on the player at that exact moment. So the player is
@@ -2947,13 +1292,11 @@ grant_wild_interaction = function(pal, amount, label)
         Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": this Pal already lost all its trust permanently — refusing to grant")
         return false
     end
-
     local param = get_individual_parameter(pal)
     if not param or not param:IsValid() then
         Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": could not resolve IndividualParameter — nothing granted")
         return false
     end
-
     local before = safe_call(function() return param:GetFriendshipPoint() end)
     local grantOk, grantErr = pcall(function() param:AddFriendShip(amount, false) end)
     local after = safe_call(function() return param:GetFriendshipPoint() end)
@@ -2968,12 +1311,10 @@ grant_wild_interaction = function(pal, amount, label)
         tostring(amount), tostring(before), tostring(after),
         grantOk and "ok" or tostring(grantErr)
     ))
-
     if Interaction.OnWildPalPetted then
         Interaction.OnWildPalPetted(pal)
     end
     return true
-end
 
 -- F9. Grants a share of the bonding bar directly, with NO interaction played.
 --
@@ -2982,99 +1323,12 @@ end
 --   * it does NOT require the player to be idle, and
 --   * it does NOT require the TARGET to be idle
 -- because nothing is played on either of them. do_play() checks both because
--- it starts a real animation; this only writes a number and notifies Trust.
---
--- Everything downstream is the ordinary path -- grant_wild_interaction keeps
--- its hard ownership guard (an owned Pal is never granted through it), and the
--- follow trigger fires from Trust exactly as it does after a third pet. The
--- only thing removed is the interaction itself.
-local function do_instant_bond()
-    Logger.log(string.format("[PalBonds/Interaction] [INSTANT-BOND] %s pressed", INSTANT_BOND_KEY))
-
-    local player = FindFirstOf("PalPlayerCharacter")
-    if not player or not player:IsValid() then
-        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] no local PalPlayerCharacter found — are you in-world?")
-        return
-    end
-
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-    if not originLoc then
-        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
-    end
-    if not originLoc then
-        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read player/camera location")
-        return
-    end
-
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then
-        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read player control rotation")
-        return
-    end
-
-    local pal, dist, angle = find_targeted_pal(originLoc, rotator_to_forward(controlRot), player)
-    if not pal then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] [INSTANT-BOND] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
-            PET_RANGE, PET_MAX_ANGLE_DEG
-        ))
-        return
-    end
-
-    if Capture.HasPermanentlyFled(pal) then
-        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] this Pal already lost all its trust and fled permanently — refusing")
-        return
-    end
-
-    -- Half of THIS Pal's own bar, not a hardcoded number, so the test stays
-    -- valid once the balance values go back to their real settings.
-    -- math.ceil, not floor: with an odd threshold, floor would land one point
-    -- short and the >= comparison in Trust.lua would not fire — which would
-    -- look on the log exactly like "the follow mechanism failed again".
-    -- ComputeBondingThresholdFor, NOT GetBondingThreshold: the latter returns
-    -- nil for a Pal that has never been interacted with, which is precisely the
-    -- Pal this key exists to act on. See Trust.lua's comment on the new
-    -- function for the full story — this is what made every F9 press in the
-    -- first live test refuse to grant.
-    local threshold = safe_call(function() return Trust.ComputeBondingThresholdFor(pal) end)
-    if not threshold or threshold <= 0 then
-        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] could not read this Pal's bonding threshold — nothing granted")
-        return
-    end
-    local amount = math.ceil(threshold * INSTANT_BOND_BAR_FRACTION)
-
-    Logger.log(string.format(
-        "[PalBonds/Interaction] [INSTANT-BOND] target %s at %.0f units (%.1f deg off-center) — bar threshold %s, granting +%s (%.0f%% of the bar) with NO interaction played",
-        tostring(safe_call(function() return pal:GetFullName() end)), dist, angle,
-        tostring(threshold), tostring(amount), INSTANT_BOND_BAR_FRACTION * 100
-    ))
-
-    local granted = grant_wild_interaction(pal, amount, "InstantBond (F9)")
-    if not granted then
-        Logger.log("[PalBonds/Interaction] [INSTANT-BOND] grant refused — see the [GRANT] line above for the reason")
-        return
-    end
-
-    -- State the resulting ratio explicitly. If following does not start, this
-    -- line is what separates "the threshold was never actually crossed" from
-    -- "it was crossed and the follow mechanism still did nothing" — the exact
-    -- ambiguity that has already cost several test runs.
-    safe_call(function()
-        local param = get_individual_parameter(pal)
-        local point = param and param:IsValid() and param:GetFriendshipPoint() or nil
-        if point ~= nil then
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [INSTANT-BOND] after grant: friendship %s / %s = ratio %.2f (follow triggers at >= 0.50)",
-                tostring(point), tostring(threshold), point / threshold
-            ))
-        end
-    end)
 end
-
 local function closeRadialMenuActionWindow()
     if radialMenuRedirectedThisWindow and lastDecidedInstruction then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] window closing with a substituted wild Pal and a decided instruction=" .. tostring(lastDecidedInstruction) .. " — firing the real action now")
         if lastDecidedInstruction == "care" then
+
             -- Bookkeeping only. Vanilla's own Cuidar action is already
             -- playing on this Pal because of the substitution — calling
             -- do_pet() here would try to play a SECOND animation and, far
@@ -3085,6 +1339,7 @@ local function closeRadialMenuActionWindow()
         elseif lastDecidedInstruction == "feed" then
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
             if not realFeedOk then
+
                 -- Two-hundred-and-eighty-sixth pass (2026-09-09) -- REMOVED, and
                 -- Dragon found why it had to go. He walked up to a Pal, opened
                 -- the radial menu, and the Pal fled before the item picker could
@@ -3111,7 +1366,6 @@ local function closeRadialMenuActionWindow()
     end
     radialMenuActionWindowOpen = false
     lastDecidedInstruction = nil
-end
 
 -- Hundred-and-thirty-eighth pass (2026-09-04): [EMOTE-DIAG]. Read-only,
 -- one-shot at Init() — resolves each of the 9 real emote action classes
@@ -3120,251 +1374,135 @@ end
 -- this pass) via their class default objects, and reads the inherited
 -- `EmoteAnimation` field — a plain ObjectProperty pointing at a
 -- UAnimMontage, the same safe direct-field-read pattern used everywhere
--- else in this file, never a function call. Purpose: find which
--- numbered class is real Cheer (Dragón confirmed this is what he calls
--- "Beckon" in-game) so do_play() can call the real
--- PlayAction(ActionTarget, actionClass) overload (confirmed real in
--- Pal.hpp, a sibling of PlayActionByType already used everywhere in this
--- file) on the CORRECT class next pass, instead of guessing an index
--- blind. Nothing here calls PlayAction or touches a live Pal/player —
--- purely a static CDO field read, zero risk.
-local EMOTE_ACTION_CLASS_PATHS = {}
-for i = 0, 8 do
-    EMOTE_ACTION_CLASS_PATHS[i] = string.format(
-        "/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_%d.Default__BP_Action_Emote_%d_C", i, i
-    )
 end
 
--- Hundred-and-forty-first pass (2026-09-04): CONFIRMED via Dragón's own
--- object dump (a live BP_Action_Emote_0_C instance, dumped straight from
--- the game's IndividualObjectDumps folder) — index 0 IS real Cheer:
--- EmoteAnimation = ".../AM_Player_Female_Emote_Cheer", EmoteIndex="0".
--- No more guessing needed for either diagnostic method above. Also
--- notable from that same dump: the real DynamicParameter shows
--- ActionTarget=None for a real Cheer cast — it isn't targeted at
--- anything, so do_play() below passes no target, matching real observed
--- behavior instead of guessing `pal` as the target.
+-- ===================================================================
+-- [EMOTE-PROBE] — identify the cheer emote (pass 326, 2026-09-12)
+-- ===================================================================
+-- Play has always been able to make the PAL react and never the player. The
+-- missing half arrived with the Kick Keybind reference mod Dragón supplied,
+-- which plays a player emote in exactly three lines:
 --
--- PlayAction's `actionClass` parameter needs the CLASS itself
--- (TSubclassOf<UPalActionBase>), not the CDO instance the EMOTE-DIAG
--- path above resolves. First attempt used a separate bare-class path
--- (no "Default__") — that silently failed every real test (see
--- hundred-and-forty-second pass fix, do_play() below): the class is
--- now derived from the already-proven CDO via `:GetClass()` instead.
+--     StaticFindObject(".../Emote/BP_Action_Emote_8.BP_Action_Emote_8_C")
+--     PC:ActionComponent_PlayAction_ToServer_ForPlayer(Pawn, {}, EmoteClass, 0)
+--
+-- That is a shipped, working mod doing it in production, so the call itself is
+-- not a guess -- which matters in this file, given its crash history with
+-- unproven native calls.
+--
+-- WHAT IS STILL UNKNOWN is which number the cheer is. The assets are numbered,
+-- not named: the hundred-and-thirty-eighth pass confirmed from Dragón's own
+-- Live-View dump that BP_Action_Emote_0_C through _8_C are the nine real
+-- emotes, all children of BP_Action_Emote_Base_C, and the Kick mod tells us
+-- _8 is kick. So the cheer is one of 0..7 and the only way to find it is to
+-- look at each one.
+--
+-- Hence a probe rather than a guess: F7 plays the next emote in sequence and
+-- names it in an on-screen toast, so Dragón can press it nine times, watch,
+-- and report the number. The toast matters more than the log line here -- he
+-- should not have to alt-tab to read which emote he just saw.
+--
+-- Turn EMOTE_PROBE off once the number is known. This is scaffolding.
+-- ANSWERED (2026-09-12): Dragón ran the probe and reported "confirmed cheer
+-- emote is 0". So the probe has done its job and is off; flip it back only if
+-- another emote ever needs identifying.
+local EMOTE_PROBE = false
+local EMOTE_PROBE_KEY = "F7"
+local EMOTE_PATH_FMT = "/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_%d.BP_Action_Emote_%d_C"
+local EMOTE_FIRST, EMOTE_LAST = 0, 8
+local emoteProbeNext = EMOTE_FIRST
 
--- Dragón's direct question when this shipped: "if it had failed before
--- why not add the expected fix now?" — this project has hit the exact
--- "Blueprint class isn't loaded yet at mod Init()" problem repeatedly
--- (WBP_PlayerRadialMenu_C, the Worker Menu classes, the Indicator
--- classes — all documented above in Interaction.Init()), always fixed
--- the same way: a bounded retry over time instead of a single one-shot
--- check. Applying that same already-proven fix here rather than waiting
--- to see this fail first. Capped at 20 rounds / 100s (not the 60-round/
--- 5-minute budget used for lazily-constructed UI widgets above) — these
--- are asset CDOs, not widgets only built on first menu-open, so if they
--- don't resolve quickly they likely aren't going to.
-local EMOTE_DIAG_MAX_ROUNDS = 20
-local EMOTE_DIAG_RETRY_MS = 5000
-local EMOTE_DIAG_RESOLVED = {}
+local function resolve_emote_class(n)
+    return safe_call(function()
+        return StaticFindObject(string.format(EMOTE_PATH_FMT, n, n))
+    end)
+end
 
-local function run_emote_index_mapping(round)
-    local allResolved = true
-    for i = 0, 8 do
-        if not EMOTE_DIAG_RESOLVED[i] then
-            Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] [EMOTE-DIAG] round %d: about to StaticFindObject(%s) NOW", round, EMOTE_ACTION_CLASS_PATHS[i]))
-            local cdo = safe_call(function() return StaticFindObject(EMOTE_ACTION_CLASS_PATHS[i]) end)
-            Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] [EMOTE-DIAG] round %d: StaticFindObject(index %d) returned — still alive, result=%s", round, i, cdo and "resolved" or "nil"))
-            if not cdo then
-                allResolved = false
-            else
-                EMOTE_DIAG_RESOLVED[i] = true
-                Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] [EMOTE-DIAG] round %d: about to read index %d's EmoteAnimation field NOW", round, i))
-                local anim = safe_call(function() return cdo.EmoteAnimation end)
-                Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] [EMOTE-DIAG] round %d: EmoteAnimation field read returned — still alive, result=%s", round, anim and "non-nil" or "nil"))
-                -- Hundred-and-fortieth pass (2026-09-04) FIX, REAL CRASH
-                -- FOUND: the previous version called `anim:GetFName():
-                -- ToString()` here — a METHOD call on a UAnimMontage
-                -- reference read straight off a Blueprint CDO field. That
-                -- reproduced a real crash (confirmed via [CRASH-DIAG]:
-                -- the field read itself logged fine, "still alive", but
-                -- the very next line — about to call GetFName() — never
-                -- got its "returned" counterpart). This is a NEW category
-                -- of danger for this project, distinct from the
-                -- known "whole-struct-by-value call" crash (#1-4): every
-                -- other GetFName()/GetFullName() call in this file is on
-                -- a live actor/component/widget object; this was the
-                -- first attempt at calling a method on an ASSET reference
-                -- (an animation asset, not a runtime actor/component)
-                -- pulled directly off a class default object's field —
-                -- and it isn't safe the same way. Fixed by never calling
-                -- any method on `anim` at all: `tostring(anim)` is pure
-                -- Lua-side stringification of whatever wraps it, touches
-                -- no native code, and is all this diagnostic actually
-                -- needs (the wrapper's own tostring already includes the
-                -- asset's path/name in UE4SS, same as every other UObject
-                -- printed via plain tostring() elsewhere in this file
-                -- when :GetFullName() isn't available).
-                local animName = anim and tostring(anim) or "nil"
-                Logger.log(string.format("[PalBonds/Interaction] [EMOTE-DIAG] round %d: BP_Action_Emote_%d_C.EmoteAnimation = %s", round, i, animName))
-            end
+-- Guarded player-controller lookup. The Kick mod uses FindFirstOf, but this
+-- project routes player lookups through FindAllOf on purpose -- upstream UE4SS
+-- issue #1328 makes FindFirstOf read out of bounds and it lacks the null guard
+-- FindAllOf has (see the known-defects list).
+local function find_player_controller()
+    local list = safe_call(function() return FindAllOf("BP_PalPlayerController_C") end)
+    if type(list) ~= "table" then return nil end
+    for _, pc in ipairs(list) do
+        if pc ~= nil and safe_call(function() return pc:IsValid() end) then return pc end
+    end
+    return nil
+end
+
+play_player_emote = function(n)
+    local cls = resolve_emote_class(n)
+    if cls == nil or not safe_call(function() return cls:IsValid() end) then
+        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] emote " .. n .. " does not resolve — skipping")
+        return false
+    end
+    local pc = find_player_controller()
+    if pc == nil then
+        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] no BP_PalPlayerController_C — are you in-world?")
+        return false
+    end
+    local pawn = safe_call(function() return pc.Pawn end)
+    if pawn == nil or not safe_call(function() return pawn:IsValid() end) then
+        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] the player controller has no valid Pawn")
+        return false
+    end
+    local ok, err = pcall(function()
+        pc:ActionComponent_PlayAction_ToServer_ForPlayer(pawn, {}, cls, 0)
+    end)
+    Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] played BP_Action_Emote_" .. n ..
+        "_C — call=" .. (ok and "ok" or tostring(err)))
+    return ok
+end
+
+-- One-shot at Init: which of the nine actually resolve in this build.
+local function report_emote_classes()
+    local found, missing = {}, {}
+    for n = EMOTE_FIRST, EMOTE_LAST do
+        local cls = resolve_emote_class(n)
+        if cls ~= nil and safe_call(function() return cls:IsValid() end) then
+            found[#found + 1] = tostring(n)
+        else
+            missing[#missing + 1] = tostring(n)
         end
     end
-    if allResolved then
-        Logger.log("[PalBonds/Interaction] [EMOTE-DIAG] all 9 classes resolved — stopping retry loop")
-        return
-    end
-    if round >= EMOTE_DIAG_MAX_ROUNDS then
-        Logger.log("[PalBonds/Interaction] [EMOTE-DIAG] giving up after " .. round .. " rounds — some classes never resolved (see lines above for which ones did)")
-        return
-    end
-    local rescheduleOk = pcall(function()
-        ExecuteInGameThreadWithDelay(EMOTE_DIAG_RETRY_MS, function()
-            safe_call(function() run_emote_index_mapping(round + 1) end)
-        end)
-    end)
-    if not rescheduleOk then
-        Logger.log("[PalBonds/Interaction] [EMOTE-DIAG] could not schedule a retry round — stopping after round " .. round)
-    end
-end
-
-local function log_emote_index_mapping()
-    run_emote_index_mapping(1)
+    Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] emote classes that resolve: " ..
+        (#found == 0 and "NONE" or table.concat(found, ", ")) ..
+        (#missing == 0 and "" or ("  |  missing: " .. table.concat(missing, ", "))))
 end
 
 function Interaction.Init()
-    Logger.log(string.format(
-        "[PalBonds/Interaction] real hooks active (pet=%s, feed=%s, both non-spammable) — look at a Pal and press one",
-        PET_KEY, FEED_KEY
-    ))
-    Logger.log("[PalBonds/Interaction] [EXPERIMENT] CTRL+K = direct-capture test (Capture.TryDirectCapture) — see Capture.lua for the full risk breakdown before using this")
     Logger.log(string.format("[PalBonds/Interaction] %s = Play — random Pal idle animation + trust grant, same range/gating as Pet/Feed", PLAY_KEY))
-    Logger.log(string.format("[PalBonds/Interaction] [EXPERIMENT] CTRL+H = Kinship Peach (%s) StackCount test — finds your real item slot and bumps it to %d for further testing. First-ever write to real persisted inventory data in this project — check your real inventory after pressing.", KINSHIP_PEACH_ITEM_ID, KINSHIP_PEACH_TEST_TARGET_COUNT))
-
-    -- Hundred-and-sixty-ninth pass (2026-09-05): dedicated, standalone spy
-    -- on the literal "4" keypress, requested directly by Dragón after
-    -- InputSpy.lua's ~150-key mass listener missed a real "4" press this
-    -- same session (confirmed — he pressed it, the real Otomo wheel opened,
-    -- but InputSpy's log showed nothing). Deliberately separate from that
-    -- shared loop, on its own single RegisterKeyBind call, in case
-    -- registering ~150 keys in one batch is itself what makes InputSpy
-    -- occasionally drop one — this one key has nothing else competing with
-    -- it. Logs ONLY the raw keypress itself, nothing about what menu opens
-    -- or whether anything worked, exactly as asked.
-    -- Hundred-and-seventieth pass: switched to RegisterKeyBindAsync — the
-    -- plain RegisterKeyBind version above missed real "4" presses twice in
-    -- the very next test (confirmed via the game's own menu-opening
-    -- sequence appearing with no matching spy line). CTRL+H/CTRL+K/Play all
-    -- use RegisterKeyBindAsync and have never missed a press in this
-    -- project's history — worth trying the same mechanism here instead of
-    -- assuming the miss is unfixable.
-    -- "4" spy UNBOUND for release. It only ever wrote a log line — the radial
-    -- menu integration is driven by hooks on the menu widget itself, not by this
-    -- bind, so nothing functional depended on it. Worth removing rather than
-    -- merely quietening: "4" is a REAL gameplay key, and a shipped mod claiming
-    -- a bind on it is a needless way to interfere with a player's own controls.
-
-    -- Hundred-and-eighty-first pass: one-shot, read-only balance research
-    -- (real vanilla Petting/AutoIncrement/penalty values + Kinship Peach's
-    -- real friendship field), requested by Dragón for the upcoming balance
-    -- pass. Runs once automatically — no key needed, no gameplay effect.
-    safe_call(run_balance_diagnostic_once)
-
-    -- Two-hundred-and-seventh pass (2026-09-06) — F9/F10 REMOVED, at
-    -- Dragón's explicit request. His words: "i havent used f9 in a while,
-    -- idk why you IA's keep bringing it out... all this time i've been
-    -- using the radial menu, so no, no f9 have been triggered on purpose,
-    -- at least not by my own purpose, this same happens with f10."
-    --
-    -- The design rule this sets, which should not be re-litigated by a
-    -- later session: **Pet and Feed are radial-menu interactions, not
-    -- hotkeys.** Pressing "4" and picking the action is what the game
-    -- itself does and what the player finds intuitive; a raw function key
-    -- is not. Play (F8) keeps its key ONLY because it has no radial
-    -- equivalent yet — and per Dragón, Play should move into the radial
-    -- menu too once that's possible.
-    --
-    -- do_pet/do_feed themselves are NOT deleted: the radial path still
-    -- routes through them for the animation-playing case (see
-    -- closeRadialMenuActionWindow). Only the key bindings are gone.
-    --
-    -- This also removes a real source of confusion in this project's own
-    -- diagnosis: several passes reasoned about "F9's grant" as though it
-    -- were the number Dragón was seeing in game, when he was never
-    -- pressing F9 at all.
-    -- Two-hundred-and-fourteenth pass (2026-09-06): CTRL+V cycles the join-VFX
-    -- candidates on the Pal being aimed at. Dragón confirmed the VFX pipeline
-    -- works but that NS_PalDisappear was the wrong effect ("a vanish sphere
-    -- animation, but it wasn't fitting" — that is the recall-into-sphere one).
-    -- Rather than spend one whole test run per candidate, this lets him judge
-    -- all seven in a single session and just say which index looks right.
-    -- Temporary, already listed under the release cleanup.
-    -- CTRL+V / CTRL+K / CTRL+H UNBOUND for release, all three test-only:
-    --   CTRL+V  cycled the join-VFX candidates. Answered — NS_PalCatch_Success
-    --           is the one, confirmed by Dragón and already wired in.
-    --   CTRL+K  forced a capture without earning it.
-    --   CTRL+H  multiplied a Kinship Peach's value to reach the threshold fast.
-    -- The last two are outright cheats and the first has nothing left to ask.
-    -- Their handlers stay defined but unbound.
-    --
-    -- F8 (Play) is deliberately KEPT — Dragón's explicit instruction, "just leave
-    -- the play interaction shortcut for now". It is a real interaction, not a
-    -- test key, and it has no home in the radial menu yet.
-    --[[ CTRL+H's PREVIOUS job (hundred-and-sixty-fifth through seventy-
-    fifth passes): proving the direct OnSelectedOrderWorkerRadialMenu(Feed)
-    dispatch mechanism, standalone. CONFIRMED and now wired permanently
-    into the real "4" menu itself (hundred-and-seventy-third pass) — no
-    longer needs its own dedicated test key, so CTRL+H is repurposed again
-    rather than adding a new key, per Dragón's own standing rule. The old
-    body below is commented out, not deleted, kept for reference.
-    RegisterKeyBindAsync(TEST_SELECTED_FEEDING_KEY, TEST_SELECTED_FEEDING_MODIFIERS, function()
-        -- Logging pcall, not the silent safe_call() — the first live retest
-        -- of this experimental key produced dead silence after its first
-        -- log line, with no way to tell why. safe_call() swallows errors
-        -- with zero output by design (fine for routine, already-proven
-        -- code); this is a brand-new, still-unconfirmed experiment, so any
-        -- uncaught error needs to actually show up in the log.
-        local ok, err = pcall(do_test_direct_feed_dispatch)
-        if not ok then
-            Logger.log("[PalBonds/Interaction] [DIRECT-FEED-TEST] uncaught error in do_test_direct_feed_dispatch: " .. tostring(err))
-        end
-    end)
-    ]]
-    -- Hundred-and-thirty-ninth pass (2026-09-04): a real crash happened
-    -- right after Init() logged the "Play" line above and before any
-    -- further log output — meaning it happened somewhere in this new
-    -- code, but the crash-resistant log gave no more detail than that.
-    -- Per this project's own seventh-pass playbook (a real crash was
-    -- only ever actually found by logging immediately before AND after
-    -- every single new native call, never by guessing), bracketing every
-    -- new addition from this pass with its own before/after log line.
-    -- Two-hundred-and-first pass (2026-09-06): moved off CTRL+J to plain F8
-    -- (see PLAY_KEY's own comment) — switched from RegisterKeyBindAsync
-    -- (needed for the old CTRL-modifier bind) to the same plain
-    -- RegisterKeyBind(Key[...]) F9/F10 already use successfully for a
-    -- single unmodified key, for consistency.
-    Logger.log(string.format("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBind(PLAY_KEY=%s) NOW", tostring(PLAY_KEY)))
     RegisterKeyBind(Key[PLAY_KEY], function()
         safe_call(do_play)
     end)
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(PLAY_KEY) returned — still alive")
 
-    -- F9 (instant bond) unbound for release — it existed to test following
-    -- without a petting interaction confounding the result, and it did its job:
-    -- it is what proved the follow action installs, runs, and was losing its
-    -- Trainer pointer. A player must earn the bond through real interactions, so
-    -- a key that fills half the bar instantly cannot ship. do_instant_bond is
-    -- left defined but unbound so it can be re-bound in one line for a test.
-    --
-    -- F9 is REUSED as the personality-tag toggle, per Dragón: "maybe we should
-    -- add a toggle for that, perhaps the same f9, a switcher to turn the tags on
-    -- / off so it doesnt bother some players". Reusing the key rather than
-    -- claiming a new one is his own standing preference.
-    --
-    -- Stated plainly as a known limitation: this is a session toggle, not a
-    -- saved setting. It resets to on every launch, because the mod has no
-    -- settings storage yet — that is the settings-screen item on the release
-    -- list, and this toggle should move into it when that exists.
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to RegisterKeyBind(F9 personality-tag toggle) NOW")
+    if EMOTE_PROBE then
+        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] " .. EMOTE_PROBE_KEY ..
+            " cycles the player emotes " .. EMOTE_FIRST .. ".." .. EMOTE_LAST ..
+            " one per press (BP_Action_Emote_8_C is kick, per the Kick Keybind mod) — " ..
+            "press it, watch, and note which number is the cheer")
+        safe_call(report_emote_classes)
+        RegisterKeyBind(Key[EMOTE_PROBE_KEY], function()
+            safe_call(function()
+                local n = emoteProbeNext
+                emoteProbeNext = emoteProbeNext + 1
+                if emoteProbeNext > EMOTE_LAST then emoteProbeNext = EMOTE_FIRST end
+
+                -- The toast is the point: it names the emote on screen, so the
+                -- number can be matched to what was just seen without leaving
+                -- the game to read a log.
+                safe_call(function()
+                    local okC, CaptureMod = pcall(require, "Capture")
+                    if okC and CaptureMod and CaptureMod.ShowToast then
+                        CaptureMod.ShowToast("Emote " .. n .. " of " .. EMOTE_LAST ..
+                            (n == 8 and "  (this one is kick)" or ""))
+                    end
+                end)
+                play_player_emote(n)
+            end)
+        end)
+    end
     RegisterKeyBind(Key.F9, function()
         safe_call(function()
             local okI, IndicatorMod = pcall(require, "Indicator")
@@ -3383,7 +1521,6 @@ function Interaction.Init()
             end)
         end)
     end)
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(F9 personality-tag toggle) returned — still alive")
 
     -- Two-hundred-and-eighty-sixth pass: F10 toggles the followers' passive
     -- friendship drip. F10 was the old Feed key back when interactions were on
@@ -3400,6 +1537,7 @@ function Interaction.Init()
             safe_call(function()
                 local okC, CaptureMod = pcall(require, "Capture")
                 if okC and CaptureMod and CaptureMod.ShowToast then
+
                     -- Says the state first, then what it means. The state is
                     -- the part being asked for; the sentence after it is there
                     -- because "OFF" alone does not tell a player whether they
@@ -3411,71 +1549,6 @@ function Interaction.Init()
             end)
         end)
     end)
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] RegisterKeyBind(F10 passive-gain toggle) returned — still alive")
-
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] about to run log_emote_index_mapping (static EMOTE-DIAG scan) NOW")
-    safe_call(log_emote_index_mapping)
-    Logger.log("[PalBonds/Interaction] [CRASH-DIAG] log_emote_index_mapping round 1 returned — still alive")
-
-    -- Two-hundred-and-sixth pass (2026-09-06) — REMOVED. This used to be a
-    -- permanent read-only watcher on the REAL AddFriendShip function,
-    -- logging every friendship grant anywhere in the game with a
-    -- hook_describe() reflection call per hit.
-    --
-    -- Two reasons it's gone, not just throttled:
-    -- (1) Cost. The original comment above it argued a real grant is "much
-    --     rarer" than a per-frame call, and that's true of PLAYER grants —
-    --     but it ignored the game's own ambient passive friendship, which
-    --     ticks for every owned Otomo, every active Otomo and every base
-    --     worker continuously. On a real save that is a steady stream of
-    --     hits, each paying a reflection round-trip plus a flushed disk
-    --     write, for the entire session.
-    -- (2) It was actively misleading. The Two-hundred-and-first pass
-    --     established that the `value=10 applyPassiveSkill=true` lines
-    --     being read here as "Pet's grant" were almost certainly the
-    --     vanilla FriendshipPoint_AutoIncrementOtomo (also exactly 10) of
-    --     Dragón's own party Pals — a global watch cannot tell whose grant
-    --     it is, and reading it as ours produced a wrong conclusion that
-    --     had to be corrected later.
-    --
-    -- The real, targeted measurement that replaced it lives in
-    -- do_interaction: a before/after FriendshipPoint read on the specific
-    -- wild Pal being interacted with, which is unambiguous about whose
-    -- grant it is and costs nothing when no interaction is happening.
-
-    -- Hundred-and-third pass: permanent, read-only watcher on the REAL
-    -- SelectedFeedingItem function (APalMonsterCharacter) — see the
-    -- [FOOD-DIAG] research notes above get_pal_item_utility(). Fires (if
-    -- at all) whenever ANY real feeding-with-an-item happens in the
-    -- game, ours included once wired — right now nothing calls this, so
-    -- this is purely to find out whether/when vanilla itself calls it
-    -- (e.g. feeding an owned Otomo through whatever real menu path
-    -- exists), and what real ItemSlotId/Num values look like. Same
-    -- single-function, low-frequency watch pattern as AddFriendShip
-    -- above — safe to leave running permanently.
-    local okWatchFeed = pcall(function()
-        RegisterHook("/Script/Pal.PalMonsterCharacter:SelectedFeedingItem", function(Context, ItemSlotId, Num)
-            local self_ = hook_get(Context)
-            local slot = hook_get(ItemSlotId)
-            local num = hook_get(Num)
-            local containerGuid = safe_call(function() return slot and slot.ContainerId and tostring(slot.ContainerId.ID) end)
-            local slotIndex = safe_call(function() return slot and slot.SlotIndex end)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FOOD-DIAG] real SelectedFeedingItem fired — pal=%s ContainerId=%s SlotIndex=%s Num=%s",
-                hook_describe(self_), tostring(containerGuid), tostring(slotIndex), tostring(num)
-            ))
-            -- Hundred-and-sixty-ninth pass (2026-09-05): the most telling
-            -- moment to check Dragón's "made it eligible as owned" theory —
-            -- right at real consumption itself, not just right after the
-            -- CTRL+H call (which might not be when ownership actually
-            -- flips, if it flips at all).
-            local isOwnedNow = safe_call(function() return self_ and Capture.IsAlreadyOwned(self_) end)
-            Logger.log("[PalBonds/Interaction] [FOOD-DIAG] [OWNERSHIP-CHECK] at real consumption: IsAlreadyOwned=" .. tostring(isOwnedNow))
-        end)
-    end)
-    if not okWatchFeed then
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] could not install SelectedFeedingItem watch hook (name may need adjusting)")
-    end
 
     -- Hundred-and-fifteenth pass (2026-09-03): the hundred-and-third
     -- pass's SelectedFeedingItem watch just went through three confirmed
@@ -3533,21 +1606,9 @@ function Interaction.Init()
         if ok and str ~= nil then return str end
         return tostring(value)
     end
-
     local okWatchUseSlot = pcall(function()
-        RegisterHook("/Script/Pal.PalItemSlot:RequestUseToCharacter", function(Context, TargetCharacterID, UseNum)
-            local slot = hook_get(Context)
-            local target = hook_get(TargetCharacterID)
-            local useNum = hook_get(UseNum)
-            local containerGuid = safe_call(function() return slot and slot.ContainerId and readable(slot.ContainerId.ID) end)
-            local slotIndex = safe_call(function() return slot and slot.SlotIndex end)
-            local itemStaticId = safe_call(function() return slot and slot.ItemId and readable(slot.ItemId.StaticId) end)
-            local stackCountBefore = safe_call(function() return slot and slot.StackCount end)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [SLOT-USE-DIAG] real PalItemSlot:RequestUseToCharacter fired — ContainerId=%s SlotIndex=%s ItemId.StaticId=%s StackCount(at fire time)=%s UseNum=%s target=%s (target-ToString=%s)",
-                tostring(containerGuid), tostring(slotIndex), tostring(itemStaticId), tostring(stackCountBefore), tostring(useNum), hook_describe(target), readable(target)
-            ))
-        end,
+        RegisterHook("/Script/Pal.PalItemSlot:RequestUseToCharacter", function() end,
+
         -- Hundred-and-seventy-seventh pass (2026-09-05): POST-hook added —
         -- confirmed via 6 real feeds (3 Berries at 110, 3 peaches at 10,
         -- zero movement across all 6) that this function silently no-ops
@@ -3561,22 +1622,19 @@ function Interaction.Init()
         -- session's party-Pal feeds, 114->113->112->111).
         function(Context, TargetCharacterID, UseNum)
             local wildTarget = pendingWildFeedTarget
-            pendingWildFeedTarget = nil -- one-shot, consume it here regardless of outcome below
+            pendingWildFeedTarget = nil 
             if not wildTarget or not wildTarget:IsValid() then return end
-
             local slot = hook_get(Context)
             local useNum = hook_get(UseNum)
             if not slot or not slot:IsValid() or type(useNum) ~= "number" then
                 Logger.log("[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] pending wild feed but slot/useNum unreadable — skipping")
                 return
             end
-
             local beforeCount = safe_call(function() return slot.StackCount end)
             if type(beforeCount) ~= "number" then
                 Logger.log("[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] could not read StackCount — skipping")
                 return
             end
-
             local newCount = beforeCount - useNum
             if newCount < 0 then newCount = 0 end
             local writeOk, writeErr = pcall(function() slot.StackCount = newCount end)
@@ -3620,7 +1678,6 @@ function Interaction.Init()
                 Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] this Pal permanently lost its trust — the food is consumed but no friendship is granted")
                 return
             end
-
             local param = get_individual_parameter(wildTarget)
             if param and param:IsValid() then
                 local grantOk, grantErr = pcall(function() param:AddFriendShip(grantAmount, false) end)
@@ -3631,7 +1688,6 @@ function Interaction.Init()
             else
                 Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] could not resolve wild target's IndividualParameter — no friendship granted")
             end
-
             if Interaction.OnWildPalPetted then
                 Interaction.OnWildPalPetted(wildTarget)
             end
@@ -3640,154 +1696,6 @@ function Interaction.Init()
     if not okWatchUseSlot then
         Logger.log("[PalBonds/Interaction] [SLOT-USE-DIAG] could not install PalItemSlot:RequestUseToCharacter watch hook (name may need adjusting)")
     end
-
-    -- ---------------------------------------------------------------
-    -- Thirteenth-pass addition: watch the REAL native interact menu
-    -- system, in response to Dragón asking to move Pet/Feed into the
-    -- game's own radial menu instead of the F9/F10 hotkeys.
-    --
-    -- Found in the SDK dump: `UPalInteractComponent` (lives on the
-    -- player) is the actual native system behind every "hold to
-    -- interact" prompt in the game — talking to NPCs, opening chests,
-    -- AND petting/feeding an owned Pal all go through it. Key pieces:
-    --   - `TargetInteractiveObject` — a field holding whatever the
-    --     player is currently looking at that CAN be interacted with.
-    --     This is the game's own real equivalent of this file's
-    --     hand-rolled find_targeted_pal().
-    --   - `StartTriggerInteract(ActionType, IsToggle)` /
-    --     `EndTriggerInteract(ActionType)` — actually starts/ends one
-    --     interaction.
-    --   - `EPalInteractiveObjectActionType` — the enum passed in. Its
-    --     values are generic SLOT NAMES (Interact1..Interact4), not
-    --     "Pet"/"Feed" — which slot means what is decided per object
-    --     type (a Pal's own Blueprint implementation of
-    --     `GetIndicatorInfo` from `IPalInteractiveObjectComponentInterface`
-    --     picks what each of its 4 slots does). So we don't yet know
-    --     which Interact# number is Pet vs Feed for a Pal, or whether
-    --     `TargetInteractiveObject` ever gets set to a WILD (unowned)
-    --     Pal at all — that ownership gate could live anywhere upstream
-    --     of this component.
-    --
-    -- Rather than guess and call StartTriggerInteract blind — this is
-    -- exactly the kind of Blueprint-adjacent pair-action machinery this
-    -- project has been burned by before (see crash #1/#2/#3 history) —
-    -- this only WATCHES, read-only, same proven pattern as the
-    -- AddFriendShip hook above. Test plan for next session: hold the
-    -- interact key on an OWNED Pal and do a real Pet, then a real Feed,
-    -- via the vanilla menu — the log will show which ActionType number
-    -- fired for each, and what species TargetInteractiveObject pointed
-    -- at. Then try just looking at / holding interact near a WILD Pal to
-    -- see whether this component reacts to it AT ALL. That data is what
-    -- decides whether wild-Pal Pet/Feed can hook in at this level (real
-    -- menu, real animations/camera work already wired by the game) or
-    -- needs the ownership gate found and patched further upstream first.
-    -- Ninety-first pass (2026-09-03): Dragón made the actual insight this
-    -- whole thread has been missing — he watched it happen live and told
-    -- us directly: "if its a base pal it opens the worker menu, if not
-    -- then its the other one." That's the REAL eligibility rule, not
-    -- wild-vs-owned. `UPalCharacterParameterComponent` (the same component
-    -- get_individual_parameter/get_individual_handle already read) has a
-    -- plain field for exactly this, confirmed in the SDK dump:
-    -- `WorkAssignId` (a `FPalWorkAssignHandleId { FGuid WorkId; int32
-    -- LocationIndex; EPalWorkAssignType AssignType }`) plus a getter,
-    -- `GetWorkAssign()`. A Pal actually assigned as a base worker should
-    -- show a real WorkId/LocationIndex; a wild (or owned-but-unassigned)
-    -- Pal should show an empty/invalid one. This is a read-only field/
-    -- getter read — same safe pattern as every other component field this
-    -- file already uses — logged here for every real ActionType=4 "4"
-    -- press so it can be directly correlated against whichever menu
-    -- actually opens right after (RADIAL-WATCH vs WORKER-WATCH), giving
-    -- real evidence for or against the theory before touching anything.
-    -- Hundred-and-seventy-first pass (2026-09-05): confirmed DEAD, removed.
-    -- A real log-volume breakdown (Dragón's own base session, 3 min of
-    -- play) showed [MENU-WATCH] at 1,048 lines — 16% of the entire log —
-    -- firing via StartTriggerInteract/EndTriggerInteract on ANY nearby
-    -- interactable (trees, storage, structures, not just Pals), exactly
-    -- matching Dragón's own suspicion ("triggers when I even look at a
-    -- tree"). Confirmed safe to cut entirely, not just throttle:
-    --   - lastAimedInteractTarget (written here on every ActionType=4) is
-    --     never READ anywhere else in this file anymore — the real wild-
-    --     feed mechanism uses cachedRedirectWildPal instead. Dead write.
-    --   - The WORKASSIGN-DIAG block ran a full find_targeted_pal() scan
-    --     (the same ~35-50ms-per-call scan already documented as costly
-    --     elsewhere in this file) on every single real "4" press, to
-    --     investigate a WorkAssignId eligibility theory that was later
-    --     superseded by the BaseCampId findings (hook-points.md, pass
-    --     163) — the investigation this diagnostic existed for is over.
-    --   - EndTriggerInteract's hook was pure logging, zero functional use.
-    -- Old body preserved below, commented out, per this project's usual
-    -- practice of never deleting confirmed-dead investigation code.
-    --[[
-    local function describe_work_assign(pal)
-        if not pal then return "no aimed Pal" end
-        local comp = safe_call(function() return pal.CharacterParameterComponent end)
-        if not comp or not comp:IsValid() then
-            return "no CharacterParameterComponent"
-        end
-        local workId = safe_call(function() return comp.WorkAssignId end)
-        local guidStr = safe_call(function() return workId and tostring(workId.WorkId) end)
-        local locIndex = safe_call(function() return workId and workId.LocationIndex end)
-        local assignType = safe_call(function() return workId and workId.AssignType end)
-        local workAssignObj = safe_call(function() return comp:GetWorkAssign() end)
-        return string.format(
-            "WorkAssignId.WorkId=%s LocationIndex=%s AssignType=%s GetWorkAssign()=%s",
-            tostring(guidStr), tostring(locIndex), tostring(assignType), hook_describe(workAssignObj)
-        )
-    end
-
-    local okWatchInteract = pcall(function()
-        RegisterHook("/Script/Pal.PalInteractComponent:StartTriggerInteract", function(Context, ActionType, IsToggle)
-            local self_ = hook_get(Context)
-            local actionType = hook_get(ActionType)
-            local isToggle = hook_get(IsToggle)
-            local target = safe_call(function() return self_ and self_.TargetInteractiveObject end)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [MENU-WATCH] StartTriggerInteract — component=%s ActionType=%s IsToggle=%s TargetInteractiveObject=%s",
-                hook_describe(self_), tostring(actionType), tostring(isToggle), hook_describe(target)
-            ))
-            -- Eighty-first pass: remember this target ONLY for ActionType=4
-            -- (confirmed the "aiming at a Pal" case) so the real Worker-menu
-            -- selection hook below knows which Pal a later Pet/Feed pick
-            -- was actually for.
-            if tostring(actionType) == "4" and target ~= nil then
-                lastAimedInteractTarget = target
-            end
-            -- Ninety-first pass diagnostic: on every real ActionType=4
-            -- press, resolve whatever's being aimed at (same look-based
-            -- targeting as everywhere else in this file) and log its
-            -- WorkAssignId/GetWorkAssign() state.
-            if tostring(actionType) == "4" then
-                safe_call(function()
-                    local player = FindFirstOf("PalPlayerCharacter")
-                    if not player or not player:IsValid() then return end
-                    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-                        or safe_call(function() return player:K2_GetActorLocation() end)
-                    if not originLoc then return end
-                    local controlRot = safe_call(function() return player:GetControlRotation() end)
-                    if not controlRot then return end
-                    local forward = rotator_to_forward(controlRot)
-                    local aimedPal = find_targeted_pal(originLoc, forward, player)
-                    local aimedName = aimedPal and safe_call(function() return aimedPal:GetFullName() end)
-                    Logger.log(string.format(
-                        "[PalBonds/Interaction] [WORKASSIGN-DIAG] aimed=%s %s",
-                        tostring(aimedName), describe_work_assign(aimedPal)
-                    ))
-                end)
-            end
-        end)
-        RegisterHook("/Script/Pal.PalInteractComponent:EndTriggerInteract", function(Context, ActionType)
-            local self_ = hook_get(Context)
-            local actionType = hook_get(ActionType)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [MENU-WATCH] EndTriggerInteract — component=%s ActionType=%s",
-                hook_describe(self_), tostring(actionType)
-            ))
-        end)
-    end)
-    if not okWatchInteract then
-        Logger.log("[PalBonds/Interaction] could not install PalInteractComponent watch hooks (name may need adjusting)")
-    end
-    ]]
 
     -- ---------------------------------------------------------------
     -- Forty-second pass (2026-09-03): the REAL radial-menu ("4" key)
@@ -3934,6 +1842,11 @@ function Interaction.Init()
     local MAX_RADIAL_HOOK_ROUNDS = 60
     local RADIAL_HOOK_RETRY_MS = 5000
 
+    -- Cadence after the fast rounds are spent, while the class has still never
+    -- loaded. One pcall'd RegisterHook every 15s costs nothing and is the only
+    -- thing standing between a slow load and a session where "4" does nothing.
+    local RADIAL_HOOK_SLOW_RETRY_MS = 15000
+
     -- Seventy-ninth pass (2026-09-03) cleanup: Dragón saw a burst of
     -- repeated failure lines fire in quick succession and asked to trim
     -- out whatever's already confirmed dead, to cut the noise. Two kinds
@@ -3959,15 +1872,13 @@ function Interaction.Init()
     -- actually fired no longer exists (Logger.lua truncates per session),
     -- so trimming the "wrong" one blind risks deleting the real one.
     local radialHookTargets = {
-        { tag = "OpenPlayerActionMenu", candidates = {"OpenPlayerActionMenu"} },
+
         -- Eighty-fifth pass: this is the earliest confirmed-real signal
         -- that a "4"-press's no-aim menu is opening (fires first, every
         -- cycle, per the eighty-fourth pass's live log) — used to open the
         -- narrow TryGetSpawnedOtomo redirect window below, nothing else.
         { tag = "CanOpenPlayerActionMenu", candidates = {"Can Open Player Action Menu"}, onFire = openRadialMenuActionWindow },
-        { tag = "CreatePlayerActionMenu", candidates = {"CreatePlayerActionMenu"} },
-        { tag = "ChangeMode", candidates = {"ChangeMode", "Change Mode"} },
-        { tag = "OnDecidedPlayerActionMenu", candidates = {"OnDecidedPlayerActionMenu"} },
+
         -- Ninety-ninth pass: these two now also record which instruction
         -- was last decided during the CURRENT window (see
         -- lastDecidedInstruction above) — deliberately ignoring the
@@ -3985,189 +1896,18 @@ function Interaction.Init()
                 lastDecidedInstruction = "feed"
             end
         end },
-        { tag = "DecideMenuAction", candidates = {"DecideMenuAction", "Decide Menu Action"} },
-        { tag = "OpenSetup", candidates = {"OpenSetup", "Open Setup"} },
-        { tag = "CloseSetup", candidates = {"CloseSetup", "Close Setup"} },
-        { tag = "SetupEvent", candidates = {"SetupEvent", "Setup Event"} },
-        { tag = "OpenMenu", candidates = {"OpenMenu", "Open Menu"} },
+
         -- Eighty-fifth pass: confirmed-real close signal — closes the
         -- redirect window the moment the menu closes, so the substitution
         -- can never linger past the actual "4" interaction.
         { tag = "CloseMenu", candidates = {"CloseMenu", "Close Menu"}, onFire = closeRadialMenuActionWindow },
-        { tag = "IsAnyMenuOpened", candidates = {"IsAnyMenuOpened", "Is Any Menu Opened"} },
-        { tag = "OnOtomoChangedActivated", candidates = {"OnOtomoChanged_Activated"} },
-        { tag = "OnOtomoChangedInactivated", candidates = {"OnOtomoChanged_Inactivated"} },
     }
-
-    -- Seventy-seventh pass (2026-09-03): generalized the round-runner
-    -- below (originally written just for RADIAL_MENU_CLASS) into a small
-    -- factory, so the same bounded-retry/candidate-name machinery can be
-    -- pointed at MULTIPLE classes. Needed because the seventy-sixth pass's
-    -- live test proved conclusively that aiming "4" at a specific Pal
-    -- fires NONE of the WBP_PlayerRadialMenu_C hooks above — five separate
-    -- real presses on his base Tanzee (confirmed via the native MENU-WATCH
-    -- ActionType=4 hook on that exact Pal's interactable sphere) produced
-    -- zero hits on any of the 18 candidates tried. That's not a naming
-    -- miss — it means the aimed-at-a-Pal case is a genuinely different
-    -- Blueprint system.
-    --
-    -- Went back to the game's own real pak for the answer instead of
-    -- guessing further: grepped the full file listing for interact-
-    -- indicator-shaped names and found `WBP_PalInteractiveObjectIndicatorUI`
-    -- and `WBP_PalInteractiveObjectIndicatorCanvas`. Reading their string
-    -- tables is a real breakthrough — it directly answers a question this
-    -- project has had open since the TWENTIETH pass ("find the Blueprint
-    -- that implements GetIndicatorInfo for Pal characters"): `Canvas`
-    -- literally has `GetIndicatorInfo`, `CreateIndicatorUI`,
-    -- `ShowIndicator(s)`, `HideIndicators`, and — the strongest lead of
-    -- all — `OnUpdateTargetInteractiveObject`, a delegate that sounds
-    -- exactly like "fires when the player's aimed target changes." It ALSO
-    -- has a separate, parallel `ShowOtomoIndicator(s)`/
-    -- `OtomoIndicatorActionInfo` pair, implying Otomo Pals get an
-    -- additional/different indicator on top of the generic one — real,
-    -- concrete evidence that aiming at a Pal (Otomo or not) goes through
-    -- THIS system, not `WBP_PlayerRadialMenu_C`. The per-slot companion
-    -- widget, `WBP_PalInteractiveObjectIndicatorUI_C`, has its own
-    -- `SetActionInfo`/`SetInteractable`/`Activate`/`Deactivate` functions.
-    local INDICATOR_CANVAS_CLASS = "/Game/Pal/Blueprint/UI/WBP_PalInteractiveObjectIndicatorCanvas.WBP_PalInteractiveObjectIndicatorCanvas_C"
-    local INDICATOR_UI_CLASS = "/Game/Pal/Blueprint/UI/WBP_PalInteractiveObjectIndicatorUI.WBP_PalInteractiveObjectIndicatorUI_C"
-
-    -- Eightieth pass (2026-09-03) FIX: `UpdateInteractTargetName` removed
-    -- entirely. Dragón's real test (7 real worker-menu opens: pet/feed
-    -- Tanzee, view status, add to party, pet again, pet/feed Petallia)
-    -- also came with felt lag — and the log proves why. This one hook
-    -- fired **2375 times** in a 137-second session (arg1 was ALWAYS nil,
-    -- so it wasn't even giving useful data) — clearly a per-tick/per-frame
-    -- UI text refresh, not a discrete event, the exact same class of bug
-    -- as the ninth-pass find_targeted_pal spam (Logger.log does a
-    -- synchronous flushed disk write per call — see Logger.lua — so a few
-    -- thousand calls in two minutes is a real, feel-able cost). Everything
-    -- else on this class fired at sane, clearly-discrete-event volumes in
-    -- the same session (66, 124, 264, etc.) and is kept. No functionality
-    -- is lost: `OnUpdateTargetInteractiveObject` already gives the same
-    -- "what changed" information at 1/36th the volume, WITH a real,
-    -- resolvable target object (confirmed live: fired with `BP_InteractableCapsule_C`
-    -- for a PalBox and, more importantly, `PalInteractableSphereComponentNative`
-    -- on an actual `BP_Monkey_C` Pal actor — direct proof this hook sees
-    -- Pals specifically, at a perfectly reasonable rate).
-    local indicatorCanvasTargets = {
-        { tag = "GetIndicatorInfo", candidates = {"GetIndicatorInfo"} },
-        { tag = "CreateIndicatorUI", candidates = {"CreateIndicatorUI"} },
-        { tag = "ShowIndicator", candidates = {"ShowIndicator"} },
-        { tag = "ShowIndicators", candidates = {"ShowIndicators"} },
-        { tag = "HideIndicators", candidates = {"HideIndicators"} },
-        { tag = "ShowOtomoIndicator", candidates = {"ShowOtomoIndicator"} },
-        { tag = "ShowOtomoIndicators", candidates = {"ShowOtomoIndicators"} },
-        { tag = "OnUpdateTargetInteractiveObject", candidates = {"OnUpdateTargetInteractiveObject"} },
-        { tag = "GetInteractTargetName", candidates = {"GetInteractTargetName"} },
-        { tag = "SetupIndicatorCanvas", candidates = {"Setup"} },
-        { tag = "SetupAfterCreatePlayer", candidates = {"SetupAfterCreatePlayer"} },
-        { tag = "OnChangeOtomo", candidates = {"OnChangeOtomo"} },
-    }
-
-    local indicatorUITargets = {
-        { tag = "SetActionInfo", candidates = {"SetActionInfo"} },
-        { tag = "SetActionType", candidates = {"SetActionType", "Set Action Type"} },
-        { tag = "SetInteractable", candidates = {"SetInteractable"} },
-        { tag = "SetIsValidInteract", candidates = {"SetIsValidInteract"} },
-        { tag = "IndicatorActivate", candidates = {"Activate"} },
-        { tag = "IndicatorDeactivate", candidates = {"Deactivate"} },
-        { tag = "PressInteractButton", candidates = {"PressInteractButton"} },
-        { tag = "ReleaseInteractButton", candidates = {"ReleaseInteractButton"} },
-    }
-
-    -- Seventy-eighth pass (2026-09-03): Dragón spotted a THIRD radial-menu
-    -- family while browsing the pak himself and sent screenshots —
-    -- `WBP_WorkerRadialMenu` / `WBP_WorkerRadialMenu_Overlay` /
-    -- `WBP_WorkerRadialMenuContent`, under
-    -- /Game/Pal/Blueprint/UI/WorkerRadialMenu/. "Worker" is the game's own
-    -- term for a base Pal (his Tanzee, put down at his base to roam) — so
-    -- this is a strong candidate for the still-unexplained "aim '4' at a
-    -- specific Pal" code path the seventy-sixth/seventy-seventh passes
-    -- proved does NOT go through WBP_PlayerRadialMenu_C at all.
-    --
-    -- Extracted via repak and read with `strings`, same as every class
-    -- above. Real, concrete evidence this is the right family: the content
-    -- widget's string table literally contains `MsgID_Pet` and
-    -- `MsgID_Feed` (plus `MsgID_MoveToBox`, `MsgID_MoveToOtomo`,
-    -- `MsgID_ShowStatus`) — this menu's own options are Pet/Feed/Move to
-    -- box/Move to Otomo/Show status — and a dedicated result enum,
-    -- `EPalWorkerRadialMenuResult`, which is a much cleaner selection
-    -- signal than WBP_PlayerRadialMenu_C's raw OnDecidedPlayerActionMenu
-    -- index ever was.
-    --
-    -- Two real classes here, same split as the Player menu had (an outer
-    -- "Overlay" controller that owns opening/closing/input-binding, and
-    -- the menu widget itself that owns content/selection):
-    --   WBP_WorkerRadialMenu_Overlay_C — Open/Close/Construct/Destruct,
-    --     DecideMenuAction, CancelEvent, Interact, OnSetup,
-    --     OnSelectedEvent/OnSelectedMenu, RegisterActionBinding,
-    --     ListenForInputAction, SetDisableWeaponForUI,
-    --     OnAnyUIPushed/OnPushedStackableUI (this last pair takes a
-    --     `PalHUDDispatchParameter_WorkerRadialMenu` struct — likely where
-    --     the target Pal handle itself is carried in).
-    --   WBP_WorkerRadialMenu_C — Construct, CreateContent, SetupContents,
-    --     ClearSelectedIndex, CalculateRadialMenuArea, OnInitialized,
-    --     OnClosed, OnSelectedMenu/OnSelectedMenu_Internal,
-    --     OnDecideIndex_forBP (a delegate — tried as a plain hookable name
-    --     too, in case it's also a real event, though delegate signatures
-    --     often aren't directly hookable).
-    -- Left out anything that showed up only as a `CallFunc_*_ReturnValue`
-    -- pin name (IsDead, IsSameWidget, TryGetIndividualActor, GetHUDService,
-    -- GetPalmi, GetParam, GetComponentByClass) — those are Blueprint call
-    -- sites INTO other classes' functions, not functions defined on either
-    -- Worker menu class itself, so hooking them here would just always
-    -- fail on the wrong owner.
-    --
-    -- WATCH ONLY, same discipline as every hook in this file. Test plan:
-    -- aim "4" at a base/worker Pal (owned or, ideally, wild once we get
-    -- there) and check the log for any [WORKER-WATCH] line — especially
-    -- Open, OnSetup, OnSelectedMenu, and OnAnyUIPushed/OnPushedStackableUI
-    -- (whose struct arg might reveal the target Pal handle even before we
-    -- know the exact selection function).
-    local WORKER_MENU_CLASS = "/Game/Pal/Blueprint/UI/WorkerRadialMenu/WBP_WorkerRadialMenu.WBP_WorkerRadialMenu_C"
-    local WORKER_MENU_OVERLAY_CLASS = "/Game/Pal/Blueprint/UI/WorkerRadialMenu/WBP_WorkerRadialMenu_Overlay.WBP_WorkerRadialMenu_Overlay_C"
-
-    local workerMenuTargets = {
-        { tag = "Construct", candidates = {"Construct"} },
-        { tag = "CreateContent", candidates = {"CreateContent"} },
-        { tag = "SetupContents", candidates = {"SetupContents", "Setup Contents"} },
-        { tag = "ClearSelectedIndex", candidates = {"ClearSelectedIndex", "Clear Selected Index"} },
-        { tag = "CalculateRadialMenuArea", candidates = {"CalculateRadialMenuArea", "Calculate Radial Menu Area"} },
-        { tag = "OnInitialized", candidates = {"OnInitialized"} },
-        { tag = "OnClosed", candidates = {"OnClosed"} },
-        { tag = "OnSelectedMenu", candidates = {"OnSelectedMenu"} },
-        -- NOTE: `OnSelectedMenu_Internal` deliberately NOT in this
-        -- watch-only list anymore (eighty-first pass) — it now has its own
-        -- dedicated, REAL functional hook below (register_worker_selected_hook),
-        -- which also logs its own fire. Keeping both would just double-log
-        -- every selection.
-        { tag = "OnDecideIndexForBP", candidates = {"OnDecideIndex_forBP"} },
-    }
-
-    local workerMenuOverlayTargets = {
-        { tag = "Open", candidates = {"Open"} },
-        { tag = "Close", candidates = {"Close"} },
-        { tag = "Construct", candidates = {"Construct"} },
-        { tag = "Destruct", candidates = {"Destruct"} },
-        { tag = "DecideMenuAction", candidates = {"DecideMenuAction", "Decide Menu Action"} },
-        { tag = "CancelEvent", candidates = {"CancelEvent", "Cancel Event"} },
-        { tag = "Interact", candidates = {"Interact"} },
-        { tag = "OnSetup", candidates = {"OnSetup"} },
-        { tag = "OnSelectedEvent", candidates = {"OnSelectedEvent"} },
-        { tag = "OnSelectedMenu", candidates = {"OnSelectedMenu"} },
-        { tag = "RegisterActionBinding", candidates = {"RegisterActionBinding", "Register Action Binding"} },
-        { tag = "ListenForInputAction", candidates = {"ListenForInputAction", "Listen For Input Action"} },
-        { tag = "SetDisableWeaponForUI", candidates = {"SetDisableWeaponForUI", "Set Disable Weapon For UI"} },
-        { tag = "OnAnyUIPushed", candidates = {"OnAnyUIPushed"} },
-        { tag = "OnPushedStackableUI", candidates = {"OnPushedStackableUI"} },
-    }
-
     local loggedHookFailureOnce = {}
-    local function make_hook_handler(logTag, tag, onFire)
+    local function make_hook_handler(onFire)
         return function(Context, A, B, C)
             local self_ = hook_get(Context)
             if onFire then
+
                 -- Hundred-and-twenty-third pass: now passes self_ through
                 -- (the live widget instance) — openRadialMenuActionWindow
                 -- is the only current onFire that uses it; every other
@@ -4176,26 +1916,6 @@ function Interaction.Init()
                 -- and the two lastDecidedInstruction closures all take
                 -- zero declared params already).
                 safe_call(function() onFire(self_) end)
-            end
-            -- Two-hundred-and-eighth pass (2026-09-06) — LOG SILENCED, real
-            -- lag contributor. This handler backs the live radial/worker
-            -- menu hooks (the onFire above is load-bearing and untouched),
-            -- but its log line fired ~8 times per single "4" press, and each
-            -- line ran FOUR hook_describe reflection calls to build a ~250-
-            -- character string dominated by the same widget path every time,
-            -- then forced it to disk through Logger's flush-per-line design.
-            -- Dragón's pasted log is more than half these lines.
-            --
-            -- The mapping question they existed to answer (which menu
-            -- function fires when, and in what order) has been closed since
-            -- the hundred-and-thirty-first pass audit confirmed every one of
-            -- these hooks resolving and firing correctly. Set this to true
-            -- if a future pass needs to re-trace the menu sequence.
-            if VERBOSE_MENU_HOOK_TRACE then
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] [%s] %s fired — self=%s arg1=%s arg2=%s arg3=%s",
-                    logTag, tag, hook_describe(self_), hook_describe(hook_get(A)), hook_describe(hook_get(B)), hook_describe(hook_get(C))
-                ))
             end
         end
     end
@@ -4228,7 +1948,6 @@ function Interaction.Init()
     -- Same discipline proven in the seventy-fourth/seventy-fifth passes,
     -- extended in the ninety-seventh pass, tightened here.
     local EARLY_EXIT_ROUNDS_AFTER_PROOF = 3
-
     local function make_hook_round_runner(className, targets, logTag)
         local round = 0
         local provenLoadedAtRound = nil
@@ -4242,12 +1961,13 @@ function Interaction.Init()
                     for _, funcName in ipairs(target.candidates) do
                         local path = className .. ":" .. funcName
                         local ok, err = pcall(function()
-                            RegisterHook(path, make_hook_handler(logTag, target.tag, target.onFire))
+                            RegisterHook(path, make_hook_handler(target.onFire))
                         end)
                         local errFirstLine
                         if not ok then
                             errFirstLine = tostring(err):match("^[^\n]*") or tostring(err)
                         end
+
                         -- Two-hundred-and-fourteenth pass: log each SUCCESS,
                         -- but each failing name only ONCE instead of once per
                         -- retry round. Dragón's last run had 430 of these
@@ -4279,25 +1999,71 @@ function Interaction.Init()
                     anyHookedThisGroup = true
                 end
             end
-
             if anyHookedThisGroup and provenLoadedAtRound == nil then
                 provenLoadedAtRound = round
             end
-
             if allDone then
-                Logger.log("[PalBonds/Interaction] [" .. logTag .. "] all candidate hooks registered — stopping retry loop")
+                -- Visible tag: this is the line that says wild-Pal interaction
+                -- is actually armed this session.
+                Logger.log("[PalBonds/Interaction] [HOOKS] " .. logTag ..
+                    ": all candidate hooks registered at round " .. round ..
+                    " — petting and feeding wild Pals is armed")
                 return
             end
             if provenLoadedAtRound and (round - provenLoadedAtRound) >= EARLY_EXIT_ROUNDS_AFTER_PROOF then
                 Logger.log("[PalBonds/Interaction] [" .. logTag .. "] stopping early — class proven loaded at round " .. provenLoadedAtRound .. " (a sibling hook succeeded), remaining unresolved names are very likely just wrong, not a timing issue (see FAILED lines above for exact names tried)")
                 return
             end
-            if round >= MAX_RADIAL_HOOK_ROUNDS then
-                Logger.log("[PalBonds/Interaction] [" .. logTag .. "] giving up after " .. round .. " rounds — class never proved loaded (no sibling ever hooked) — some functions never resolved (see FAILED lines above for exact names tried)")
+            -- =======================================================
+            -- NO GIVING UP WHILE THE CLASS HAS NEVER LOADED
+            -- (three-hundred-and-first pass, 2026-09-11)
+            -- =======================================================
+            -- This used to stop permanently at MAX_RADIAL_HOOK_ROUNDS — 60
+            -- rounds at 5s, a five-minute window that starts at MOD LOAD.
+            --
+            -- Mod load happens on the title screen, and these are BLUEPRINT
+            -- hooks: WBP_PlayerRadialMenu_C cannot be hooked until the class is
+            -- actually loaded, which does not happen until the player is in a
+            -- world. On 2026-09-11 Dragón had a slow load — the world did not
+            -- exist until 9.5 minutes in — so this gave up four and a half
+            -- minutes before there was anything to hook, and pressing "4" never
+            -- redirected to a wild Pal for the entire session. He reported it as
+            -- "i could no longer interact with the pals, no matter how close i
+            -- got", and there was nothing in the log, because every line here is
+            -- tagged [RADIAL-WATCH]/[WORKER-WATCH] and Logger suppresses both.
+            --
+            -- This is the SAME bug already fixed for the nameplate bind hook in
+            -- the two-hundred-and-ninety-seventh pass. That fix was applied to
+            -- one instance without checking for siblings, and this was the
+            -- sibling. The rule worth keeping: a retry budget anchored at mod
+            -- load is measuring the wrong thing, because mod load is not when
+            -- the game's Blueprint classes exist.
+            --
+            -- The give-up is kept for the case it was actually written for: the
+            -- class HAS proved loaded (a sibling hooked) and some names still do
+            -- not resolve, which means those names are wrong rather than early.
+            -- That is handled by the early-exit above. While nothing has ever
+            -- hooked, the only honest reading is "not yet", so it keeps trying
+            -- at a slower cadence, forever, and stops the instant it succeeds.
+            local waitingForClass = (provenLoadedAtRound == nil)
+            if round >= MAX_RADIAL_HOOK_ROUNDS and not waitingForClass then
+                Logger.log("[PalBonds/Interaction] [" .. logTag .. "] giving up after " .. round .. " rounds — some functions never resolved (see FAILED lines above for exact names tried)")
                 return
             end
+            local nextDelay = RADIAL_HOOK_RETRY_MS
+            if round >= MAX_RADIAL_HOOK_ROUNDS then
+                nextDelay = RADIAL_HOOK_SLOW_RETRY_MS
+
+                -- Visible tag on purpose: [RADIAL-WATCH] is suppressed, and the
+                -- silence is what made this cost a whole test run.
+                if round == MAX_RADIAL_HOOK_ROUNDS or (round % 40 == 0) then
+                    Logger.log(string.format(
+                        "[PalBonds/Interaction] [HOOKS] %s: the radial-menu class is still not loaded after %d rounds — still retrying (petting and feeding wild Pals cannot work until it is)",
+                        logTag, round))
+                end
+            end
             local rescheduleOk = pcall(function()
-                ExecuteInGameThreadWithDelay(RADIAL_HOOK_RETRY_MS, function()
+                ExecuteInGameThreadWithDelay(nextDelay, function()
                     safe_call(runner)
                 end)
             end)
@@ -4307,206 +2073,7 @@ function Interaction.Init()
         end
         return runner
     end
-
     make_hook_round_runner(RADIAL_MENU_CLASS, radialHookTargets, "RADIAL-WATCH")()
-    -- Hundred-and-thirty-sixth pass (2026-09-03) FIX, REAL LAG SOURCE FOUND:
-    -- these two watches fire on the game's generic "interactable object"
-    -- prompt — which triggers for EVERY interactable in the world (berries,
-    -- logs, stones, the PalBox, not just Pals) every time it appears/
-    -- disappears as the player looks around. Dragón reported still feeling
-    -- lag after the personality fix; breaking the log down by volume (not
-    -- just checking the tags already suspected) showed 1529 of 4630 lines
-    -- in one ~6-minute session — a full third of the whole log — came from
-    -- here. The research question these were added for (how does aiming
-    -- "4" at a specific Pal work) was fully answered back in the
-    -- seventy-ninth/eightieth passes (WBP_WorkerRadialMenu) — nobody ever
-    -- came back to turn these off. Commented out, not deleted, same
-    -- convention as SelectResponseBySenses in OtomoWatch.lua — the
-    -- candidate-name research (which real UFunction names exist on these
-    -- two classes) stays valuable documentation even with the hooks off.
-    -- make_hook_round_runner(INDICATOR_CANVAS_CLASS, indicatorCanvasTargets, "INDICATOR-WATCH")()
-    -- make_hook_round_runner(INDICATOR_UI_CLASS, indicatorUITargets, "INDICATOR-WATCH")()
-    make_hook_round_runner(WORKER_MENU_CLASS, workerMenuTargets, "WORKER-WATCH")()
-
-    -- Hundred-and-thirty-eighth pass (2026-09-04) addendum, REMOVED
-    -- hundred-and-fifty-eighth pass: this watched for Dragón's real Cheer
-    -- emote to confirm which of the 9 numbered classes it was — but the
-    -- player-Cheer feature itself was abandoned two passes later (do_play
-    -- crashed twice trying to call PlayAction, pulled out entirely — see
-    -- hook-points.md, hundred-and-forty-fifth pass) and nobody ever
-    -- turned this watch off. Confirmed dead with real numbers, not a
-    -- guess: 405 log lines across a later session, ZERO successes, ever
-    -- — "OnBeginAction" never resolved on any of the 9 classes in any
-    -- round. Dragón caught this directly asking whether console failures
-    -- were "still needed or just trash that accumulated" — this was
-    -- exactly that. Removed rather than left retrying forever for a
-    -- feature this project isn't using. If Cheer's player-emote half
-    -- ever gets a real, separate investigation later, the real class
-    -- (BP_Action_Emote_0_C, confirmed via Dragón's own object dump) and
-    -- the emote-index diagnostic above are still there to build on — this
-    -- specific OnBeginAction hook attempt just never worked and doesn't
-    -- need to keep trying.
-    make_hook_round_runner(WORKER_MENU_OVERLAY_CLASS, workerMenuOverlayTargets, "WORKER-WATCH")()
-
-    -- ---------------------------------------------------------------
-    -- Eighty-first pass (2026-09-03): REVERTED to watch-only in the
-    -- eighty-second pass — see that pass's notes below and in
-    -- Trust.lua/Capture.lua for the full incident.
-    --
-    -- What this originally did: on a Pet(4)/Feed(3) selection through the
-    -- real vanilla worker wheel, resolve the target Pal and call
-    -- `Interaction.OnWildPalPetted(pal)` directly — the same call F9/F10
-    -- make. That exposed a pre-existing, unrelated bug in Trust.lua (no
-    -- ownership check before the capture-threshold logic) and caused a
-    -- REAL, unwanted re-capture of Dragón's own already-owned base Pals
-    -- (a boss-tier Petallia got auto-added to his party and dropped
-    -- capture-reward loot; a second Pal was also silently re-captured).
-    --
-    -- Trust.lua/Capture.lua now have a hard ownership guard
-    -- (Capture.IsAlreadyOwned, fails safe toward "treat as owned") that
-    -- makes this specific failure impossible even if this hook (or
-    -- F9/F10, or anything else) calls OnWildPalPetted on an owned Pal —
-    -- but Dragón was right to call the DIRECTION itself premature: wiring
-    -- automatic real behavior into a UI action that fires constantly
-    -- during completely normal play (petting/feeding your own base Pals)
-    -- is a much bigger blast radius than F9/F10 ever was, and deserves
-    -- more caution than one guard fixed in the same session it broke.
-    -- Reverted to logging only — same as every other confirmed-real hook
-    -- in this file — until this is revisited deliberately, not as a side
-    -- effect of chasing the next research question.
-    local ok81, err81 = pcall(function()
-        RegisterHook(WORKER_MENU_CLASS .. ":OnSelectedMenu_Internal", function(Context, IndexParam)
-            local index = hook_get(IndexParam)
-            Logger.log("[PalBonds/Interaction] [WORKER-WATCH] OnSelectedMenu_Internal fired — index=" .. tostring(index) .. " (watch-only, see eighty-second pass — no longer calls OnWildPalPetted)")
-        end)
-    end)
-    if not ok81 then
-        Logger.log("[PalBonds/Interaction] [WORKER-WATCH] could not re-install the watch-only OnSelectedMenu_Internal hook: " .. tostring(err81))
-    end
-
-    -- Native companion hook (not a Blueprint-path guess — a real function
-    -- confirmed straight in Pal.hpp, UPalOtomoHolderComponentBase). Not
-    -- believed to be the actual Care/Feed trigger (see caveat above — its
-    -- enum is a combat-stance toggle) but essentially free to watch for
-    -- direct confirmation either way.
-    local okOtomoOrder = pcall(function()
-        RegisterHook("/Script/Pal.PalOtomoHolderComponentBase:RequestSetOtomoOrder", function(Context, OrderType)
-            local self_ = hook_get(Context)
-            local orderType = hook_get(OrderType)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [RADIAL-WATCH] RequestSetOtomoOrder fired — holder=%s OrderType=%s",
-                hook_describe(self_), tostring(orderType)
-            ))
-        end)
-    end)
-    if not okOtomoOrder then
-        Logger.log("[PalBonds/Interaction] [RADIAL-WATCH] could not install RequestSetOtomoOrder watch hook")
-    end
-
-    -- ---------------------------------------------------------------
-    -- Hundred-and-twenty-first pass (2026-09-03): two genuinely new, never-
-    -- hooked native functions found via `repak`+`strings` on the
-    -- RemoteAccessEverything reference mod's own re-packaged copy of
-    -- WBP_PlayerRadialMenu (a lead first noted back around the sixty-fifth
-    -- pass as "Otomo/companion-feed-inventory specific, not yet tested or
-    -- hooked", then never followed up on until now that the hundred-and-
-    -- twentieth pass's food-feeding thread actually needs it). Both are
-    -- declared on the NATIVE base class `UPalUIPlayerRadialMenuBase`
-    -- (confirmed in Pal.hpp — not Blueprint-only, so no retry-loop is
-    -- needed; native classes are loaded from game boot same as
-    -- PalOtomoHolderComponentBase above):
-    --   `void OpenOtomoFeedInventory();` — no args, no return. Real
-    --   candidate for the exact moment the real Feed action opens the
-    --   actual food-picker inventory UI.
-    --   `void SelectedFeed(const FPalItemSlotId& ItemSlotId, const int64
-    --   itemNum);` — same shape as the already-watched
-    --   `APalMonsterCharacter:SelectedFeedingItem` (hundred-and-third
-    --   pass), but on the WIDGET class instead of the Pal actor — a
-    --   plausible "player picked this exact food item in the UI" event
-    --   that fires BEFORE SelectedFeedingItem does, on the Otomo-specific
-    --   path SelectedFeedingItem itself never covers (confirmed
-    --   hundred-and-sixth pass: base-worker and active-Otomo feeding are
-    --   two different real functions, and SelectedFeedingItem is the
-    --   worker one).
-    -- WATCH ONLY, same zero-side-effect discipline as every hook in this
-    -- file. Purpose: get an AUTOMATIC, permanent log signal for exactly
-    -- what the hundred-and-twentieth pass had to check by eye via manual
-    -- Live View dumps — does either of these fire during a real Otomo
-    -- feed, and (the real open question) does either ever fire during a
-    -- substituted-wild-Pal Feed attempt through the "4" menu.
-    local okOpenFeedInv = pcall(function()
-        RegisterHook("/Script/Pal.PalUIPlayerRadialMenuBase:OpenOtomoFeedInventory", function(Context)
-            local self_ = hook_get(Context)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FOOD-DIAG] OpenOtomoFeedInventory fired — widget=%s",
-                hook_describe(self_)
-            ))
-        end)
-    end)
-    if not okOpenFeedInv then
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] could not install OpenOtomoFeedInventory watch hook (name may need adjusting)")
-    end
-
-    local okSelectedFeed = pcall(function()
-        RegisterHook("/Script/Pal.PalUIPlayerRadialMenuBase:SelectedFeed", function(Context, ItemSlotId, itemNum)
-            local self_ = hook_get(Context)
-            local slotId = hook_get(ItemSlotId)
-            local num = hook_get(itemNum)
-            local containerGuid = safe_call(function() return slotId and slotId.ContainerId and tostring(slotId.ContainerId.ID) end)
-            local slotIndex = safe_call(function() return slotId and slotId.SlotIndex end)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FOOD-DIAG] SelectedFeed fired — widget=%s ContainerId=%s SlotIndex=%s itemNum=%s",
-                hook_describe(self_), tostring(containerGuid), tostring(slotIndex), tostring(num)
-            ))
-        end)
-    end)
-    if not okSelectedFeed then
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] could not install SelectedFeed watch hook (name may need adjusting)")
-    end
-
-    -- Hundred-and-twenty-sixth pass (2026-09-03): two more real function
-    -- paths, confirmed via Dragón's own Live View "Dump as Function"
-    -- captures (saved under ue4ss/IndividualObjectDumps/) rather than
-    -- guessed. Both watch-only, same zero-side-effect discipline as
-    -- everything else in this file.
-    --
-    -- `ReadPlayerFeedItemTo` — real, confirmed native path:
-    -- /Script/Pal.PalPlayerUtility:ReadPlayerFeedItemTo (a
-    -- BlueprintFunctionLibrary-style utility class, same category as the
-    -- already-trusted PalUtility/PalItemUtility). First seen as an
-    -- unidentified temp-variable name inside BP_ActionPairBehavior_FeedItem_C's
-    -- own compiled graph (hundred-and-twenty-fifth pass) — this confirms
-    -- its real declaring class. Likely the function that resolves which
-    -- item a player picked to feed a given target; exact parameter shapes
-    -- unknown, so this hook logs generically (self + first 3 args
-    -- described the same way every other native watch in this file does)
-    -- rather than assuming a signature. Since it's native, no Blueprint
-    -- retry-loop is needed — same as RequestSetOtomoOrder above.
-    local okReadFeedItem = pcall(function()
-        RegisterHook("/Script/Pal.PalPlayerUtility:ReadPlayerFeedItemTo", function(Context, A, B, C)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FOOD-DIAG] ReadPlayerFeedItemTo fired — arg1=%s arg2=%s arg3=%s",
-                hook_describe(hook_get(A)), hook_describe(hook_get(B)), hook_describe(hook_get(C))
-            ))
-        end)
-    end)
-    if not okReadFeedItem then
-        Logger.log("[PalBonds/Interaction] [FOOD-DIAG] could not install ReadPlayerFeedItemTo watch hook (name may need adjusting)")
-    end
-
-    -- "On Trigger Open Inventory Menu" — real, confirmed Blueprint path:
-    -- /Game/Pal/Blueprint/UI/WBP_PalHUD_InGame_InputListener.WBP_PalHUD_InGame_InputListener_C
-    -- (the game's main HUD input-listener widget — likely the top-level
-    -- trigger for opening ANY inventory-flavored menu, possibly one level
-    -- above OpenOtomoFeedInventory in the real call chain). Blueprint, so
-    -- uses the same bounded round-runner as every other UI class in this
-    -- file, in case it isn't loaded yet at Init() time (though its own
-    -- dump showed RF_WasLoaded, suggesting it's core HUD and loads early).
-    local INVENTORY_LISTENER_CLASS = "/Game/Pal/Blueprint/UI/WBP_PalHUD_InGame_InputListener.WBP_PalHUD_InGame_InputListener_C"
-    local inventoryListenerTargets = {
-        { tag = "OnTriggerOpenInventoryMenu", candidates = {"On Trigger Open Inventory Menu"} },
-    }
-    make_hook_round_runner(INVENTORY_LISTENER_CLASS, inventoryListenerTargets, "INVENTORY-WATCH")()
 
     -- ---------------------------------------------------------------
     -- Eighty-third pass (2026-09-03): research step toward Dragón's
@@ -4625,6 +2192,7 @@ function Interaction.Init()
     -- either way.
     local okOtomoGetter = pcall(function()
         RegisterHook("/Script/Pal.PalOtomoHolderComponentBase:TryGetSpawnedOtomo", function(Context) end, function(Context, ReturnValue)
+
             -- Two-hundred-and-sixth pass (2026-09-06) — IDLE PATH MADE FREE.
             -- This hook is LOAD-BEARING and must stay: the substitution
             -- below is what lets the real vanilla Pet action land on a wild
@@ -4649,9 +2217,7 @@ function Interaction.Init()
             -- built for (what this getter returns, and when) was answered
             -- back in the eighty-fourth pass.
             if not radialMenuActionWindowOpen then return end
-
             local returned = hook_get(ReturnValue)
-
             do
                 local ok, err = pcall(function()
                     local player = FindFirstOf("PalPlayerCharacter")
@@ -4706,6 +2272,7 @@ function Interaction.Init()
                         wildPal = find_targeted_pal(originLoc, forward, player)
                         local scanEnd = safe_call(function() return os.clock() end)
                         if scanStart and scanEnd then
+
                             -- Real evidence, not a guess: this is throttled
                             -- to at most ~4/sec (the recompute interval
                             -- above) rather than the raw hook-fire rate, so
@@ -4737,20 +2304,17 @@ function Interaction.Init()
                         redirect_idle_log("noaim", "[PalBonds/Interaction] [RADIAL-REDIRECT] menu window open but not aiming at any Pal — leaving the real Otomo in place")
                         return
                     end
-
                     local playerName = safe_call(function() return player:GetFullName() end)
                     local wildPalName = safe_call(function() return wildPal:GetFullName() end)
                     if playerName and wildPalName and playerName == wildPalName then
                         Logger.log("[PalBonds/Interaction] [RADIAL-REDIRECT] SAFETY: find_targeted_pal returned the player itself — refusing to substitute, leaving the real Otomo in place")
                         return
                     end
-
                     local returnedName = safe_call(function() return returned and returned:GetFullName() end)
                     if returnedName and wildPalName and returnedName == wildPalName then
                         redirect_idle_log("isotomo", "[PalBonds/Interaction] [RADIAL-REDIRECT] aimed Pal is already the current Otomo — nothing to substitute")
                         return
                     end
-
                     local isWild = Capture.IsAlreadyOwned and (not Capture.IsAlreadyOwned(wildPal))
                     if not isWild then
                         redirect_idle_log("owned", "[PalBonds/Interaction] [RADIAL-REDIRECT] the aimed Pal is already owned — leaving the real Otomo in place (this system is for wild Pals only)")
@@ -4770,7 +2334,6 @@ function Interaction.Init()
                     -- second "4" press aimed at the same Pal would leave a
                     -- stale/cleared reference and the grant would be lost.
                     lastRedirectedWildPalActor = wildPal
-
                     lastRedirectIdleReason = nil
                     if lastRedirectedWildPalName ~= wildPalName then
                         lastRedirectedWildPalName = wildPalName
@@ -4778,6 +2341,7 @@ function Interaction.Init()
                             "[PalBonds/Interaction] [RADIAL-REDIRECT] EXPERIMENTAL: substituting wild %s in place of the Otomo for this menu action (every qualifying call now, not just the first — see ninety-sixth pass) — watch closely",
                             hook_describe(wildPal)
                         ))
+
                         -- Hundred-and-ninety-third pass (2026-09-05):
                         -- diagnose_party_membership's own probe
                         -- (PawnOtmoIsPartyOtomo) was checked 17 times in one
@@ -4791,6 +2355,7 @@ function Interaction.Init()
                         -- commented, in case Arena support is ever revisited.
                         -- diagnose_party_membership(wildPal, get_individual_handle(wildPal))
                     end
+
                     -- Hundredth pass (2026-09-03) FIX: this is now the ONLY
                     -- place `radialMenuRedirectedThisWindow` is set true —
                     -- it used to be set unconditionally the moment the
@@ -4852,6 +2417,7 @@ function Interaction.Init()
                             local fieldSetOk, fieldSetErr = pcall(function()
                                 lastOpenMenuWidget.SpawnedOtomo = wildPal
                             end)
+
                             -- Two-hundred-and-eighth pass: this fired 8-10
                             -- times per single "4" press in Dragón's log,
                             -- each line rebuilding the wild Pal's full path
@@ -4988,6 +2554,7 @@ function Interaction.Init()
     -- panels may push repeatedly) — cheap, and answers the question
     -- directly from the very next test.
     local lastLoggedPushedClass = nil
+
     -- Ninetieth pass (2026-09-03): extracted the actual field-rewrite logic
     -- out of try_fix_worker_menu_parameter so it can be reused from a
     -- SECOND, real interception point found this pass (see below) — the
@@ -5004,7 +2571,6 @@ function Interaction.Init()
             "[PalBonds/Interaction] [WORKER-BIND-FIX] %s saw a WorkerRadialMenu Parameter: %s",
             hookLabel, paramDesc
         ))
-
         local ok, err = pcall(function()
             local player = FindFirstOf("PalPlayerCharacter")
             if not player or not player:IsValid() then
@@ -5025,42 +2591,35 @@ function Interaction.Init()
                 return
             end
             local forward = rotator_to_forward(controlRot)
-
             local aimedPal = find_targeted_pal(originLoc, forward, player)
             if not aimedPal or not aimedPal:IsValid() then
                 Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] menu opening but not aiming at any Pal — leaving Parameter untouched")
                 return
             end
-
             local playerName = safe_call(function() return player:GetFullName() end)
             local aimedName = safe_call(function() return aimedPal:GetFullName() end)
             if playerName and aimedName and playerName == aimedName then
                 Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] SAFETY: find_targeted_pal returned the player itself — refusing to touch Parameter")
                 return
             end
-
             local isWild = Capture.IsAlreadyOwned and (not Capture.IsAlreadyOwned(aimedPal))
             if not isWild then
                 Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] aimed Pal (" .. tostring(aimedName) .. ") is already owned — leaving Parameter untouched, this fix is for wild Pals only")
                 return
             end
-
             local wildHandle = get_individual_handle(aimedPal)
             if not wildHandle or not wildHandle:IsValid() then
                 Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] wild " .. tostring(aimedName) .. " has no readable IndividualHandle — cannot safely redirect, leaving Parameter untouched")
                 return
             end
-
             Logger.log(string.format(
                 "[PalBonds/Interaction] [WORKER-BIND-FIX] EXPERIMENTAL: redirecting WorkerRadialMenu Parameter onto wild %s — setting IndividualHandle and binding OnClose",
                 tostring(aimedName)
             ))
-
             local setHandleOk, setHandleErr = pcall(function()
                 parameter.IndividualHandle = wildHandle
             end)
             Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] IndividualHandle write: " .. (setHandleOk and "ok" or ("FAILED: " .. tostring(setHandleErr))))
-
             local bindOk, bindErr = pcall(function()
                 parameter.OnClose:Bind(aimedPal, "OnSelectedOrderWorkerRadialMenu")
             end)
@@ -5070,11 +2629,9 @@ function Interaction.Init()
             Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] error while attempting redirect: " .. tostring(err))
         end
     end
-
     local function try_fix_worker_menu_parameter(hookLabel, Context, WidgetClassParam, ParameterParam)
         local parameter = hook_get(ParameterParam)
         local paramDesc = hook_describe(parameter)
-
         local diagKey = hookLabel .. ":" .. paramDesc
         if diagKey ~= lastLoggedPushedClass then
             lastLoggedPushedClass = diagKey
@@ -5083,12 +2640,10 @@ function Interaction.Init()
                 hookLabel, paramDesc
             ))
         end
-
         if not parameter then return end
         if not paramDesc:find("WorkerRadialMenu", 1, true) then
-            return -- not our menu — some other UI entirely, leave it alone
+            return 
         end
-
         apply_wild_fix_to_worker_parameter(parameter, hookLabel)
     end
 
@@ -5111,6 +2666,13 @@ function Interaction.Init()
     -- as every other Worker Menu Blueprint hook in this file — the class
     -- isn't loaded at Init() time.
     local workerOnSetupRound = 0
+    -- The Worker radial menu overlay class. Its OnSetup is where a wild Pal
+    -- gets substituted into the menu parameter, which is what makes Pet and
+    -- Feed work on a wild Pal at all. Keep this declaration next to its use:
+    -- a cleanup pass once deleted it and left the use behind, and because an
+    -- undeclared Lua local reads as a nil global, Interaction.Init() threw on
+    -- the concatenation below and Trust/Combat/Capture never initialised.
+    local WORKER_MENU_OVERLAY_CLASS = "/Game/Pal/Blueprint/UI/WorkerRadialMenu/WBP_WorkerRadialMenu_Overlay.WBP_WorkerRadialMenu_Overlay_C"
     local function install_worker_onsetup_fix_hook()
         local path = WORKER_MENU_OVERLAY_CLASS .. ":OnSetup"
         local ok = pcall(function()
@@ -5144,7 +2706,6 @@ function Interaction.Init()
         end)
     end
     worker_onsetup_retry_runner()
-
     local okPushWidget = pcall(function()
         RegisterHook("/Script/Pal.PalHUDInGame:PushWidgetStackableUI", function(Context, WidgetClassParam, ParameterParam)
             try_fix_worker_menu_parameter("PalHUDInGame:PushWidgetStackableUI", Context, WidgetClassParam, ParameterParam)
@@ -5153,7 +2714,6 @@ function Interaction.Init()
     if not okPushWidget then
         Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] could not install PushWidgetStackableUI hook")
     end
-
     local okServicePush = pcall(function()
         RegisterHook("/Script/Pal.PalHUDService:Push", function(Context, WidgetClassParam, ParameterParam)
             try_fix_worker_menu_parameter("PalHUDService:Push", Context, WidgetClassParam, ParameterParam)
@@ -5162,7 +2722,6 @@ function Interaction.Init()
     if not okServicePush then
         Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] could not install PalHUDService:Push hook")
     end
-end
 
 -- Called once a pet OR feed successfully lands on any Pal (wild or
 -- owned). REAL as of the sixteenth pass (2026-09-01): forwards to
@@ -5171,6 +2730,7 @@ end
 -- Pal, owned or not — harmless for an owned one (it just accumulates
 -- interaction-count state Trust.lua never acts on, since an owned Pal is
 -- already captured).
+end
 function Interaction.OnWildPalPetted(palActor)
     Trust.OnInteractionSucceeded(palActor)
 
@@ -5190,18 +2750,8 @@ function Interaction.OnWildPalPetted(palActor)
             tostring(state and state.speciesDefault),
             tostring(state and state.presetClassName)
         ))
-
-        -- Hundred-and-ninety-fifth pass (2026-09-05): the old one-shot
-        -- "escape -> friendly on first interaction" call that used to sit
-        -- here has been removed — Dragón replaced it with a bar-relevant
-        -- trigger (Personality.MaybeBecomeFriendlyByBar, 20% of the
-        -- bonding bar). That new trigger needs the real point/threshold
-        -- ratio, which only Trust.lua has — it's called from
-        -- Trust.OnInteractionSucceeded instead, right after this same
-        -- event, not from here.
     else
         Logger.log("[PalBonds/Personality] could not resolve a stable ID for this Pal (handle/ID lookup failed) — see Personality.lua")
     end
 end
-
 return Interaction
