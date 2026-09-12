@@ -89,7 +89,12 @@ local INTERACTION_FRIENDSHIP_GAIN = 25
 -- the tighter ratio makes petting (free, unlimited) meaningfully competitive
 -- with feeding (costs an item), which suits a mod about spending time with a Pal
 -- rather than buying its affection.
-local FEED_FRIENDSHIP_BASE = 75
+-- 2026-09-12: 75 -> 50, the same as Pet and Play, plus a bonus by the food's
+-- rarity (Dragón's scale): common +10, uncommon +20, rare +30, epic +40,
+-- legendary +50, so a feed gives 60-100. See Interaction.FeedGrantAmount.
+-- Kinship Peaches keep their own amounts below.
+local FEED_FRIENDSHIP_BASE = 50
+local FEED_RARITY_BONUS = { [0] = 10, [1] = 20, [2] = 30, [3] = 40, [4] = 50 }
 
 -- Two-hundred-and-first pass (2026-09-06): the comment three passes above
 -- (this same block) assumed Pet's real vanilla Happy-triggered grant just
@@ -555,6 +560,33 @@ end
 -- needed in this file. Exactly ONE call fires per press, so this can't
 -- reintroduce the eleventh-pass double-grant bug (that was specifically
 -- about TWO calls firing for the same press).
+-- Stops the player's cheer when the Pal's Play animation ends (2026-09-12).
+-- Dragón: the Pal's animation ends after ~6s, but the player kept cheering
+-- until they moved. The emote has no length of its own that matches the Pal's,
+-- so it is cancelled at the same moment the Pal's rest animation is.
+--
+-- Only the emote is cancelled: if the player has since started anything else
+-- (an attack, a dodge, a new emote from the game's own wheel is fine to stop
+-- too), the current action's name is checked first, so a real action is never
+-- cut off. UPalActionComponent::GetCurrentAction / CancelAction, from the
+-- header dump; this is singleplayer/self-hosted, so the local cancel is
+-- authoritative.
+local function stop_player_cheer(player)
+    if player == nil then return false end
+    return safe_call(function()
+        if not player:IsValid() then return false end
+        local ac = player.ActionComponent
+        if ac == nil or not ac:IsValid() then return false end
+        local cur = ac:GetCurrentAction()
+        if cur == nil or not cur:IsValid() then return false end
+        local name = tostring(cur:GetFullName())
+        if name:find("BP_Action_Emote_", 1, true) == nil then return false end
+        ac:CancelAction(cur)
+        return true
+    end) == true
+end
+Interaction.StopPlayerCheer = stop_player_cheer
+
 local function do_play()
     Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting Play", PLAY_KEY))
     local player = FindFirstOf("PalPlayerCharacter")
@@ -691,6 +723,9 @@ local function do_play()
     -- only re-checks CLASSES, never holds a live actor reference.
     local rescheduleOk = pcall(function()
         ExecuteInGameThreadWithDelay(PLAY_HAPPY_FOLLOWUP_DELAY_MS, function()
+            -- First, and independent of the Pal still existing: the player's
+            -- cheer ends when the Pal's animation does.
+            safe_call(function() stop_player_cheer(player) end)
             safe_call(function()
                 local palStillValid = pal ~= nil and pal:IsValid()
                 local actionCompStillValid = actionComp ~= nil and actionComp:IsValid()
@@ -1377,40 +1412,19 @@ local function closeRadialMenuActionWindow()
 end
 
 -- ===================================================================
--- [EMOTE-PROBE] — identify the cheer emote (pass 326, 2026-09-12)
+-- [EMOTE] — the player's cheer during Play (pass 326, 2026-09-12)
 -- ===================================================================
--- Play has always been able to make the PAL react and never the player. The
--- missing half arrived with the Kick Keybind reference mod Dragón supplied,
--- which plays a player emote in exactly three lines:
+-- The call comes from the Kick Keybind reference mod Dragón supplied, a
+-- shipped mod doing it in production:
 --
 --     StaticFindObject(".../Emote/BP_Action_Emote_8.BP_Action_Emote_8_C")
 --     PC:ActionComponent_PlayAction_ToServer_ForPlayer(Pawn, {}, EmoteClass, 0)
 --
--- That is a shipped, working mod doing it in production, so the call itself is
--- not a guess -- which matters in this file, given its crash history with
--- unproven native calls.
---
--- WHAT IS STILL UNKNOWN is which number the cheer is. The assets are numbered,
--- not named: the hundred-and-thirty-eighth pass confirmed from Dragón's own
--- Live-View dump that BP_Action_Emote_0_C through _8_C are the nine real
--- emotes, all children of BP_Action_Emote_Base_C, and the Kick mod tells us
--- _8 is kick. So the cheer is one of 0..7 and the only way to find it is to
--- look at each one.
---
--- Hence a probe rather than a guess: F7 plays the next emote in sequence and
--- names it in an on-screen toast, so Dragón can press it nine times, watch,
--- and report the number. The toast matters more than the log line here -- he
--- should not have to alt-tab to read which emote he just saw.
---
--- Turn EMOTE_PROBE off once the number is known. This is scaffolding.
--- ANSWERED (2026-09-12): Dragón ran the probe and reported "confirmed cheer
--- emote is 0". So the probe has done its job and is off; flip it back only if
--- another emote ever needs identifying.
-local EMOTE_PROBE = false
-local EMOTE_PROBE_KEY = "F7"
+-- The emote assets are numbered, not named (BP_Action_Emote_0_C.._8_C, 8 is
+-- kick). An F7 probe that cycled through them lived here until Dragón
+-- identified the cheer as 0; it was removed once answered. If another emote
+-- ever needs identifying, the probe is in git history (commit 1ca339b).
 local EMOTE_PATH_FMT = "/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_%d.BP_Action_Emote_%d_C"
-local EMOTE_FIRST, EMOTE_LAST = 0, 8
-local emoteProbeNext = EMOTE_FIRST
 
 local function resolve_emote_class(n)
     return safe_call(function()
@@ -1434,41 +1448,78 @@ end
 play_player_emote = function(n)
     local cls = resolve_emote_class(n)
     if cls == nil or not safe_call(function() return cls:IsValid() end) then
-        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] emote " .. n .. " does not resolve — skipping")
+        Logger.log("[PalBonds/Interaction] [EMOTE] emote " .. n .. " does not resolve — skipping")
         return false
     end
     local pc = find_player_controller()
     if pc == nil then
-        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] no BP_PalPlayerController_C — are you in-world?")
+        Logger.log("[PalBonds/Interaction] [EMOTE] no BP_PalPlayerController_C — are you in-world?")
         return false
     end
     local pawn = safe_call(function() return pc.Pawn end)
     if pawn == nil or not safe_call(function() return pawn:IsValid() end) then
-        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] the player controller has no valid Pawn")
+        Logger.log("[PalBonds/Interaction] [EMOTE] the player controller has no valid Pawn")
         return false
     end
     local ok, err = pcall(function()
         pc:ActionComponent_PlayAction_ToServer_ForPlayer(pawn, {}, cls, 0)
     end)
-    Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] played BP_Action_Emote_" .. n ..
-        "_C — call=" .. (ok and "ok" or tostring(err)))
+    -- Failure-only: the cheer has worked on every Play press since it shipped.
+    if not ok then
+        Logger.log("[PalBonds/Interaction] [EMOTE] playing BP_Action_Emote_" .. n ..
+            "_C FAILED: " .. tostring(err))
+    end
     return ok
 end
 
--- One-shot at Init: which of the nine actually resolve in this build.
-local function report_emote_classes()
-    local found, missing = {}, {}
-    for n = EMOTE_FIRST, EMOTE_LAST do
-        local cls = resolve_emote_class(n)
-        if cls ~= nil and safe_call(function() return cls:IsValid() end) then
-            found[#found + 1] = tostring(n)
-        else
-            missing[#missing + 1] = tostring(n)
-        end
+-- ===================================================================
+-- FEED AMOUNT BY ITEM RARITY (2026-09-12)
+-- ===================================================================
+-- The item's rarity comes from its STATIC definition (UPalStaticItemDataBase,
+-- field Rarity), via UPalUtility::GetItemIDManager + GetStaticItemData. Pass
+-- 183 proved that exact route in game (Kinship Peach full = Rarity 3, lesser =
+-- Rarity 1) after two crashes, and both of that pass's fixes are required
+-- here: the world context must be a LIVE in-world actor (a CDO crashed), and
+-- the item id must be a real FName built with FindOrAddFName (a plain Lua
+-- string crashed).
+--
+-- ASSUMED, to be confirmed by the [FEED-RARITY] log line: rarity 0 = common up
+-- to 4 = legendary. Anything above 4 is treated as legendary.
+--
+-- Cached per item id -- static data never changes, and the table is bounded by
+-- the number of item types. Failures are not cached, so they are retried.
+local itemRarityCache = {}
+local function read_item_rarity(itemId, worldContext)
+    if type(itemId) ~= "string" or worldContext == nil then return nil end
+    local cached = itemRarityCache[itemId]
+    if cached ~= nil then return cached end
+    local rarity = safe_call(function()
+        if not worldContext:IsValid() then return nil end
+        local utility = StaticFindObject("/Script/Pal.Default__PalUtility")
+        if utility == nil or not utility:IsValid() then return nil end
+        local manager = utility:GetItemIDManager(worldContext)
+        if manager == nil or not manager:IsValid() then return nil end
+        local data = manager:GetStaticItemData(UEHelpers.FindOrAddFName(itemId))
+        if data == nil or not data:IsValid() then return nil end
+        return data.Rarity
+    end)
+    if type(rarity) == "number" then itemRarityCache[itemId] = rarity end
+    return rarity
+end
+
+-- Returns the friendship a wild feed grants and a short note for the log.
+function Interaction.FeedGrantAmount(itemId, worldContext)
+    if itemId == "AffectionFruit_02" then
+        return KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE, "Kinship Peach (lesser), own amount"
+    elseif itemId == "AffectionFruit_01" then
+        return KINSHIP_PEACH_FULL_FRIENDSHIP_BASE, "Kinship Peach, own amount"
     end
-    Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] emote classes that resolve: " ..
-        (#found == 0 and "NONE" or table.concat(found, ", ")) ..
-        (#missing == 0 and "" or ("  |  missing: " .. table.concat(missing, ", "))))
+    local rarity = read_item_rarity(itemId, worldContext)
+    if type(rarity) ~= "number" then
+        return FEED_FRIENDSHIP_BASE, "rarity UNREADABLE, base amount only"
+    end
+    local tier = math.max(0, math.min(4, math.floor(rarity)))
+    return FEED_FRIENDSHIP_BASE + FEED_RARITY_BONUS[tier], "rarity " .. tostring(rarity)
 end
 
 function Interaction.Init()
@@ -1477,32 +1528,6 @@ function Interaction.Init()
         safe_call(do_play)
     end)
 
-    if EMOTE_PROBE then
-        Logger.log("[PalBonds/Interaction] [EMOTE-PROBE] " .. EMOTE_PROBE_KEY ..
-            " cycles the player emotes " .. EMOTE_FIRST .. ".." .. EMOTE_LAST ..
-            " one per press (BP_Action_Emote_8_C is kick, per the Kick Keybind mod) — " ..
-            "press it, watch, and note which number is the cheer")
-        safe_call(report_emote_classes)
-        RegisterKeyBind(Key[EMOTE_PROBE_KEY], function()
-            safe_call(function()
-                local n = emoteProbeNext
-                emoteProbeNext = emoteProbeNext + 1
-                if emoteProbeNext > EMOTE_LAST then emoteProbeNext = EMOTE_FIRST end
-
-                -- The toast is the point: it names the emote on screen, so the
-                -- number can be matched to what was just seen without leaving
-                -- the game to read a log.
-                safe_call(function()
-                    local okC, CaptureMod = pcall(require, "Capture")
-                    if okC and CaptureMod and CaptureMod.ShowToast then
-                        CaptureMod.ShowToast("Emote " .. n .. " of " .. EMOTE_LAST ..
-                            (n == 8 and "  (this one is kick)" or ""))
-                    end
-                end)
-                play_player_emote(n)
-            end)
-        end)
-    end
     RegisterKeyBind(Key.F9, function()
         safe_call(function()
             local okI, IndicatorMod = pcall(require, "Indicator")
@@ -1655,12 +1680,9 @@ function Interaction.Init()
             -- affects the bonding threshold's SIZE now, not individual
             -- gains — see Trust.lua's BONDING_TRIGGER_THRESHOLD_BASE).
             local itemId = safe_call(function() return slot.ItemId and readable(slot.ItemId.StaticId) end)
-            local grantAmount = FEED_FRIENDSHIP_BASE
-            if itemId == "AffectionFruit_02" then
-                grantAmount = KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE
-            elseif itemId == "AffectionFruit_01" then
-                grantAmount = KINSHIP_PEACH_FULL_FRIENDSHIP_BASE
-            end
+            local grantAmount, rarityNote = Interaction.FeedGrantAmount(itemId, wildTarget)
+            Logger.log(string.format("[PalBonds/Interaction] [FEED-RARITY] %s -> %d friendship (%s)",
+                tostring(itemId), grantAmount, tostring(rarityNote)))
 
             -- Two-hundred-and-fifty-fourth pass (2026-09-07) — the last hole,
             -- and the log names it exactly. After a real betrayal, lines 815 and

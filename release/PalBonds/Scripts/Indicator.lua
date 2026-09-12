@@ -1209,7 +1209,9 @@ local function install_trust_bar(gaugeWidget)
     if earlyActor == nil then
         return 
     end
-    barInstalledForGauge[key] = true
+    -- The widget itself rather than `true`, so scan_for_gauge_widgets can drop
+    -- entries for destroyed gauges instead of keeping one per gauge ever seen.
+    barInstalledForGauge[key] = gaugeWidget
 
     -- Hundred-and-ninety-fourth pass (2026-09-05): Dragón asked for the
     -- personality label back for EVERY spawned Pal — it's the one thing
@@ -1721,7 +1723,20 @@ end
 -- the game's own gauge, which needs no projection -- and the only call site had
 -- already been commented out.
 
+local GAUGE_FLAG_PRUNE_EVERY_N_SCANS = 30   -- ~60s at SCAN_INTERVAL_MS
+local gaugeFlagScanCount = 0
 local function scan_for_gauge_widgets()
+    -- Every wild Pal that ever showed an HP gauge left an entry here for the
+    -- whole session (2026-09-12 growth audit). Prune the destroyed ones.
+    gaugeFlagScanCount = gaugeFlagScanCount + 1
+    if gaugeFlagScanCount % GAUGE_FLAG_PRUNE_EVERY_N_SCANS == 0 then
+        for k, w in pairs(barInstalledForGauge) do
+            if type(w) ~= "userdata" and type(w) ~= "table"
+                or not safe_call(function() return w:IsValid() end) then
+                barInstalledForGauge[k] = nil
+            end
+        end
+    end
 
     -- Two-hundred-and-seventy-second pass: this sweep touches live UI widgets,
     -- which are destroyed early in teardown. Stop as soon as the world is going.

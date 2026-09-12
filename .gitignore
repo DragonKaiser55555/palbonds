@@ -10,6 +10,10 @@
 # that were never initialised by main.lua.
 stale/
 
+# Copies of Dragón's real Palworld save data, taken before risky tests. Personal
+# data (the folder is named by Steam ID) — never commit or publish it.
+save-backups/
+
 # Test-harness dependencies. `npm install fengari` in tools/harness restores
 # them; see tools/harness/README.md.
 tools/harness/node_modules/

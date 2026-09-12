@@ -346,14 +346,54 @@ end
 -- path that guards. Honest about the limits -- the upstream bug is unfixed and
 -- this reduces exposure rather than removing it, and the deep UE4SS recursion
 -- in that stack is not something a mod can reach at all.
+-- ===========================================================================
+-- CACHED, BECAUSE THIS WAS RUNNING ON EVERY HIT (2026-09-12, run 37)
+-- ===========================================================================
+-- Dragón: turning the log off changed nothing, and the lag tracks the hits
+-- themselves, "possibly something that triggers on multihit attacks". It did:
+-- FindAllOf walks the ENTIRE UObject array, and it ran up to three times per
+-- damage event -- the betrayal hook, the damage hook's player-enemy branch and
+-- its third-party branch each looked the player up afresh. A multi-hit attack
+-- is dozens of events a second, so dozens of full object-array walks a second.
+--
+-- The player actor is now cached for PLAYER_CACHE_SECONDS and re-validated with
+-- IsValid on every use, the same shape Combat's lastKnownPlayerActor has used
+-- safely for months. A destroyed player (death, world change) fails IsValid and
+-- triggers a fresh, still-guarded FindAllOf. The name is cached with it, so the
+-- per-hit "is the attacker the player" test is a string compare, not another
+-- reflection call.
+local PLAYER_CACHE_SECONDS = 2.0
+local cachedPlayer, cachedPlayerName, cachedPlayerAt = nil, nil, -99
 find_player = function()
+    local now = os.clock()
+    if cachedPlayer ~= nil and (now - cachedPlayerAt) < PLAYER_CACHE_SECONDS
+        and safe_call(function() return cachedPlayer:IsValid() end) then
+        return cachedPlayer
+    end
+    cachedPlayer, cachedPlayerName = nil, nil
     local list = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
     if type(list) ~= "table" then return nil end
     for _, p in ipairs(list) do
-        if p ~= nil and safe_call(function() return p:IsValid() end) then return p end
+        if p ~= nil and safe_call(function() return p:IsValid() end) then
+            cachedPlayer, cachedPlayerAt = p, now
+            return p
+        end
     end
     return nil
 end
+local function find_player_name()
+    local p = find_player()
+    if p == nil then return nil end
+    if cachedPlayerName == nil then
+        cachedPlayerName = safe_call(function() return p:GetFullName() end)
+    end
+    return cachedPlayerName
+end
+
+-- REMOVED for the stable build (2026-09-12): timed_hook and [HIT-COST], the
+-- per-fight measurement of the two damage hooks. It confirmed the fix in run 38
+-- (player lookups stopped scaling with hits) and cost a pcall plus two clock
+-- reads on every damage event with nothing left to report to.
 local function hook_get(param)
     if param == nil then return nil end
     local ok, value = pcall(function() return param:get() end)
@@ -517,6 +557,23 @@ function Trust.ComputeLevelMultiplier(palActor)
     else
         multiplier = 1.0
     end
+    -- ALPHA / BOSS PALS: double bar on top of the level multiplier (2026-09-12).
+    -- Dragón: "bosses should always have 2x friendship bar required on top of
+    -- the normal multiplier". Wild alphas carry a "BOSS_" CharacterID
+    -- ("BOSS_GrassMammoth", already relied on by Capture.lua's name lookup);
+    -- the data table's IsBoss column is the same fact. Lucky Pals (IsRarePal)
+    -- are a different flag and are not affected.
+    local BOSS_BAR_MULTIPLIER = 2.0
+    local charIdText = safe_call(function()
+        local cid = palParam:GetCharacterID()
+        if cid == nil then return nil end
+        local okS, s = pcall(function() return cid:ToString() end)
+        if okS and type(s) == "string" then return s end
+        return tostring(cid)
+    end)
+    local isBoss = type(charIdText) == "string" and charIdText:upper():sub(1, 5) == "BOSS_"
+    if isBoss then multiplier = multiplier * BOSS_BAR_MULTIPLIER end
+
     if cacheKey then LevelMultiplierCache[cacheKey] = multiplier end
     Logger.log(string.format(
         -- %.2f, not %.1f: the real multipliers include 0.75 and 0.25, which
@@ -525,8 +582,9 @@ function Trust.ComputeLevelMultiplier(palActor)
         -- twice reached a wrong conclusion from a misleading log line. The bar
         -- size is printed alongside so the number can be checked directly
         -- against the ratios in the lines that follow.
-        "[PalBonds/Trust] [LEVEL-MULT] pal level=%d player level=%d gap=%d -> multiplier=%.2fx (bonding bar = %.0f)",
-        palLevel, playerLevel, gap, multiplier, BONDING_TRIGGER_THRESHOLD_BASE * multiplier
+        "[PalBonds/Trust] [LEVEL-MULT] pal level=%d player level=%d gap=%d id=%s%s -> multiplier=%.2fx (bonding bar = %.0f)",
+        palLevel, playerLevel, gap, tostring(charIdText), isBoss and " (BOSS: bar x2)" or "",
+        multiplier, BONDING_TRIGGER_THRESHOLD_BASE * multiplier
     ))
     return multiplier
 end
@@ -822,6 +880,7 @@ function Trust.ForgetBonding(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     if key == nil or State[key] == nil then return end
     State[key] = nil
+    LevelMultiplierCache[key] = nil
     Logger.log("[PalBonds/Trust] " .. tostring(key) .. " joined the party — dropping its bonding state so the follower tick stops tracking it")
 end
 
@@ -1541,7 +1600,7 @@ function Trust.Init()
                     local hitter = hook_get(Attacker)
                     if hitter == nil or not hitter:IsValid() then return end
                     local player = find_player()
-                    local playerName = player and safe_call(function() return player:GetFullName() end)
+                    local playerName = player and find_player_name()
                     local hitterName = safe_call(function() return hitter:GetFullName() end)
                     if playerName == nil or hitterName ~= playerName then return end
                     if not loggedBetrayalHookFired then
@@ -1657,6 +1716,14 @@ function Trust.Init()
             do
                 local aIsFollower = attackerName ~= nil and State[attackerName] ~= nil and State[attackerName].isFollowing
                 local dIsFollower = defenderName ~= nil and State[defenderName] ~= nil and State[defenderName].isFollowing
+                if aIsFollower and not dIsFollower then
+                    -- A companion hitting something else keeps its own
+                    -- self-defence fight alive (Combat.OnFollowerAttacked).
+                    local okSD, CombatSD = pcall(require, "Combat")
+                    if okSD and CombatSD and CombatSD.NoteFollowerHit then
+                        CombatSD.NoteFollowerHit(attackerName)
+                    end
+                end
                 if aIsFollower and dIsFollower and attackerName ~= defenderName then
                     friendlyFireEvents = friendlyFireEvents + 1
                     local a = tostring(attackerName):match("([^%.]+)$") or tostring(attackerName)
@@ -1702,7 +1769,7 @@ function Trust.Init()
                 local anyBonding = next(State) ~= nil
                 local anyFollowing = anyBonding or (okHas and CombatCheck and CombatCheck.HasAnyFollower and CombatCheck.HasAnyFollower())
                 local player = anyFollowing and find_player() or nil
-                local playerName = player and safe_call(function() return player:GetFullName() end)
+                local playerName = player and find_player_name()
                 if playerName then
                     local enemy = nil
                     if attackerName == playerName then
@@ -1730,7 +1797,7 @@ function Trust.Init()
                         -- assist has still never actually been exercised.
                         local okCombatReq, CombatMod = pcall(require, "Combat")
                         if okCombatReq and CombatMod and CombatMod.OnPlayerCombatTarget then
-                            safe_call(function() CombatMod.OnPlayerCombatTarget(enemy) end)
+                            safe_call(function() CombatMod.OnPlayerCombatTarget(enemy, player) end)
                         end
                     end
                 end
@@ -1771,7 +1838,7 @@ function Trust.Init()
                 -- equality on actors wasn't trusted (e.g. find_targeted_pal
                 -- excluding the player by name, not by reference).
                 local player = find_player()
-                local playerName = player and safe_call(function() return player:GetFullName() end)
+                local playerName = player and find_player_name()
                 local attackerIsPlayer = (attackerName ~= nil and playerName ~= nil and attackerName == playerName)
 
                 -- Two-hundred-and-eleventh pass (2026-09-06) — Dragón's call,
@@ -1800,6 +1867,14 @@ function Trust.Init()
                 if attackerIsPlayer then
                     Trust.OnFollowerDamaged(State[defenderName].pal, true)
                 elseif defenderIsFollowing then
+
+                    -- Something other than the player hit a companion: let it
+                    -- fight back (2026-09-12, run 34). Before this, our own
+                    -- follow action held it out of the fight entirely.
+                    local okSD, CombatSD = pcall(require, "Combat")
+                    if okSD and CombatSD and CombatSD.OnFollowerAttacked then
+                        safe_call(function() CombatSD.OnFollowerAttacked(State[defenderName].pal, attacker) end)
+                    end
 
                     -- Throttled and counted (two-hundred-and-ninety-eighth pass,
                     -- 2026-09-11). This line is NOT in Logger's suppressed list,

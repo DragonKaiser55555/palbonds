@@ -28,6 +28,13 @@ node td2test.js     <SCRIPTS> prelude_323.lua      # target discipline + force-m
 node gracetest.js   <SCRIPTS> prelude_323.lua      # drift grace period + IsBusyFighting
 node presettest.js  <SCRIPTS> prelude_person.lua   # all 8 companion preset slots
 node shiptest.js    <SCRIPTS> prelude_emote.lua    # shipping keybind state
+node stoptest.js    <SCRIPTS> prelude_323.lua      # fight state is dropped when a Pal stops following
+node selfdefencetest.js <SCRIPTS> prelude_323.lua  # a companion hit outside a player fight fights back
+node captest.js     <SCRIPTS> prelude_323.lua      # per-Pal install caps recover (rate, not lifetime)
+node reachtest.js   <SCRIPTS> prelude_323.lua      # no fight past the recall distance or during a recall
+node hitcosttest.js <SCRIPTS> prelude_323.lua      # a multi-hit burst must not walk the object array per hit
+node feedtest.js    <SCRIPTS> prelude_emote.lua    # feed amount by item rarity
+node playstoptest.js <SCRIPTS> prelude_emote.lua   # the player's cheer stops with the Pal's Play animation
 python hoistcheck.py <SCRIPTS>                     # calls before their definition
 python undefcheck.py <SCRIPTS>                     # calls to functions never defined
 ```

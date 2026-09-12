@@ -274,6 +274,19 @@ local FOLLOW_ACTION_PRIORITY = 10
 local FOLLOW_ACTION_MAX_PER_PAL = 25
 
 -- ===================================================================
+-- PER-PAL INSTALL CAPS ARE RATES TOO (2026-09-12)
+-- ===================================================================
+-- FOLLOW_ACTION_MAX_PER_PAL and COMBAT_ACTION_MAX_PER_PAL were lifetime
+-- counters, reset only when the Pal stopped following. CLAUDE.md's "never
+-- budget a retry" rule names this constant as a suspect, and run 33 showed why:
+-- one Petallia reached "attempt 8 of 25" follow rebuilds in three fights. A
+-- companion kept through a handful more fights would have had following, or
+-- fighting, switched off for good, which is exactly how run 29 lost a Flopie.
+-- Both caps now count per PER_PAL_INSTALL_WINDOW_SECONDS and recover when the
+-- window turns over, so they still stop a runaway loop without ending anything.
+local PER_PAL_INSTALL_WINDOW_SECONDS = 60.0
+
+-- ===================================================================
 -- THE FOLLOW BUDGET IS A RATE, NOT A LIFETIME ALLOWANCE
 -- (three-hundred-and-twenty-seventh pass, 2026-09-12)
 -- ===================================================================
@@ -299,16 +312,15 @@ local FOLLOW_ACTION_MAX_PER_PAL = 25
 -- destroys and rebuilds the follow action constantly, so a single busy fight
 -- eats the whole session's allowance.
 --
--- A leak guard is still wanted -- StaticConstructObject really does create
--- objects, and this project has leaked before. So it stays, as a RATE: at most
--- FOLLOW_ACTION_MAX_PER_WINDOW installs in any FOLLOW_ACTION_WINDOW_SECONDS.
--- Sustained thrash is still throttled, and a runaway loop is still caught, but
--- the mod recovers instead of being dead for the rest of the session.
-local FOLLOW_ACTION_MAX_PER_WINDOW = 40
-local FOLLOW_ACTION_WINDOW_SECONDS = 60.0
-local followActionWindowStart = 0
-local followActionWindowCount = 0
-local followActionThrottleLogged = false
+-- REMOVED (2026-09-12, run 36): the global rate limit that replaced it
+-- (FOLLOW_ACTION_MAX_PER_WINDOW = 40 installs per 60s, shared by every
+-- follower). It did not scale with the number of companions: run 36's six
+-- companions exhausted it during a fight, and for the next minute NO follower
+-- could be given a follow action -- five Pals drifted off and were lost within
+-- 12 seconds. Its log line also lied, printing "REBUILDING" before the check
+-- that skipped the rebuild. The per-Pal cap (FOLLOW_ACTION_MAX_PER_PAL per
+-- PER_PAL_INSTALL_WINDOW_SECONDS) already bounds a runaway loop, Pal by Pal, so
+-- the global limit only ever added starvation.
 local FOLLOW_ACTION_RECHECK_MS = 6000
 
 -- Two-hundred-and-ninth pass (2026-09-06): real combat assist, using the
@@ -394,55 +406,11 @@ end
 -- AttackSuccessEvent and FindMostHateTarget — there is no reset on this class,
 -- so a large negative ChangeHate is the available route. That is the same shape
 -- ClearMutualHate has been using safely for several passes.
-local assistHateTargets = {}
-local function release_assist_hate()
-    local anyTarget = next(assistHateTargets) ~= nil
-    if not anyTarget then return end
-
-    -- Every follower, against every enemy this window aimed them at, plus every
-    -- OTHER follower. The second half matters because a fight is exactly when
-    -- companions hurt each other, and a grudge picked up mid-fight would
-    -- otherwise outlive the fight the same way the assist hate did.
-    local followers = {}
-    for key, isFollowing in pairs(BondingState) do
-        if isFollowing then
-            local pal = FollowerActors[key]
-            if pal ~= nil and safe_call(function() return pal:IsValid() end) then
-                followers[key] = pal
-            end
-        end
-    end
-    local cleared, pairsCleared = 0, 0
-    for _, pal in pairs(followers) do
-        safe_call(function()
-            local controller = pal.Controller
-            if not (controller and controller:IsValid()) then return end
-            local hate = controller:GetHateSystem()
-            if not (hate and hate:IsValid()) then return end
-            for _, enemyActor in pairs(assistHateTargets) do
-                if enemyActor ~= nil and safe_call(function() return enemyActor:IsValid() end) then
-
-                    -- Ten times what was pushed, the same margin ClearMutualHate
-                    -- already uses, so repeated pushes across a long fight are
-                    -- comfortably covered rather than only the last one.
-                    pcall(function() hate:ChangeHate(enemyActor, -COMBAT_ASSIST_HATE_AMOUNT * 10) end)
-                    cleared = cleared + 1
-                end
-            end
-            for otherKey, otherPal in pairs(followers) do
-                if otherPal ~= pal then
-                    pcall(function() hate:ChangeHate(otherPal, -COMBAT_ASSIST_HATE_AMOUNT * 10) end)
-                    pairsCleared = pairsCleared + 1
-                end
-            end
-        end)
-    end
-    assistHateTargets = {}
-    Logger.log(string.format(
-        "[PalBonds/Combat] [HATE-RELEASE] combat over — took back the assist hate (%d enemy entries) and cleared %d companion-to-companion grudges, so followers stop hunting and go back to following",
-        cleared, pairsCleared
-    ))
-end
+-- REMOVED (2026-09-12): assistHateTargets and release_assist_hate(). The
+-- release subtracted hate, which [HATE-VERIFY] proved does nothing (pass 322),
+-- and its only call was already commented out -- but the table it read kept
+-- growing all session: every enemy the player fought was stored, with a live
+-- actor reference, until the next world change.
 -- Seconds before the same enemy is worth re-aiming the companions at; see the
 -- debounce inside OnPlayerCombatTarget.
 local COMBAT_TARGET_REPUSH_INTERVAL = 1.0
@@ -541,6 +509,7 @@ local function palKeyForLog(pal)
     return safe_call(function() return pal:GetFullName() end) or "unknown"
 end
 local combatActionAttempts = {}
+local combatActionAttemptsSince = {}
 
 -- ===================================================================
 -- INSTALL TRACING IS NOW FAILURE-ONLY (pass 332, 2026-09-12)
@@ -626,6 +595,40 @@ local followActionObjects       -- forward: same reason. NOTE it is assigned (no
 -- chase chasing companions to stop them being declared abandoned, which is not
 -- a mistake he should be punished for.
 local followSuspendedForCombat = {}
+
+-- Self-defence outside a player fight (2026-09-12) — see Combat.OnFollowerAttacked.
+-- The window matches the player's combat window: the fight is over once neither
+-- side has hit the other for that long.
+local SELF_DEFENCE_ENABLED = true
+local SELF_DEFENCE_WINDOW_SECONDS = COMBAT_WINDOW_MS / 1000
+local selfDefenceEnemy = {}      -- key -> the actor that attacked this companion
+local selfDefenceLastHitAt = {}  -- key -> os.clock() of the last hit either way
+
+-- How far a follower may be from the player before the recall marches it back,
+-- and which followers are being marched right now. Declared up here because the
+-- fight assignment below must respect both (2026-09-12, runs 35 and 36): sending
+-- a Pal at an enemy it can only reach by crossing this distance, or at any
+-- enemy while it is being recalled, made the recall and the assist undo each
+-- other every 1-3 seconds -- 45 recalls against 51 fight assignments in run 36,
+-- and the worst install churn this project has measured.
+local COMBAT_RECALL_DISTANCE = 1800.0
+local recallActive = {}
+
+-- Straight-line distance between two actors, or nil if either location cannot
+-- be read. Callers treat nil as "in reach" so an unreadable location never
+-- stops a companion from fighting.
+local function actor_distance(a, b)
+    if a == nil or b == nil then return nil end
+    local la = safe_call(function() return a:K2_GetActorLocation() end)
+    local lb = safe_call(function() return b:K2_GetActorLocation() end)
+    if la == nil or lb == nil then return nil end
+    local d = safe_call(function()
+        local dx, dy, dz = la.X - lb.X, la.Y - lb.Y, la.Z - lb.Z
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
+    end)
+    return d
+end
+local outOfReachLoggedFor = nil
 
 -- The actor the player is currently fighting. Kept so the combat order can be
 -- RE-ASSERTED every tick instead of issued once and hoped over -- see the
@@ -895,7 +898,7 @@ function Combat.IsBusyFighting(pal)
     return busy == true
 end
 
-function Combat.OnPlayerCombatTarget(enemyActor)
+function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
     if enemyActor == nil then return end
 
     -- Two-hundred-and-sixteenth pass (2026-09-06) — DRAGÓN'S EDGE CASE, and he
@@ -988,6 +991,25 @@ function Combat.OnPlayerCombatTarget(enemyActor)
 
     currentPlayerEnemy = enemyActor
 
+    -- The player's fight takes over from any companion's own self-defence: from
+    -- here every companion is pointed at the player's enemy, and the window
+    -- close returns them all to follow.
+    selfDefenceEnemy = {}
+    selfDefenceLastHitAt = {}
+
+    -- An enemy further from the player than the recall distance cannot be
+    -- fought: a companion would be recalled on the way there. Companions keep
+    -- following instead of being sent (and recalled, and sent again). The
+    -- combat window still opens, so they still engage anything close.
+    local reachDist = actor_distance(enemyActor, playerActor)
+    local enemyOutOfReach = reachDist ~= nil and reachDist > COMBAT_RECALL_DISTANCE
+    if enemyOutOfReach and outOfReachLoggedFor ~= enemyName then
+        outOfReachLoggedFor = enemyName
+        Logger.log(string.format(
+            "[PalBonds/Combat] [HATE-ASSIST] your target is %.0f units from you, past the %.0f companions may go — they keep following instead of chasing it (logged once per target)",
+            reachDist, COMBAT_RECALL_DISTANCE))
+    end
+
     -- Two-hundred-and-thirty-fourth pass (2026-09-07) — FRIENDLY-FIRE
     -- AMPLIFIER, and it explains why the chaos kept coming back even after the
     -- pairwise grudge-clearing in Trust.lua was added.
@@ -1035,6 +1057,9 @@ function Combat.OnPlayerCombatTarget(enemyActor)
                         -- Drop follow so its own AI can pick a fight. Without
                         -- this the follow action holds the slot and, as the
                         -- action trace proved, the Pal never reaches combat.
+                        -- Not for an unreachable enemy, and not for a Pal the
+                        -- recall is marching home (see COMBAT_RECALL_DISTANCE).
+                        if enemyOutOfReach or recallActive[key] then return end
                         safe_call(function() suspend_follow_for_combat(pal, key) end)
 
                         safe_call(function() try_install_combat_action(pal, key, enemyActor) end)
@@ -1097,10 +1122,6 @@ function Combat.OnPlayerCombatTarget(enemyActor)
     end
     lastHateTargetName = enemyName
 
-    -- Remember every enemy this combat window aimed companions at, so the hate
-    -- can actually be taken back when the window closes. Keyed by name so a
-    -- long fight against the same enemy does not grow the table.
-    if enemyName ~= nil then assistHateTargets[enemyName] = enemyActor end
 
     -- Two-hundred-and-thirteenth pass: open (or extend) the combat window, and
     -- schedule the return to peaceful behaviour. Without this, companions
@@ -1290,6 +1311,94 @@ end
 -- Called every tick_followers pass (Trust.lua), same cadence the old
 -- move-order nudge already used. See the file-header comment above this
 -- section for the full reasoning.
+-- ===================================================================
+-- SELF-DEFENCE OUTSIDE A PLAYER FIGHT (2026-09-12, run 34)
+-- ===================================================================
+-- Dragón: a bonded Caprity took 12 hits from a wild Pal and did nothing until
+-- he attacked too. The companion preset's Damaged_* = Battle was working -- the
+-- Caprity picked up hate on its attacker -- but pal_has_own_fight counts
+-- OtomoFollow as passive, so follow was kept installed, and the only thing that
+-- ever freed the slot for a fight was OnPlayerCombatTarget. Our own follow
+-- action was holding the Pal out of every fight the player was not part of.
+--
+-- So a third-party hit on a companion now does, for that one Pal, what a player
+-- fight does for all of them: drop follow, install a combat action aimed at the
+-- attacker, push hate. Only the Pal that was hit responds -- Dragón's call:
+-- "only the pal attacked should respond".
+--
+-- Called from Trust.lua's damage hook. The fight ends in the follow tick once
+-- neither side has hit the other for SELF_DEFENCE_WINDOW_SECONDS, or the
+-- attacker is gone; the 25s suspension ceiling and the recall still apply.
+function Combat.OnFollowerAttacked(pal, attacker)
+    if not (ENABLE_COMBAT_ASSIST and SELF_DEFENCE_ENABLED) then return end
+    -- A player fight already frees and aims every companion.
+    if playerCombatActive then return end
+    if pal == nil or attacker == nil then return end
+    local key = safe_call(function() return pal:GetFullName() end)
+    if key == nil or BondingState[key] ~= true then return end
+    if recallActive[key] then return end
+    if safe_call(function() return attacker:IsValid() end) ~= true then return end
+    local attackerName = safe_call(function() return attacker:GetFullName() end)
+    if attackerName == nil or attackerName == key then return end
+    -- Another companion clipping it is friendly fire, never a reason to fight.
+    if BondingState[attackerName] then return end
+    if tostring(attackerName):find("Player", 1, true) ~= nil then return end
+
+    local now = os.clock()
+    selfDefenceLastHitAt[key] = now
+
+    -- Debounce: a multi-hit attack is many events against one attacker, and the
+    -- engagement is already running.
+    local current = selfDefenceEnemy[key]
+    if current ~= nil and followSuspendedForCombat[key] ~= nil
+        and safe_call(function() return current:GetFullName() end) == attackerName then
+        return
+    end
+
+    -- The player's own active party Pal hitting it by accident is not an enemy.
+    -- POSITIVE check only. Capture.IsAlreadyOwned answers "owned" whenever it
+    -- cannot read a Pal -- right for capture, where that is the safe side -- but
+    -- here it would leave a companion standing still against any attacker whose
+    -- component is unreadable, which is the very bug this function fixes. The
+    -- harness caught exactly that on the first run.
+    local attackerIsOtomo = safe_call(function()
+        local comp = attacker.CharacterParameterComponent
+        if comp == nil or not comp:IsValid() then return false end
+        return comp:IsOtomo()
+    end)
+    if attackerIsOtomo == true then return end
+
+    selfDefenceEnemy[key] = attacker
+    safe_call(function() suspend_follow_for_combat(pal, key) end)
+    safe_call(function() try_install_combat_action(pal, key, attacker) end)
+    safe_call(function()
+        local ctrl = pal.Controller
+        if ctrl == nil or not ctrl:IsValid() then return end
+        local hate = ctrl:GetHateSystem()
+        if hate == nil or not hate:IsValid() then return end
+        hate:ChangeHate(attacker, COMBAT_ASSIST_HATE_AMOUNT)
+    end)
+    local shortKey = tostring(key):match("([^%.]+)$") or tostring(key)
+    local shortAttacker = tostring(attackerName):match("([^%.]+)$") or tostring(attackerName)
+    Logger.log("[PalBonds/Combat] [SELF-DEFENCE] " .. shortKey .. " was attacked by " .. shortAttacker ..
+        " while you were not fighting — it fights back (only this Pal responds)")
+end
+
+-- A companion landing a hit keeps its own self-defence fight alive. Plain table
+-- work only: this is called from the damage hook on every companion hit.
+function Combat.NoteFollowerHit(attackerKey)
+    if attackerKey ~= nil and selfDefenceEnemy[attackerKey] ~= nil then
+        selfDefenceLastHitAt[attackerKey] = os.clock()
+    end
+end
+
+local function end_self_defence(key, why)
+    selfDefenceEnemy[key] = nil
+    selfDefenceLastHitAt[key] = nil
+    clear_combat_action(key)
+    resume_follow_after_combat(key, "self-defence over: " .. tostring(why))
+end
+
 function Combat.TickRealOtomoFollow(pal, key)
     if not USE_REPEATED_OTOMO_COMPOSITE then return end
     if not Combat.IsFollowing(pal) then return end
@@ -1885,10 +1994,10 @@ end
 -- COST. One pass in five of the 100ms loop (~500ms), only while at least one
 -- Pal is following, and the per-Pal work is skipped entirely for any follower
 -- inside the recall distance -- which is all of them, almost all of the time.
-local COMBAT_RECALL_DISTANCE = 1800.0
+-- COMBAT_RECALL_DISTANCE and recallActive are declared near the top of the file
+-- (with the self-defence state), because the fight assignment reads them too.
 local RECALL_EVERY_N_PASSES = 5
 local recallCounter = 0
-local recallActive = {}
 local marchActorMoveLogged = false
 local marchActorMoveFailLogged = false
 local marchLocMoveLogged = false
@@ -2365,7 +2474,6 @@ function Combat.ResetForNewWorld(why)
     aimFrozen = {}
     recallActive = {}
     frozenPals = {}
-    assistHateTargets = {}
     LeashByKey = {}
     lastKnownPlayerActor = nil
     playerCacheAgePasses = 9999
@@ -2441,7 +2549,7 @@ end
 -- real sequence of what each Pal actually did and what settled last. It is
 -- gated off by default and must be turned off before shipping -- it costs one
 -- reflection call per follower per 200ms.
-local ACTION_CHANGE_PROBE = true
+local ACTION_CHANGE_PROBE = false   -- stable build 2026-09-12: off; the best diagnostic this project has, flip on to debug
 local ACTION_PROBE_INTERVAL_MS = 200
 
 -- Out of combat the probe polled five times a second forever, and each poll
@@ -2821,8 +2929,8 @@ function Combat.StartTrainerReassertLoop()
     pcall(function() ExecuteInGameThreadWithDelay(TRAINER_REASSERT_IDLE_INTERVAL_MS, step) end)
 end
 local followActionAttempts = {}
+local followActionAttemptsSince = {}
 local followActionCapLogged = {}
-local followActionTotal = 0
 local followActionDisabled = false
 local FollowActionClass = nil
 get_follow_action_class = function()
@@ -3061,6 +3169,12 @@ try_install_combat_action = function(pal, key, enemyActor)
     local cls = get_combat_action_class()
     if cls == nil then return false end
 
+    local nowPal = os.clock()
+    if combatActionAttemptsSince[key] == nil
+        or (nowPal - combatActionAttemptsSince[key]) > PER_PAL_INSTALL_WINDOW_SECONDS then
+        combatActionAttemptsSince[key] = nowPal
+        combatActionAttempts[key] = 0
+    end
     local attempts = combatActionAttempts[key] or 0
     if attempts >= COMBAT_ACTION_MAX_PER_PAL then return false end
     combatActionAttempts[key] = attempts + 1
@@ -3279,8 +3393,34 @@ local function try_real_follow_action(pal, key, playerActor)
             -- as long as the player's fight lasts. Re-assertion matters as much
             -- as the order: pass 231's whole lesson was that these actions clear
             -- the fields we set, and a single push gets overwritten.
+            local fightTarget = nil
             if currentPlayerEnemy ~= nil
                 and safe_call(function() return currentPlayerEnemy:IsValid() end) then
+                fightTarget = currentPlayerEnemy
+            elseif not playerCombatActive and selfDefenceEnemy[key] ~= nil then
+                -- Its own self-defence fight (Combat.OnFollowerAttacked).
+                local sdEnemy = selfDefenceEnemy[key]
+                local enemyAlive = safe_call(function() return sdEnemy:IsValid() end) == true
+                local quietFor = os.clock() - (selfDefenceLastHitAt[key] or 0)
+                if not enemyAlive then
+                    end_self_defence(key, "its attacker is gone")
+                    return
+                elseif quietFor > SELF_DEFENCE_WINDOW_SECONDS then
+                    end_self_defence(key, string.format("no hits either way for %.0fs", SELF_DEFENCE_WINDOW_SECONDS))
+                    return
+                end
+                fightTarget = sdEnemy
+            end
+            if fightTarget ~= nil then
+                -- Same rule as the assignment: never keep a Pal on a fight it
+                -- can only reach past the recall distance, or while recalled.
+                local reach = actor_distance(fightTarget, playerActor)
+                if recallActive[key] or (reach ~= nil and reach > COMBAT_RECALL_DISTANCE) then
+                    clear_combat_action(key)
+                    resume_follow_after_combat(key, recallActive[key] and "it is being recalled"
+                        or "its target is out of reach")
+                    return
+                end
                 local runningCombat = false
                 local cur = safe_call(function()
                     local ctrl = pal.Controller
@@ -3296,7 +3436,7 @@ local function try_real_follow_action(pal, key, playerActor)
                 end
                 if not runningCombat then
                     safe_call(function()
-                        try_install_combat_action(pal, key, currentPlayerEnemy)
+                        try_install_combat_action(pal, key, fightTarget)
                     end)
                 end
             end
@@ -3506,44 +3646,31 @@ local function try_real_follow_action(pal, key, playerActor)
         followActionObjects[key] = nil
         Logger.log("[PalBonds/Combat] [FOLLOW-RESTORE] " .. tostring(key) .. " still has a valid Lua action object but it is no longer installed after an AI transition — rebuilding follow")
     end
+    local nowPal = os.clock()
+    if followActionAttemptsSince[key] == nil
+        or (nowPal - followActionAttemptsSince[key]) > PER_PAL_INSTALL_WINDOW_SECONDS then
+        followActionAttemptsSince[key] = nowPal
+        followActionAttempts[key] = 0
+        followActionCapLogged[key] = nil
+    end
     local attempts = followActionAttempts[key] or 0
     if attempts >= FOLLOW_ACTION_MAX_PER_PAL then
         if not followActionCapLogged[key] then
             followActionCapLogged[key] = true
             Logger.log(string.format(
-                "[PalBonds/Combat] [FOLLOW-ACTION] %s has hit the per-Pal install cap (%d) — its follow action keeps being destroyed faster than it can be rebuilt, so following is given up for this Pal",
-                tostring(key), FOLLOW_ACTION_MAX_PER_PAL
+                "[PalBonds/Combat] [FOLLOW-ACTION] %s hit the per-Pal install cap (%d in %.0fs) — its follow action keeps being destroyed faster than it can be rebuilt; rebuilds pause until the window rolls over",
+                tostring(key), FOLLOW_ACTION_MAX_PER_PAL, PER_PAL_INSTALL_WINDOW_SECONDS
             ))
         end
         return
     end
     if attempts > 0 then
         Logger.log(string.format(
-            "[PalBonds/Combat] [FOLLOW-ACTION] %s — its follow action is gone (destroyed by combat, most likely); REBUILDING it, attempt %d of %d",
+            "[PalBonds/Combat] [FOLLOW-ACTION] %s — its follow action is gone (destroyed by combat, most likely); REBUILDING it, attempt %d of %d this minute",
             tostring(key), attempts + 1, FOLLOW_ACTION_MAX_PER_PAL
         ))
     end
-    -- Rolling-window rate limit. Note it does NOT set followActionDisabled:
-    -- exceeding the rate skips this install and lets the next window try again,
-    -- rather than ending following for the session.
-    local nowFollow = os.clock()
-    if (nowFollow - followActionWindowStart) > FOLLOW_ACTION_WINDOW_SECONDS then
-        followActionWindowStart = nowFollow
-        followActionWindowCount = 0
-        followActionThrottleLogged = false
-    end
-    if followActionWindowCount >= FOLLOW_ACTION_MAX_PER_WINDOW then
-        if not followActionThrottleLogged then
-            followActionThrottleLogged = true
-            Logger.log(string.format(
-                "[PalBonds/Combat] [FOLLOW-ACTION] throttled: %d installs in the last %.0fs is the ceiling, so this rebuild is skipped. Following RESUMES when the window rolls over — this is a rate limit, not a session cut-off.",
-                FOLLOW_ACTION_MAX_PER_WINDOW, FOLLOW_ACTION_WINDOW_SECONDS))
-        end
-        return
-    end
-    followActionWindowCount = followActionWindowCount + 1
     followActionAttempts[key] = attempts + 1
-    followActionTotal = followActionTotal + 1
     local cls = get_follow_action_class()
     if cls == nil then
         followActionDisabled = true
@@ -3911,6 +4038,25 @@ function Combat.StopFollowing(pal)
         followSlotIndex[key] = nil
         aimFrozen[key] = nil
         recallActive[key] = nil
+
+        -- The fight bookkeeping has to go too (2026-09-12). Without this a Pal
+        -- that joined the party mid-fight stayed in followSuspendedForCombat,
+        -- and the combat-window close then tried to "rebuild follow" on what was
+        -- by then a real party Otomo (run 33, 17:08:47). The rebuild found no
+        -- bonding state and did nothing, but a stale key here is also what
+        -- Trust's abandonment check reads, so it must not outlive the bond.
+        followSuspendedForCombat[key] = nil
+        combatActionObjects[key] = nil
+        combatActionAttempts[key] = nil
+        combatActionAttemptsSince[key] = nil
+        followActionAttemptsSince[key] = nil
+        selfDefenceEnemy[key] = nil
+        selfDefenceLastHitAt[key] = nil
+        followProtectedSince[key] = nil
+        followSuppressedLogged[key] = nil
+        passiveDespiteHateLogged[key] = nil
+        offTargetLogged[key] = nil
+        lastSeenAction[key] = nil
     end
 
     -- Two-hundred-and-fifty-fourth pass: Dragon reported a betrayed Pal "continued

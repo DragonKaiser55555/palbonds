@@ -2325,3 +2325,136 @@ The follow action and the combat action share priority slot 10 by design, so the
 ### Session handoff
 
 The offline harness was moved out of the session scratchpad into `tools/harness/` so it survives a context clear, with a README covering every suite, the prelude facilities (scheduled-callback pump, hook capture, address mocking with a fail-open mode) and the rule that a regression test must be run against the broken code too. `CLAUDE.md` was rewritten around the two remaining problems so a fresh session can pick up without reading this log.
+
+## Runs 33-34 (2026-09-12): cleanup, and why out-of-combat retaliation never happens
+
+### Cleanup, deployed and md5-verified in all three trees
+
+- `Combat.StopFollowing` now drops the fight bookkeeping for the key (`followSuspendedForCombat`, `combatActionObjects`, `combatActionAttempts`, `followProtectedSince`, `followSuppressedLogged`, `passiveDespiteHateLogged`, `offTargetLogged`, `lastSeenAction`). Run 33, 17:08:47: the combat-window close tried to rebuild follow on a Petallia that had joined the party 9 seconds earlier. New `stoptest.js` fails against commit `1ca339b` and passes now.
+- The F7 emote probe is removed (answered: cheer is emote 0). The shipped cheer logs as `[EMOTE]`, failure-only. `emotetest.js` tested only the probe and is deleted.
+- `[COMPANION] now has a companion preset` logs once per Pal instead of on every combat-window transition (16 of run 33's 295 lines), and no longer claims `Discover slots=Battle` on out-of-combat applications where they are `Ignore`.
+- The Petallia lost at 17:10:55 in run 33 (54k then 236k units) was Dragón teleporting. Bond loss was correct.
+
+### Out-of-combat retaliation is blocked by our own follow action
+
+Dragón, run 34: a bonded Caprity took 12 hits from a wild Pal (17:20:37-17:20:52) and did nothing until he attacked too (17:21:03). He expected the pass-325 hybrid to make it fight back.
+
+The preset half works. The log at 17:20:37 says `has a hate target but is actually running 'OtomoFollow' — treating it as NOT fighting, so follow is reinstalled`: `Damaged_* = Battle` did give it hate on the attacker. But `pal_has_own_fight` classifies `OtomoFollow` as passive, so follow is kept, and `suspend_follow_for_combat` has exactly one caller — `Combat.OnPlayerCombatTarget`, which only runs when the PLAYER is in the fight. The follow action holds the slot and the Pal's own AI never reaches combat, which is the same thing the pass-300 action trace proved for player fights. So retaliation outside a player fight has not worked since follow became an installed action; the hybrid's out-of-combat half is a preset value nothing acts on.
+
+Friendly fire during player fights is a separate path. `QUIET_RETALIATION_DURING_PLAYER_FIGHT = true` does set `Damaged_* = Ignore` in the window, but `Discover_Equal/Greater/Smaller = Battle` stays on for the whole window, so a companion can still pick another companion as a noticed target, and melee swings still clip whoever is adjacent. The toggle only ever removed one of the two generators, which is consistent with the noisy A/B numbers.
+
+## Pass after run 34 (2026-09-12): self-defence, rolling per-Pal caps, the friendly-fire switch, alpha bars
+
+All deployed and md5-verified in the three trees; nothing committed.
+
+### Self-defence outside a player fight
+`Combat.OnFollowerAttacked(pal, attacker)`, called from Trust's `PalHate:DamageEvent` hook in the third-party-damage branch. For **only the Pal that was hit** (Dragón's call) it drops follow, installs a combat action at the attacker and pushes hate — the same three steps a player fight applies to every companion. Skipped when: a player fight is active (that path owns it), the attacker is another companion (friendly fire), the attacker is a player, or the attacker is a confirmed active party Otomo (`CharacterParameterComponent:IsOtomo()`). Ends in the follow tick once neither side has hit the other for `SELF_DEFENCE_WINDOW_SECONDS` (= the 12s combat window; a companion's own hits keep it alive via `Combat.NoteFollowerHit`) or the attacker is invalid. The 25s suspension ceiling and the recall still apply. Opening a player fight clears all self-defence state.
+
+**Caught offline, not in game:** the first version used `Capture.IsAlreadyOwned` to skip party Pals. That function is fail-closed (unreadable = owned), so every attacker without a readable component would have been skipped — the Pal standing still again. `selfdefencetest.js` failed on it; replaced with the positive `IsOtomo()` check. `selfdefencetest.js` fails 6/12 against commit `1ca339b`, passes 12/12 now.
+
+### Per-Pal install caps were lifetime counters
+`FOLLOW_ACTION_MAX_PER_PAL` and `COMBAT_ACTION_MAX_PER_PAL` (25 each) counted from StartFollowing and only reset on StopFollowing, latching "following is given up for this Pal". Run 33 already had one Pal at 8 of 25 rebuilds after three fights. Both now count per `PER_PAL_INSTALL_WINDOW_SECONDS` (60s) and recover. `captest.js` fails against `1ca339b` (no rebuild after the window), passes now.
+
+### Friendly-fire A/B switch
+`DISCOVER_BATTLE_DURING_PLAYER_FIGHT` in `Personality.lua`, default `true` (unchanged behaviour). `false` keeps every `Discover_*` slot `Ignore` during a player fight, so companions only fight what pass 318's assignment gives them. `presettest.js` asserts the `true` state and will fail while the switch is `false` — expected during the B run.
+
+### Alpha Pals: bonding bar x2
+In `Trust`'s level multiplier: CharacterID beginning `BOSS_` doubles the multiplier. The `[LEVEL-MULT]` line now prints `id=` and `(BOSS: bar x2)`. Lucky Pals (`IsRarePal`) are untouched.
+
+### Research answered for Dragón (nothing built)
+- **Alpha / lucky detection:** `FPalCharacterParameterDatabaseRow` has `IsBoss`, `IsTowerBoss`, `IsRaidBoss`; `UPalDatabaseCharacterParameter::GetIsBoss(RowName)`; wild alphas use `BOSS_<Species>` CharacterIDs. Lucky Pals: `SaveParameter.IsRarePal` / `UPalIndividualCharacterParameter::IsRarePal()`.
+- **Item rarity for Feed:** the feed hook (`PalItemSlot:RequestUseToCharacter` post) already reads `slot.ItemId.StaticId`. `UPalItemIDManager::GetStaticItemData(FName)` returns `UPalStaticItemDataBase` with `Rarity`, `Rank`, `Price`, `RestoreSatiety` — proven working in pass 183 (Kinship Peach full = Rarity 3, lesser = Rarity 1) after two crashes, whose fixes are required: a live in-world actor as WorldContextObject, and `UEHelpers.FindOrAddFName` for the id.
+- **Why same-pack wild Pals' attacks pass through each other:** the header has `UPalUtility::IsFriend(ActorA, ActorB)`, a per-individual `GetGroupId()` / `GetGroupType()`, `AttackerGroupID` inside `FPalDamageInfo`, and `bEnableFriendAttack`. Most likely the damage step compares groups and drops same-group hits (wild spawns share a group). Declarations only; the logic itself is native and unverified. A read-only probe (log `IsFriend` and group ids for two companions and for two pack members) would confirm before anyone considers putting companions in a shared group.
+
+## Run 35 (2026-09-12): friendly-fire A side, self-defence live, alpha bar live, and spawners take bonded Pals back
+
+Log archived as `palbonds-live.log.run35`. `DISCOVER_BATTLE_DURING_PLAYER_FIGHT = true`. Two companions (Petallias) throughout; five player fights.
+
+| fight closed | follow rebuilds | combat installs | friendly-fire hits | discipline cancels |
+|---|---|---|---|---|
+| 18:02:30 | 7 | 5 | 0 | 0 |
+| 18:02:58 | 9 | 16 | 0 | 0 |
+| 18:03:21 | 1 | 9 | 12 | 1 |
+| 18:07:48 | 7 | 19 | 5 | 3 |
+| 18:10:45 | 29 | 26 | 0 | 0 |
+
+**Alpha bar works.** `id=BOSS_GrassMammoth (BOSS: bar x2) -> multiplier=0.50x (bonding bar = 250)` (0.25 level x 2). The alpha then broke follow every 1-2s (11 rebuilds in 15s, strayed to 3222) until Dragón left the world at 18:13:43, so its following is unjudged; field bosses may be tethered to their arena.
+
+**Self-defence fired 5 times, fought in 3.** 18:02:36 (vs BerryGoat) and 18:09:52 (400068 vs FlowerDoll_367889, CombatPal with the attacker as hate target for ~25s) worked. In two (400068 at 18:07:02, 393526 at 18:09:51) the Pal went BlowAway/WildLife with its hate target already `none` a second later and never entered CombatPal; the window closed it after 12s. Likely contributor: `combat_action_is_live` counts "installed in the slot" as live, so the tick only re-points instead of reinstalling while the Pal wanders. Also 400068's genuine fight was ended by the 25s suspension ceiling, not by going quiet.
+
+**The recall and the assist fight each other — the 29/26 fight.** 18:10:17-18:10:45, companion 393526 alternates every 1-3s: `follow action dropped for the fight` (HATE-ASSIST re-push) -> `fight over (recalled - it strayed too far)` -> rebuild -> dropped again. `OnPlayerCombatTarget` suspends and installs on a Pal whose recall (`recallActive[key]`) is running. The player's enemy sat beyond `COMBAT_RECALL_DISTANCE` (1800) from the player, so companions could never reach it without being recalled. This single loop is the largest install churn measured so far.
+
+**Two bonded Petallias were despawned by the game, not lost by wandering.** Dragón: *"those 2 petallias seemed to despawn, i didnt teleport that time, they simply vanished out of nowhere"*. Both action traces went `<unreadable>` in the same second (18:06:12), both then reported the identical distance 263285 (later 263574) — two actors at one point, which is the game moving them, not AI movement. Header dump: wild Pals belong to an `APalNPCSpawnerBase`, which has `Tick_Despawning`, `RequestDespawn`, `SetCheckRadius(SpawnRadius, DespawnRadius)`, `Ignore_FarCheck`, `LocationResetDistance_SpawnerToCharacterTooFar`, `RemoveGroupCharacter(UPalIndividualCharacterHandle*)`, `WildGroupGuid`; defaults live in `UPalGameSetting.Spawner_DefaultDespawnDistance_S/M/L`. Pass 200 already recorded a following Petallia "despawned" when Dragón ran far away. Working hypothesis: the spawner still owns a bonded Pal and despawns or resets it by distance from the SPAWNER. The in-game reference is capture, which must detach a Pal from its spawner group — that is the mechanism to find before building anything.
+
+**Stale doc:** known defect 1 (failed radial feed still grants) is already fixed in code — run 35 logs `the wild feed did not go through ... granting nothing` twice.
+
+## Run 36 (2026-09-12): B side of the friendly-fire A/B — inconclusive, and five Pals lost to follow starvation
+
+Log archived as `palbonds-live.log.run36`. `DISCOVER_BATTLE_DURING_PLAYER_FIGHT = false`. Dragón: *"this honestly felt like a step back, also was laggy as hell during fights"*.
+
+**Not comparable with run 35.** Six companions bonded (run 35: two). Two fights: 37 follow rebuilds / 35 combat installs / 12 friendly-fire hits, then **68 / 140 / 5**. Companions still engaged the player's enemy with the switch off (50 `-> CombatPal` with a hate target vs 22 in run 35, with three times the companions), so "Discover=Battle is required" is NOT shown; neither is the opposite. The A/B has to be re-run with the same companion count after the churn fixes below.
+
+**The lag is the recall-vs-assist loop from run 35, multiplied by six.** COMBAT-FREE reasons for the whole run: 51 `follow action dropped for the fight`, 45 `recalled - it strayed too far`. Peak 10-11 suspend/rebuild events per second (18:36:04-18:36:14).
+
+**Why all five remaining companions were lost at 18:36:38-18:36:50.** The global follow limit (`FOLLOW_ACTION_MAX_PER_WINDOW = 40` per 60s, pass 327) was exhausted by the churn (`throttled` at 18:34:16 and 18:36:11). From the fight's end at 18:36:25 no follower could get a follow action until the window rolled over at ~18:37:11; all five drifted past 3000 and the 15s grace expired first. The log hid it: `REBUILDING it, attempt N` prints BEFORE the throttle check and the counter only increments after it, so every Pal logged the same attempt number every 1.5s while nothing was built. A global limit that does not scale with follower count starves exactly the case with the most followers.
+
+**Self-defence** fired 3 times; 408321 fought the PinkRabbit correctly (CombatPal with hate target).
+
+Fixes owed, in order: (1) `OnPlayerCombatTarget` / the fight tick must not suspend or install on a Pal whose recall is running; (2) the global follow throttle must not starve following — scale with followers or exempt Pals with no follow action at all; (3) the `REBUILDING` log must print only when a rebuild actually happens.
+
+## Performance pass after run 36 (2026-09-12): the churn loop, follow starvation, and a growth audit
+
+Deployed and md5-verified in all three trees (live `Logger.lua` differs only by `DEBUG_LOGGING = true`). Not committed. `DISCOVER_BATTLE_DURING_PLAYER_FIGHT` is back to `true` at Dragón's call; the A/B is shelved as inconclusive.
+
+### The recall-vs-assist loop
+`COMBAT_RECALL_DISTANCE` and `recallActive` moved near the top of `Combat.lua` with a new `actor_distance(a, b)` helper (nil when unreadable, treated as in reach). `Combat.OnPlayerCombatTarget(enemy, player)` — Trust now passes the player — skips suspend/install/hate for every companion when the enemy is past the recall distance from the player (logged once per target), and per companion when that companion's recall is running. The suspended-Pal branch of the follow tick releases a Pal back to follow for the same two reasons, and self-defence refuses to start during a recall. `reachtest.js` fails 3 checks against commit `1ca339b`, passes now.
+
+### Follow starvation
+The global `FOLLOW_ACTION_MAX_PER_WINDOW` limit is deleted, with `followActionTotal`. It did not scale with companion count and cost run 36 five Pals; the per-Pal 60s cap still bounds a runaway loop. This also removes the lying `REBUILDING` log: nothing sits between that line and the construction any more.
+
+### Logging cost, testable in one session
+`Logger.SetEnabled/IsEnabled/IsDevBuild`. In a dev build (`DEBUG_LOGGING = true`) **F7** turns the log off and on mid-session with a toast; while off, nothing is printed or written and the `[ACTION-TRACE]` probe stops polling. Release builds do not bind F7 (`shiptest.js` still asserts that). Reason for the in-session switch rather than two runs: see the memory about uncontrollable live A/B setups.
+
+### Growth audit — can anything accumulate and slow a long session?
+Method: every file-level table, where it gains entries, where it loses them, and whether anything iterates it.
+- **Nothing that grows is iterated per tick.** The per-tick loops walk `BondingState`, Trust's `State`, `followActionObjects`, `combatActionObjects`, `trackedBars` (pruned when invalid) and the live Pal list — all bounded by what is loaded or bonded. Table lookups are O(1), so growth was memory, not rising CPU cost.
+- **Grew without bound, now fixed:** Combat `assistHateTargets` (a live actor ref per enemy fought, read only by the dead `release_assist_hate` — both deleted); Personality `PersonalityState` (a record for every Pal ever scanned — pruned after 600s unseen, checked every 75 scans), `cachedSensorByPalId` (pruned with it), `handledSensorKeys`/`handledSensorAddresses` (reset at each prune; enforcement stays guarded by `enforcementApplied`); Indicator `barInstalledForGauge` (now stores the widget, invalid ones pruned every 30 scans); Trust `LevelMultiplierCache` (entry dropped when a Pal joins).
+- **Bounded, left alone:** `loggedUnknownPresets`, `loggedPresetSlotsOnce`, `presetCDOCache`, `capsuleReported`, `dumpedClasses`, `panelState` (per class or species); `PermanentlyFled` (per fled Pal, reset on world change).
+- **Timers:** every self-rescheduling loop (Trust tick 1.5s, trainer re-assert 100ms/1s, action probe 200ms/1s, personality scan 8s, gauge scan 2s) is started once behind a started-flag or from Init, and retry loops stop on success. No duplicate-loop path found.
+- **The one plausible source of session-length slowdown is the dev log itself:** every line is `print`ed to UE4SS's console as well as flushed to disk. F7 now makes that directly testable.
+- Also fixed in passing: the personality scan's `FindFirstOf("PalPlayerCharacter")` (UE4SS #1328 exposure) now uses the guarded `FindAllOf` path.
+
+### Still open for performance, not done here
+The personality scan calls `FindAllOf("PalCharacter")` and does a `GetFullName` plus `GetStableId` for every loaded character every 8s. That is a periodic cost proportional to the world, not the session — a candidate for a cheaper already-enforced early-out.
+
+## Run 37 (2026-09-12) and the hit-lag pass
+
+Log archived as `palbonds-live.log.run37`. Dragón: the Pals *"behaved nicely this run"*; *"i didnt notice a difference with the log on/off, seems the lag comes by the hit marks themselves, posibly something that triggers on multihit attacks?"*
+
+**Churn fix confirmed.** Four fights: 2/2, 4/13, 15/13, 15/22 follow rebuilds / combat installs (run 36's worst: 68/140). No Pal lost; four joined. The out-of-reach rule fired twice (targets at 3744 and 1958 units). Friendly fire 20, 5 and 19 hits with four to five companions. F7 worked: log off 19:37:35 to 19:44:57, no felt difference — which rules logging out as the lag.
+
+**The hit lag: a full object-array walk per damage event.** `Trust.find_player()` was `FindAllOf("PalPlayerCharacter")` with no cache, called from the betrayal hook (per hit on a bonded Pal), the damage hook's player-enemy branch (per hit involving the player while anything is bonded) and its third-party branch (per hit on a companion). `hitcosttest.js` measured it offline: **41 walks for a 30-hit burst** on commit `1ca339b`. Now cached for 2s, re-validated with `IsValid` on every use (a destroyed player forces a fresh guarded walk), with the name cached alongside so the per-hit player comparison is a string compare: **at most 2 walks** for the same burst.
+
+**Measured in game from now on.** Both damage hooks are wrapped in `timed_hook`, and every combat-window close logs `[HIT-COST]`: hook calls, total ms inside them, and full player lookups since the last report. If the lag persists, that line says whether it is still inside these hooks.
+
+**Feed by rarity (Dragón's scale).** Base 50 (was 75, now equal to Pet and Play) plus common +10, uncommon +20, rare +30, epic +40, legendary +50. `Interaction.FeedGrantAmount(itemId, worldContext)` reads `UPalStaticItemDataBase.Rarity` via `Default__PalUtility:GetItemIDManager(liveActor):GetStaticItemData(FindOrAddFName(id))` — pass 183's proven route and both of its crash fixes — cached per item id. **Assumed scale 0 = common .. 4 = legendary**, clamped; each feed logs `[FEED-RARITY] <item> -> <amount> (rarity N)` to confirm. Unreadable rarity grants base 50 and says so. Kinship Peaches keep 250 / 500 — not in Dragón's list, so unchanged pending his call.
+
+**Not done, for later:** `Capture.lua` (4) and `Interaction.lua` (3) still use `FindFirstOf("PalPlayerCharacter")` (UE4SS #1328 exposure). None is per hit; the trust-shaken toast is the most frequent, throttled to one per 4s.
+
+## Run 38 (2026-09-12): hit lag confirmed better, rarity scale confirmed, the cheer outlasting Play
+
+Log archived as `palbonds-live.log.run38`. Dragón: *"it was a lot better this time, wasnt as laggy during fights"*.
+
+**Hit cost, now measured in game.** `[HIT-COST]`: 14 events / 132 ms / 52 lookups (20:03:30-20:05:51), then 88 events / 416 ms / 62 lookups (to 20:08:56). The lookups no longer scale with hits — 62 across 88 events in three minutes is the periodic callers (Trust tick 1.5s, address refresh 1s) re-walking each time the 2s cache expires, about one walk every 2-3s. **Still open:** ~4.7 ms average per damage event inside the two hooks. That total includes the first-hit fight assignment (combat-action construction, hate pushes per companion), so it is not all per-hit overhead, but it is the next thing to break down if lag remains.
+
+**Rarity scale confirmed:** `Meat_BerryGoat`, `Carrot`, `Berries` = rarity 0 (60); `GenghisKhan` = rarity 1 (70); `AffectionFruit_02` = 250 (own amount). Epic/legendary not testable yet — Dragón has none. Peaches keep their special values by his decision (CLAUDE.md settled decisions).
+
+**The player's cheer outlasted Play.** The Pal's rest animation is cancelled at `PLAY_HAPPY_FOLLOWUP_DELAY_MS` (6s), but the player's `BP_Action_Emote_0_C` kept playing until Dragón moved. Fix: `stop_player_cheer(player)` runs first in that same delayed callback — `player.ActionComponent:GetCurrentAction()`, and `CancelAction(cur)` only if its name contains `BP_Action_Emote_`, so an attack or dodge started meanwhile is never cut off. Exported as `Interaction.StopPlayerCheer` for `playstoptest.js`.
+
+## Run 39 and the stable build (2026-09-12)
+
+Dragón: *"everything working correctly, saw the animation stop too together with the pal and nothing broke"* — the F8 cheer now ends with the Pal's animation. He asked for a cleanup and a commit as the last stable version before a risky test (bonding a raid boss).
+
+Cleanup for the stable build: `DEBUG_LOGGING = false` everywhere including the live install, so all three trees are byte-identical for the first time this session; `ACTION_CHANGE_PROBE = false` (code kept, one flag to turn back on); the F7 runtime log switch removed from `Logger.lua` and `Interaction.lua` (it answered its question in run 37); the `timed_hook` / `[HIT-COST]` wrapper removed from `Trust.lua` and its report from `Combat.lua` (it confirmed the lookup fix in run 38; the player cache itself stays). `hitcosttest.js` keeps its object-walk assertion, which is what guards the fix.
+
+Real save data backed up before the raid-boss test: `save-backups/2026-09-12_before-raid-boss-test/` (gitignored), 443 files, every file MD5-verified. Restore steps are in CLAUDE.md's status block.

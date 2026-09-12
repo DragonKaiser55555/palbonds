@@ -1666,6 +1666,21 @@ local COMPANION_OTHER_DAMAGED_SLOTS = { "Damaged_Greater", "Damaged_Equal", "Dam
 -- real enemy attacks it mid-fight.
 local QUIET_RETALIATION_DURING_PLAYER_FIGHT = true
 
+-- THE FRIENDLY-FIRE A/B SWITCH (2026-09-12, runs 35/36). Keep the retaliation
+-- switch above unchanged while this one is being tested.
+--
+--   true  -> during a player fight every Discover_* slot is Battle, so a
+--            companion engages anything it notices -- including another
+--            companion. This is the behaviour since pass 213.
+--   false -> Discover_* stays Ignore even during a player fight. Companions get
+--            their fight only the way pass 318 assigns it: follow dropped, a
+--            combat action installed at the player's enemy, hate pushed.
+--
+-- Pass 213 added the Battle value because hate alone did not make companions
+-- engage; pass 318 later started installing the combat action directly, and
+-- whether the Discover half is still needed has never been measured.
+local DISCOVER_BATTLE_DURING_PLAYER_FIGHT = true   -- runs 35/36 inconclusive; back on at Dragón's call
+
 -- Two-hundred-and-fifteenth pass: force a Pal to re-run its sight check, so it
 -- notices the player again. This is Dragón's own "they forget im there, making
 -- noise brings them back" observation turned into code — see Combat.lua's
@@ -1738,7 +1753,7 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist, playerI
         -- this by re-applying the preset when a player-combat target appears
         -- and again when it goes quiet.
         local discoverResponse = COMPANION_RESPONSE_IGNORE
-        if combatAssist and playerInCombat then
+        if combatAssist and playerInCombat and DISCOVER_BATTLE_DURING_PLAYER_FIGHT then
             discoverResponse = COMPANION_RESPONSE_BATTLE
         end
         for _, prop in ipairs(COMPANION_OTHER_DISCOVER_SLOTS) do
@@ -1857,10 +1872,17 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist, playerI
         -- look exactly like a random companion turning hostile.
         st.enforcementApplied = true
     end
-    Logger.log(string.format(
-        "[PalBonds/Personality] [COMPANION] %s now has a companion preset (player slots=Ignore%s) — its own AI should no longer generate decisions about the player",
-        tostring(palId), combatAssist and ", other Discover slots=Battle" or ""
-    ))
+    -- Logged once per Pal, when it first becomes a companion. Combat.lua
+    -- re-applies the preset on every combat-window open and close, which used
+    -- to repeat this line each time (16 of run 33's 295 lines) while saying
+    -- nothing new. The old text also claimed "Discover slots=Battle" on every
+    -- application, including the out-of-combat ones where they are Ignore.
+    if not wasAlreadyCompanion then
+        Logger.log(string.format(
+            "[PalBonds/Personality] [COMPANION] %s now has a companion preset (player slots=Ignore) — its own AI should no longer generate decisions about the player",
+            tostring(palId)
+        ))
+    end
 
     -- Same interrupt already proven to succeed 5/5 on wild Pals: drop
     -- whatever the Pal decided a moment ago so the new preset is consulted
@@ -1984,23 +2006,67 @@ end
 -- tier the first time a Pal is seen) and attempt enforcement immediately,
 -- per Pal, independently. Each Pal is wrapped in its own safe_call so one
 -- bad actor can't stop the rest of the scan.
+-- GROWTH AUDIT (2026-09-12): PersonalityState got an entry for every Pal this
+-- scan ever saw and never lost one, and the sensor hook's two dedup tables did
+-- the same for every sensor component. Nothing iterates them per tick, so this
+-- was memory rather than lag, but a long session kept all of it. Entries for
+-- Pals not seen by this scan for PERSONALITY_UNSEEN_PRUNE_SECONDS are dropped:
+-- a loaded Pal is seen every 8s, so only despawned Pals age out. The sensor
+-- dedup tables are simply reset, since enforcement itself is guarded by
+-- state.enforcementApplied and a re-sense costs one cheap early-out.
+local PERSONALITY_PRUNE_EVERY_N_SCANS = 75          -- ~10 minutes at 8s
+local PERSONALITY_UNSEEN_PRUNE_SECONDS = 600.0
+local personalityScanCount = 0
 local function scan_nearby_wild_pals_for_personality()
     local pals = safe_call(function() return FindAllOf("PalCharacter") end)
     if not pals then return end
-    local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+    -- FindAllOf, not FindFirstOf: UE4SS issue #1328 (FindFirstOf derefs before
+    -- its null check). Same guarded lookup the other modules moved to.
+    local player = nil
+    local players = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
+    if type(players) == "table" then
+        for _, p in ipairs(players) do
+            if p ~= nil and safe_call(function() return p:IsValid() end) then player = p break end
+        end
+    end
     local playerName = player and safe_call(function() return player:GetFullName() end)
+    local now = os.clock()
     for _, palActor in ipairs(pals) do
         safe_call(function()
             local validOk, isValid = pcall(function() return palActor ~= nil and palActor:IsValid() end)
             if not (validOk and isValid) then return end
             local actorName = safe_call(function() return palActor:GetFullName() end)
             if actorName and playerName and actorName == playerName then
-                return 
+                return
             end
             local palId = Personality.GetOrInitState(palActor)
             if palId == nil then return end
+            local st = PersonalityState[palId]
+            if st then st.lastSeenAt = now end
             try_enforce_personality(palActor, palId)
         end)
+    end
+
+    personalityScanCount = personalityScanCount + 1
+    if personalityScanCount % PERSONALITY_PRUNE_EVERY_N_SCANS == 0 then
+        local pruned, kept = 0, 0
+        for palId, st in pairs(PersonalityState) do
+            if st.lastSeenAt == nil then
+                st.lastSeenAt = now
+                kept = kept + 1
+            elseif (now - st.lastSeenAt) > PERSONALITY_UNSEEN_PRUNE_SECONDS then
+                PersonalityState[palId] = nil
+                cachedSensorByPalId[palId] = nil
+                pruned = pruned + 1
+            else
+                kept = kept + 1
+            end
+        end
+        handledSensorKeys = {}
+        handledSensorAddresses = {}
+        Logger.log(string.format(
+            "[PalBonds/Personality] [PRUNE] dropped %d personality record(s) for Pals unseen for %.0fs, %d kept",
+            pruned, PERSONALITY_UNSEEN_PRUNE_SECONDS, kept))
     end
 end
 local function schedule_personality_scan()

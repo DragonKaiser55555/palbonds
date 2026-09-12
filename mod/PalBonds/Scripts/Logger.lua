@@ -148,6 +148,9 @@ end
 function Logger.DiagnosticsEnabled()
     return DEBUG_LOGGING and SHOW_DIAGNOSTICS
 end
+-- REMOVED for the stable build (2026-09-12): the F7 runtime log switch
+-- (SetEnabled/IsEnabled/IsDevBuild). It answered its question -- run 37 showed
+-- logging is not the fight lag -- and a release build has no log to toggle.
 function Logger.log(msg)
 
     -- First line on purpose: everything below is development-only.

@@ -201,6 +201,13 @@ Client-side cleanliness is verifiable; a third-party server's own policy is not.
   75-point feed clears 50% of it. Do not "fix" this.
 - **Never propose removing a working feature to work around a bug.** Fix it, or
   ship with the limitation documented.
+- **Feed trust scales with item rarity; Kinship Peaches are the exception.**
+  Feed = 50 base (same as Pet and Play) + 10/20/30/40/50 for rarity 0-4
+  (common..legendary), confirmed in run 38 (Carrot/Berries = 0, uncommon = 1).
+  Kinship Peaches keep 250 (lesser) / 500 (full). Dragón, 2026-09-12: *"lets
+  keep the kinship peaches special values, differently than other food, they
+  cannot be cooked or made, only found out, so it makes sense that those peaches
+  are special things"*.
 
 ## Two routes to "the right brain" — Dragón has ruled on both (2026-09-12)
 
@@ -276,7 +283,24 @@ Each of these was killed by evidence, not suspicion:
 | Recall | 2 strays, 2 returns |
 | Log volume | 263 lines, down from 913 in run 30 |
 
-Two problems remain, and they are the only two: **friendly fire** and **lag**.
+Two problems remain: **friendly fire** and **lag**. A third was found in run
+34 (below): **companions never defend themselves outside a player fight.**
+
+### Out-of-combat self-defence — broken, cause found (run 34)
+
+The pass-325 "hybrid" (fight back when hit outside a player fight, don't during
+one) only ever changed preset values. Outside a player fight the hit Pal DOES get
+hate on its attacker, but `pal_has_own_fight` treats `OtomoFollow` as passive and
+keeps follow installed, and `suspend_follow_for_combat` is only ever called from
+`OnPlayerCombatTarget`. The follow action holds the slot, so the Pal never enters
+combat. Run 34: a Caprity took 12 hits and did nothing until Dragón attacked.
+Full analysis in `docs/hook-points.md`, "Runs 33-34".
+
+**Fixed offline, awaiting a live run:** `Combat.OnFollowerAttacked` routes a
+third-party hit into suspend + combat action + hate for **only the Pal that was
+hit** (Dragón: *"only the pal attacked should respond"*). He floated companions
+defending each other as nice-to-have; not built, and it would add to the
+pile-on behind friendly fire, so revisit only after the friendly-fire A/B.
 
 ### Friendly fire — open, and understood
 
@@ -296,9 +320,16 @@ Dragón sees them "stop moments after" — but it cannot stop them starting.
 `QUIET_RETALIATION_DURING_PLAYER_FIGHT` in `Personality.lua` is the A/B switch
 for the retaliation half. It is **on**, and the evidence so far says it buys
 little: friendly fire per fight ran ~18 (run 28, off) vs ~26 (run 29, on) vs 16
-and 6 (run 32, on). Noisy, no clear win. Deciding it needs a clean single-variable
-pair of runs, which has not happened yet because other fixes kept landing between
-runs. **Do not flip it at the same time as anything else.**
+and 6 (run 32, on), 11 in one 3-companion fight (run 33, on). Noisy, no clear
+win. Deciding it needs a clean single-variable pair of runs, which has not
+happened yet because other fixes kept landing between runs. **Do not flip it at
+the same time as anything else.**
+
+Why it cannot fully work on its own: it only removes the damage-triggered half.
+`Discover_* = Battle` stays on for the whole combat window, so companions can
+still notice each other as targets. Since pass 318 the fight is *assigned*
+(combat action installed + hate pushed), so whether `Discover_* = Battle` is
+still needed at all is an open, testable question.
 
 ### Lag — open, and the cause is now measured rather than guessed
 
@@ -343,9 +374,16 @@ in combat and 1000ms out of it. Turn off before shipping.
 `QUIET_RETALIATION_DURING_PLAYER_FIGHT = true` in `Personality.lua` — the
 unresolved A/B above.
 
-Nothing else is mid-flight. Everything from passes 323-335 is deployed to all
-three trees and md5-verified, and all six offline suites pass against the live
-install.
+Nothing else is mid-flight. Everything through the run-33 cleanup (stale fight
+state dropped in `StopFollowing`, F7 emote probe removed, `[COMPANION]` logged
+once per Pal) is deployed to all three trees and md5-verified; every harness
+suite passes, including the new `stoptest.js`, and `harness3` reports 14 hooks.
+
+Also deployed after run 34, not yet live-tested: self-defence
+(`Combat.OnFollowerAttacked`), per-Pal install caps as 60s rates, the
+`DISCOVER_BATTLE_DURING_PLAYER_FIGHT` switch (`true`), and the alpha x2 bar.
+`selfdefencetest.js` and `captest.js` each fail against commit `1ca339b` and
+pass now. **None of this session's work is committed yet.**
 
 ---
 
@@ -451,10 +489,13 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 
 ## Known open defects
 
-1. **A failed radial feed still grants friendship** — the `"Feed (radial
-   fallback)"` branch. Dragón hit this when a Pal fled mid-menu: the picker
-   correctly failed and the Pal gained trust anyway. Pre-existing, present in
-   v1.0.
+1. **Bonded Pals get despawned by their wild spawner** (run 35, and pass 200
+   before it). Not wandering and not a teleport: both Petallias went unreadable
+   in the same second and reported an identical distance. The spawner
+   (`APalNPCSpawnerBase`) still owns them. See hook-points "Run 35". Mechanism
+   to find first: how capture detaches a Pal from its spawner group.
+   *(The old item 1, "a failed radial feed still grants friendship", is fixed in
+   code — run 35 logs the refusal.)*
 2. **`LoopAsync` fallbacks still present** in `Trust.lua` and `Indicator.lua` —
    dead code that would only run in the emergency it is unsafe for. Removed once
    in pass 278, reverted in 285 to keep that fix minimal.
@@ -478,25 +519,24 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
    per fight by the `[INSTALLS]` log line. Not the logging; that was cut by 71%
    in passes 332-333 and the lag survived it.
 9. **Doc drift:** `README.md` line 18 still advertises "Pet (F9), Feed (F10)",
-   binds removed back in pass 239. `release/workshop-description.txt` never
-   documents F10 at all. Both are player-facing.
+   binds removed back in pass 239, and its whole Status section predates
+   following working. `release/workshop-description.txt` never documents F10
+   (passive-bonding toggle) at all. Both are player-facing.
+10. **Companions do not defend themselves outside a player fight** — fixed
+   offline (`selfdefencetest.js`), not yet confirmed live.
 
 ---
 
 ## Pending, deliberately deferred
 
-**Play's cheer emote — the recipe is now in hand (pass 325).** The Kick Keybind
-reference mod (`stale/reference-mods/`) shows how to make the PLAYER emote:
-player emotes are `/Game/Pal/Blueprint/Action/Palmi/Emote/BP_Action_Emote_<N>.BP_Action_Emote_<N>_C`
-played via `APalPlayerController::ActionComponent_PlayAction_ToServer_ForPlayer(Pawn, {}, ActionClass, 0)`.
-Kick is `Emote_8`; cheer is another number in the same series and the assets are
-numbered rather than named, so it has to be identified by trying them. When Play
-is picked up: probe `Emote_1..20` with `StaticFindObject`, log which resolve, and
-have Dragón identify the cheer.
+**Play's cheer emote — SHIPPED.** Cheer is `BP_Action_Emote_0_C` (Dragón
+identified it with the F7 probe, which has since been removed). Played as the
+last statement of `do_play`, logs `[EMOTE]` only on failure.
 
-**Hotkeys fire while typing in chat.** The same mod caches `PalEditableTextBox` /
-`PalMultiLineEditableTextBox` / `EditableTextBox` and checks `HasKeyboardFocus()`
-before acting. This project's F9/F10 binds have no such guard. Small, worth doing.
+**Hotkeys fire while typing in chat.** The Kick Keybind reference mod caches
+`PalEditableTextBox` / `PalMultiLineEditableTextBox` / `EditableTextBox` and
+checks `HasKeyboardFocus()` before acting. This project's F8/F9/F10 binds have
+no such guard. Small, worth doing.
 
 
 **Play's target-busy gate — do not fix in isolation.** Dragón's call, 2026-09-11:
@@ -527,6 +567,67 @@ these belong in the same piece of work.
 
 In order. The first two are the only things standing between this and shipping.
 
+**STABLE BUILD, 2026-09-12 (after run 39): committed as the last stable
+version at Dragón's request.** Dragón: *"everything working correctly, saw the
+animation stop too together with the pal and nothing broke"*. For that commit:
+`DEBUG_LOGGING = false` in ALL THREE trees including the live install (they are
+now byte-identical), `ACTION_CHANGE_PROBE = false`, the F7 runtime log switch
+and the `[HIT-COST]` timing wrapper removed. To debug again: set
+`DEBUG_LOGGING = true` in the LIVE install's `Logger.lua` only, and
+`ACTION_CHANGE_PROBE = true` in `Combat.lua` if action traces are needed.
+
+**SAVE BACKUP — restore point before Dragón's raid-boss bonding test.**
+`save-backups/2026-09-12_before-raid-boss-test/SaveGames/` (gitignored — personal
+data). A full copy of `%LOCALAPPDATA%\Pal\Saved\SaveGames\`, 443 files /
+27,722,059 bytes, every file MD5-verified against the original, taken with the
+game closed. To restore: close Palworld completely, delete (or rename) the
+contents of `%LOCALAPPDATA%\Pal\Saved\SaveGames\`, copy the backup's contents
+back in, then launch. The world he plays is the most recently written world
+folder. Steam Cloud is ON for Palworld, so the backup also holds a copy of
+`Steam\userdata\<account>\1623730\` as `SteamCloud_1623730/` (27 files,
+MD5-verified) — restore that too, or Steam may bring back a newer cloud copy.
+The account-wide Global Palbox is the local file `GlobalPalStorage.sav` in the
+SaveGames account folder, and it is in the backup. Real Steam and world IDs are
+deliberately NOT written here: this file is public on GitHub.
+
+Earlier — after run 38: hit lag confirmed much better by Dragón;
+feed-by-rarity confirmed (0 = common, 1 = uncommon); peaches keep 250/500 by
+his decision. The F8 cheer now stops with the Pal's animation (deployed, not
+yet seen in game). Next performance target: ~4.7 ms per damage event still
+spent inside the damage hooks (hook-points "Run 38"). Then the spawner
+despawn. Nothing from this session is committed.**
+
+Earlier: run 37 confirmed the churn fix (Pals "behaved
+nicely", F7 showed logging is NOT the lag). Hit-lag fix + feed-by-rarity now
+deployed, awaiting his run** — see hook-points "Run 37 and the hit-lag pass".
+The cause found: a full `FindAllOf` walk per damage event in Trust (41 walks
+per 30-hit burst offline, now ≤2). Check the new `[HIT-COST]` line and the
+`[FEED-RARITY]` lines (rarity scale 0..4 is assumed) in his next log.
+Open question for Dragón: Kinship Peaches still grant 250/500.
+
+Earlier the same night:
+Dragón's priority is now performance above everything else. Runs 35/36 A/B
+shelved as inconclusive; `DISCOVER_BATTLE_DURING_PLAYER_FIGHT` back to `true`.
+Fixed and deployed (see hook-points "Performance pass after run 36"): the
+recall-vs-assist loop, follow starvation (global throttle deleted), a growth
+audit with pruning, and **F7 in dev builds toggles the debug log mid-session**
+so its cost can be felt directly. Next after his run: the spawner despawn, then
+the personality scan's per-8s world walk. Nothing from this session is
+committed.
+
+0. **Runs 35/36 — the friendly-fire A/B**, protocol agreed with Dragón:
+   run 35 with `DISCOVER_BATTLE_DURING_PLAYER_FIGHT = true`, archive the log
+   as `palbonds-live.log.run35`, flip to `false` in all three trees, run 36.
+   Same setup both runs (2-3 bonded companions, a few fights against wild
+   Pals). Compare `[FRIENDLY-FIRE]` per-fight totals, `[TARGET-DISCIPLINE]`
+   counts, and whether `[ACTION-TRACE]` still shows `CombatPal` with the
+   player's enemy as hate target. If companions stop engaging in run 36, the
+   switch goes back to `true`; either way delete the losing branch. Run 35
+   also checks self-defence (`[SELF-DEFENCE]`) and an alpha's bar
+   (`(BOSS: bar x2)`).
+0b. **Feed by item rarity** — Dragón wants rarer food to give more trust.
+   Mechanism is known (see hook-points, "Research answered"); amounts per
+   rarity are his call and not yet given.
 1. **The lag — attack the install churn.** See the combat-assist section above
    for the measured cause and three untried ideas. Start with "do not rebuild
    follow while the combat window is open", which is the cheapest and does not
