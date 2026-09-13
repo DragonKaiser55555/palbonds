@@ -1,90 +1,107 @@
 # PalBonds
 
-A Palworld mod concept: earn a wild Pal's trust by petting and feeding it
-before you ever throw a Palsphere. Enough trust and it joins you on its own;
-mistreat it and it runs off for good.
+A Palworld mod: earn a wild Pal's trust instead of throwing a sphere at it.
 
-Full design, subsystem breakdown, and the phased build plan live in
-[`DESIGN.md`](./DESIGN.md) — read that first. This README is just setup.
+Pet it, feed it, play with it. Every wild Pal has its own personality, shown
+in a tag over its head, and reacts to you differently. Warm one up enough and
+it starts following you, fights at your side, and eventually joins your party
+on its own — no sphere, no fight. Mistreat it, or leave it behind, and it's
+gone for good.
 
-## Status
+Nothing new is authored: no models, textures, or animations. Everything reuses
+behavior the game already has.
 
-**Working mod, ~82% complete.** This section was badly out of date for a
-long time (it still described the project as "design phase, the scripts are
-stubs" well after the mod was real and playable) — corrected 2026-09-06.
+![PalBonds](images/palbonds-thumbnail.jpg)
 
-What actually works in-game today, all confirmed in live play:
+## Features
 
-- Pet (F9), Feed (F10) and Play (F8) on **wild** Pals, using the game's own
-  real animations
-- A per-individual personality roll (7 tiers) that changes a wild Pal's real
-  AI disposition, with an on-screen label
-- A trust/bonding bar per Pal, scaled by the level gap between it and you
-- Kinship Peaches grant real bonding progress (250 lesser / 500 full against
-  a 500-point bar)
-- Crossing 20% of the bar wins the Pal over; crossing 100% captures it into
-  your party with **no Palsphere**, after a happy-reaction celebration
-- Damaging a bonding Pal costs trust; hitting it yourself is treated as
-  betrayal and resets it
+- **Pet, Feed, and Play** on wild Pals through the game's own radial menu (and
+  F8 for Play), the same interactions you already use on your own Pals.
+- **Seven personalities** — Normal, Curious, Timid, Aloof, Grumpy, Hostile,
+  Feral — rolled per individual, shown as a tag under the Pal's health bar
+  alongside a trust meter.
+- **Following and combat assist.** A bonded Pal stays behind you, holds still
+  when you're aiming at it, joins your fights, and defends itself if
+  something goes after it while you're busy elsewhere.
+- **Feed scales with rarity.** Better food earns more trust. Kinship Peaches,
+  found rather than crafted, are worth the most.
+- **Level and rank aware.** The trust bar scales with the level gap between
+  you and the Pal; alphas need twice the usual trust before they'll join.
+- **Consequences.** Hit a bonded Pal and it's over between you. Wander too far
+  and leave one behind, and it gives up on you too.
+- **Sphere-less joining** — a real celebration, a join effect, and a
+  friendship head start for the Pal that just chose you.
 
-Known incomplete, and where the remaining work is:
+## Get it
 
-- A wild Pal does **not** follow you during the bonding phase yet — every
-  mechanism tried so far needs real ownership, which a still-wild Pal
-  doesn't have. This is the largest open question, and combat-assist is
-  blocked behind it.
-- No capture VFX (the Pal turns happy, then vanishes — the "becomes light
-  and travels into the player" effect is still missing)
-- Real food-item feeding for wild Pals is shelved (the game's ownership gate
-  is a raw C++ vtable call, unreachable from Lua)
+- **Steam Workshop:** [PalBonds - The Befriending Mod](https://steamcommunity.com/sharedfiles/filedetails/?id=3797816321)
+  — installs its own UE4SS dependency for you.
+- **Nexus Mods / manual install:** grab the latest `PalBonds-vX.Y.Z.zip` under
+  [`release/`](./release), or build it yourself from [`mod/PalBonds/`](./mod/PalBonds).
 
-The ordered, authoritative list of what's left lives at the top of
-[`CLAUDE.md`](./CLAUDE.md), not here.
+## Requirements
 
-## What you need installed
+- **Palworld**
+- **UE4SS** (the experimental Palworld build) — installed automatically if you
+  use the Steam Workshop version; otherwise grab it from
+  [Nexus Mods](https://www.nexusmods.com/palworld/mods/2237) or the
+  [Palworld Modding Docs](https://pwmodding.wiki/docs/category/ue4ss) first.
 
-1. **Palworld**, obviously, with a save you're okay experimenting on.
-   Singleplayer or a self-hosted server only — see the ban-risk note below.
-2. **UE4SS** (the experimental Palworld build) — the Lua scripting host this
-   mod runs on. Install it into your Palworld installation per the
-   [Palworld Modding Docs UE4SS guide](https://pwmodding.wiki/docs/category/ue4ss).
-3. **FModel** — for inspecting the game's assets/data tables while we track
-   down real class and function names. Not needed at runtime, only for
-   research.
-4. Optionally **PalSchema**, if any subsystem turns out to be a plain data
-   value we'd rather patch as JSON than hook in Lua (see DESIGN.md §4).
+Use only **one** UE4SS install (manual or Workshop) at a time — running both
+together crashes the game.
 
-## Local install
+## Manual install
 
-Copy `mod/PalBonds/` into your game's UE4SS `Mods/` folder. Note the real
-path includes `ue4ss/` — corrected 2026-09-06 to match the actual install:
+Drop the whole `PalBonds` folder into your UE4SS `Mods/` directory:
 
 ```
-<Palworld install>/Pal/Binaries/Win64/ue4ss/Mods/PalBonds/
+Pal/Binaries/Win64/ue4ss/Mods/PalBonds/        <- manual UE4SS install
+Mods/NativeMods/UE4SS/Mods/PalBonds/           <- Steam Workshop UE4SS install
+```
+
+```
+PalBonds/
 ├── enabled.txt
 └── Scripts/
     └── main.lua (+ the rest)
 ```
 
-Then launch the game — `main.lua` should print a startup line to the UE4SS
-console confirming it loaded. Everything past that point is whatever the
-current phase in DESIGN.md has implemented.
+Launch the game — UE4SS's console should print a line confirming PalBonds
+loaded.
 
-## Ban-risk / scope note
+## Controls
 
-Modding is safe in singleplayer and on a server you control. Official
-Pocketpair servers and most community servers can flag or ban modified
-clients. This project is scoped to singleplayer/self-host; see DESIGN.md §7
-for the full list of caveats (patch fragility, chunk-streaming edge cases,
-multiplayer replication being out of scope for now).
+| Key | Action |
+|---|---|
+| `4` | Radial menu — Pet and Feed a wild Pal you're looking at |
+| `F8` | Play with the wild Pal you're looking at |
+| `F9` | Show / hide personality tags |
+| `F10` | Pause / resume passive friendship gain for followers |
 
-## Next step
+Get close and look directly at the Pal for any of these.
 
-Read the "⚠️ EMPEZAR ACÁ" section at the top of [`CLAUDE.md`](./CLAUDE.md).
-It is the authoritative ordered list of what's left and is kept current.
-DESIGN.md §8's research questions are all answered, and DESIGN.md §12
-carries a staleness warning — trust `CLAUDE.md` over both.
+## Scope
 
-[`docs/phase1-research.md`](./docs/phase1-research.md) is the FModel setup
-guide, still live because FModel is the method for the one remaining
-research question (the join VFX).
+Singleplayer and self-hosted worlds only. Mods are not permitted on official
+Pocketpair servers, and using one there risks a ban.
+
+## For developers
+
+This repo is also a record of getting a UE4SS Lua mod to do things Palworld
+was never built to expose — real AI disposition swaps, a working follow
+action, sphere-less capture, combat assist through the Hate system, and more.
+If you're building your own Palworld mod, [`docs/hook-points.md`](./docs/hook-points.md)
+is a pass-by-pass log of what was tried, what worked, what didn't, and the
+exact class and function names involved. [`DESIGN.md`](./DESIGN.md) has the
+original subsystem breakdown; [`CLAUDE.md`](./CLAUDE.md) tracks current state,
+known issues, and what's next.
+
+`tools/harness/` is an offline test harness (fengari, a Lua VM in JS) that
+runs the mod's real source against stubbed UE4SS globals — useful for
+catching load-time and logic bugs without a full game launch.
+
+## License
+
+MIT — see [`LICENSE`](./LICENSE). Fork it, learn from it, build on it.
+
+Unofficial fan mod. Palworld belongs to Pocketpair, Inc.

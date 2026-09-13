@@ -6,7 +6,7 @@ guy, scratch its head, give it a berry, and see what happens.
 Now you can, and that's the whole mod!
 
 
-[h2]How it goes?[/h2]
+[h2]How it goes[/h2]
 
 You find a Pal. You pet it. It's suspicious. You feed it something. It's less
 suspicious. You keep at it, and at some point it decides you're alright and
@@ -29,7 +29,7 @@ walk over:
 [list]
 [*][b]Normal[/b] - whatever its species normally does
 [*][b]Curious[/b] - stops and looks at you as you come closer
-[*][b]Timid[/b] - too shy will run and hide
+[*][b]Timid[/b] - too shy, runs and hides
 [*][b]Aloof[/b] - will probably ignore you
 [*][b]Grumpy[/b] - all posturing, until you look like easy prey
 [*][b]Hostile[/b] - will hunt you down
@@ -74,9 +74,10 @@ UE4SS - it's listed as required, so Steam grabs it for you.
 but a Pal walking with you slowly warms up to you anyway.
 [*]Don't leave a bonded Pal behind. Distance costs you trust.
 [*]High-level Pals take longer. Low-level ones come around fast, but bosses may be harder to befriend.
-[*]A Pal that joins you this way shows up already fond of you. so free extra trust points.
-[*]Food rarity matters, the better the food the more friendship it will give, and Kinship peaches are your best friend to tame them.
-[*]This mod will allow you to befriend pals you wouldnt usually capture, keep that in mind.
+[*]A Pal that joins you this way shows up already fond of you, so it starts with extra trust.
+[*]Food rarity matters, the better the food the more friendship it will give, and Kinship Peaches are your best bet to tame them.
+[*]This mod will allow you to befriend pals you wouldn't usually capture, keep that in mind.
+[*]Only tested in Singleplayer.
 [/list]
 
 

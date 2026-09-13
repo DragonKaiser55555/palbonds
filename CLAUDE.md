@@ -29,12 +29,12 @@ currently have as the last stable version of our mod as its better than anything
 we have gotten before"*.
 
 - **GitHub:** `master` is the only branch. Commit `1d06a5a` is the stable code;
-  the commit after it adds the store packages and these notes.
+  later commits add the store packages, docs, and a rewritten public README.
 - **Steam Workshop:** item **3797816321**, "PalBonds - The Befriending Mod",
   updated to 1.1.0 by Dragón. Visibility (hidden or public) is his call. He
-  edited the live description himself after `release/workshop-description.txt`
-  was saved, so the Steam page is the source of truth for wording.
-- **Nexus Mods:** package ready; publishing it is Dragón's step.
+  pasted his final edit of the description back into
+  `release/workshop-description.txt`, so that file now matches the live page.
+- **Nexus Mods:** package ready; Dragón plans to publish it 2026-09-13.
   `release/PalBonds-v1.1.0.zip` holds one `PalBonds/` folder (enabled.txt,
   README.txt, LICENSE, the 8 scripts, byte-identical to the Workshop 1.1.0
   scripts). `release/nexus-description.txt` is his text with Nexus headings,
@@ -496,10 +496,7 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 6. **`find_targeted_pal` costs 42-47ms per scan** while the radial menu is open.
 7. **No settings screen.** The F9 and F10 toggles are session-only.
 8. **Friendly fire** is contained, not prevented (see the combat section).
-9. **Doc drift:** the GitHub `README.md` Status section is stale (it still
-   advertises "Pet (F9), Feed (F10)" and predates following working). The
-   player README and both store descriptions are current.
-10. **Hotkeys fire while typing in chat** (see Pending).
+9. **Hotkeys fire while typing in chat** (see Pending).
 
 ---
 
@@ -569,11 +566,10 @@ In order:
 2. **Spawner despawn** (known defect 1): find how capture detaches a Pal from
    its spawner, then apply that to bonded followers. A read-only probe that logs
    a bonded Pal's spawner and group comes first.
-3. **Fix the GitHub README** (known defect 9).
-4. **Hotkey guard while typing in chat** (small, Pending).
-5. **Settings screen** decision: where the F9/F10 toggles and balance knobs
+3. **Hotkey guard while typing in chat** (small, Pending).
+4. **Settings screen** decision: where the F9/F10 toggles and balance knobs
    would live. The last part of the Polish category.
-6. **Multiplayer** only if Dragón wants it (see Pending).
+5. **Multiplayer** only if Dragón wants it (see Pending).
 
 Deliberately NOT next: the controller swap (see "Two routes to the right
 brain"), a fallback only, and the current approach works.
