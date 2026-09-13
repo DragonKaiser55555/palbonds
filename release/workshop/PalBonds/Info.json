@@ -1,0 +1,24 @@
+{
+  "ModName": "PalBonds - The Befriending Mod",
+  "PackageName": "PalBonds",
+  "Thumbnail": "thumbnail.jpg",
+  "Version": "1.1.0",
+  "DebugMode": false,
+  "MinRevision": 82182,
+  "Author": "DragonKaiser",
+  "Dependencies": [
+    "UE4SSExperimentalPW"
+  ],
+  "Tags": [
+    "UE4SS",
+    "Gameplay"
+  ],
+  "InstallRule": [
+    {
+      "Type": "Lua",
+      "Targets": [
+        "./Scripts"
+      ]
+    }
+  ]
+}

@@ -6,7 +6,7 @@ guy, scratch its head, give it a berry, and see what happens.
 Now you can, and that's the whole mod!
 
 
-[h2]How it goes?[/h2]
+[size=5][b]How it goes?[/b][/size]
 
 You find a Pal. You pet it. It's suspicious. You feed it something. It's less
 suspicious. You keep at it, and at some point it decides you're alright and
@@ -21,7 +21,7 @@ Pals swinging at the same Chikipi is exactly as chaotic as it sounds, and if
 they clip each other in the process, that's between them and you.
 
 
-[h2]Every wild Pal has a personality now[/h2]
+[size=5][b]Every wild Pal has a personality now[/b][/size]
 
 There's a tag above their head telling you who you're dealing with before you
 walk over:
@@ -42,7 +42,7 @@ another one.
 Tags bother you? F9 turns them off.
 
 
-[h2]They remember what you do[/h2]
+[size=5][b]They remember what you do[/b][/size]
 
 Hit a Pal that trusts you and it flinches. Do it again and that's it - it's
 done with you. It won't follow you, won't let you feed it, won't come back. And
@@ -52,7 +52,7 @@ Wander too far and leave one behind, and it gives up on you too. Less dramatic,
 but you still lost it.
 
 
-[h2]Controls[/h2]
+[size=5][b]Controls[/b][/size]
 
 [list]
 [*][b]4[/b] - the usual radial menu. Pet and feed, except now it works on wild Pals too
@@ -62,12 +62,32 @@ but you still lost it.
 [/list]
 
 
-[h2]Requirements[/h2]
+[size=5][b]Requirements[/b][/size]
 
-UE4SS - it's listed as required, so Steam grabs it for you.
+[url=https://www.nexusmods.com/palworld/mods/2237]UE4SS Experimental (Palworld)[/url] - install it first.
+
+Use only ONE UE4SS. If you already use the UE4SS from the Steam Workshop, don't
+install this one too - the game crashes when two copies load.
+
+Singleplayer and your own hosted worlds only. Don't use mods on official servers.
 
 
-[h2]A few things[/h2]
+[size=5][b]Installation[/b][/size]
+
+Unzip and drop the whole [b]PalBonds[/b] folder into the Mods folder of your UE4SS:
+
+[list]
+[*]UE4SS installed by hand: [b]Palworld/Pal/Binaries/Win64/ue4ss/Mods/[/b]
+[*]UE4SS from the Steam Workshop: [b]Palworld/Mods/NativeMods/UE4SS/Mods/[/b]
+[/list]
+
+The folder includes enabled.txt, so it loads on its own. If it doesn't, add the
+line [b]PalBonds : 1[/b] to mods.txt in that same Mods folder.
+
+Prefer Steam? The same mod is on the Workshop, where UE4SS installs automatically.
+
+
+[size=5][b]A few things[/b][/size]
 
 [list]
 [*]Bonding takes a while. That's the point. Interactions do most of the work,
@@ -80,12 +100,12 @@ but a Pal walking with you slowly warms up to you anyway.
 [/list]
 
 
-[h2]Bugs, ideas, complaints[/h2]
+[size=5][b]Bugs, ideas, complaints[/b][/size]
 
 Drop a comment. It's a young mod and I'd rather hear about it.
 
 Source is on GitHub under MIT if you want to poke at it or build on it:
-https://github.com/DragonKaiser55555/palbonds
+[url=https://github.com/DragonKaiser55555/palbonds]github.com/DragonKaiser55555/palbonds[/url]
 
 The repo also has the full development notes - a lot of digging into how
 Palworld's following, AI presets and friendship system actually work under the

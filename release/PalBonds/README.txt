@@ -35,7 +35,15 @@ WHAT IT ADDS
     still while you are looking at them so you can actually interact with them.
 
   * They fight for you. If something attacks you, your bonded Pals will go
-    after it.
+    after it. And if something attacks one of them while you are busy, that
+    Pal fights back on its own.
+
+  * Food matters. Feeding gives more trust the rarer the food is. Kinship
+    Peaches are special - they can only be found, and they count for a lot.
+
+  * Alphas are harder. On top of the usual level scaling, alpha Pals need twice
+    the trust before they will join you. Even raid bosses can be won over, if
+    you survive long enough.
 
   * A Pal that joins you this way arrives already fond of you, with a large
     friendship head start.
@@ -61,12 +69,21 @@ REQUIREMENTS
   If you installed this from the Steam Workshop, UE4SS is listed as a required
   item and Steam will have installed it for you.
 
-  Installing by hand instead: you need UE4SS (the Palworld/experimental build)
-  set up first, then drop the PalBonds folder into
+  Installing by hand instead (for example from Nexus Mods): set up UE4SS first,
+  then drop the whole PalBonds folder into the Mods folder of the UE4SS you use.
 
-      Palworld/Mods/NativeMods/UE4SS/Mods/
+    - UE4SS Experimental (Palworld), installed by hand into the game folder:
 
-  and add a line reading
+          Palworld/Pal/Binaries/Win64/ue4ss/Mods/
+
+    - UE4SS from the Steam Workshop:
+
+          Palworld/Mods/NativeMods/UE4SS/Mods/
+
+  Use ONE UE4SS, never both at once - the game crashes if two copies load.
+
+  The PalBonds folder includes enabled.txt, which is normally all UE4SS needs.
+  If the mod still does not load, add a line reading
 
       PalBonds : 1
 
@@ -75,6 +92,9 @@ REQUIREMENTS
 
 THINGS WORTH KNOWING
 --------------------
+
+  * Singleplayer and your own hosted worlds only. Do not use mods on official
+    servers.
 
   * Your own Pals are never affected. Party members, Palbox Pals and base
     workers are all excluded - this only ever touches genuinely wild Pals.
