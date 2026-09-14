@@ -13,6 +13,15 @@ behavior the game already has.
 
 ![PalBonds](images/palbonds-thumbnail.jpg)
 
+## Built with AI assistance
+
+The design, the Lua code, and most of the documentation in this repo —
+including the reverse-engineering notes in
+[`docs/hook-points.md`](./docs/hook-points.md) — were built collaboratively
+with Claude (Anthropic). If that's something you'd rather not run on your
+machine, that's entirely your call — this section exists so you can make it
+before installing, not after.
+
 ## Features
 
 - **Pet, Feed, and Play** on wild Pals through the game's own radial menu (and
