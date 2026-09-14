@@ -17,8 +17,8 @@ behavior the game already has.
 
 The design, the Lua code, and most of the documentation in this repo —
 including the reverse-engineering notes in
-[`docs/hook-points.md`](./docs/hook-points.md) — were built collaboratively
-with Claude (Anthropic). If that's something you'd rather not run on your
+[`docs/hook-points.md`](./docs/hook-points.md) — were built with AI
+assistance. If that's something you'd rather not run on your
 machine, that's entirely your call — this section exists so you can make it
 before installing, not after.
 
