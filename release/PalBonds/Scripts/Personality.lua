@@ -729,8 +729,33 @@ function Personality.GetOrInitState(palActor)
         -- project has to "at spawn," since nothing here runs a real per-
         -- spawn hook). "normal" tier just keeps the species default;
         -- anything else OVERRIDES it as the effective disposition.
+        -- 2026-09-14 (Dragón's report): an already-captured Pal — summoned as
+        -- the active Otomo, or placed to work at a base — was rolling a
+        -- brand-new random personality tier the first time this system saw
+        -- it, because the periodic scan feeds every live Pal actor into
+        -- GetOrInitState, owned or wild, and until now only the monster/NPC
+        -- checks below ran before the roll. The roll is a wild-Pal-only
+        -- concept: enforcement already refuses to WRITE a rolled tier onto an
+        -- owned Pal's real AI (see try_enforce_personality_with_sensor's own
+        -- ownership check), so this stops the tier from being assigned at all
+        -- for a Pal that is already the player's own.
+        --
+        -- Lazy require, same reason and pattern as that existing check:
+        -- Capture.lua requires this module, so a top-level require here would
+        -- be circular; requiring inside the function body is safe because
+        -- both modules are fully loaded by the time this code actually runs.
+        --
+        -- Confirmed live: Dragón summoned 22 base Pals + 1 Otomo and every
+        -- one of the 23 was excluded, while nearby wild Pals kept rolling
+        -- real variety.
+        local okOwnReq, CaptureForOwnership = pcall(require, "Capture")
+        local isOwnedPal = okOwnReq and CaptureForOwnership and CaptureForOwnership.IsAlreadyOwned
+            and safe_call(function() return CaptureForOwnership.IsAlreadyOwned(palActor) end)
+
         local rolledTier
-        if not is_confirmed_pal_monster(palActor) then
+        if isOwnedPal then
+            rolledTier = "normal"
+        elseif not is_confirmed_pal_monster(palActor) then
 
             -- Hundred-and-seventy-first pass: structural exclusion, checked
             -- BEFORE the preset-name table — catches human NPCs even when

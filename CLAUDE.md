@@ -1,6 +1,6 @@
 # 32 — PalBonds (behaviour mod for Palworld)
 
-**Progress: 97%**
+**Progress: 98%**
 
 | Category | Weight | Done | Contributes |
 |---|---|---|---|
@@ -12,61 +12,187 @@
 | Trust system | 15% | 100% | 15% |
 | Following and combat assist | 10% | 95% | 9.5% |
 | Threshold capture / flee | 5% | 100% | 5% |
-| Polish and configuration | 5% | 60% | 3% |
+| Polish and configuration | 5% | 85% | 4.25% |
 
 Following stays at 95% for the open spawner-despawn defect. Polish counts the
-README, both store descriptions, licence, screenshots, the Workshop 1.1.0 upload
-and the Nexus package as done; the settings screen and the Nexus publish are
-not. Recalculate whenever a category moves, and keep the `Progreso:` line of
-this project's block in `../game proyects.txt` in sync.
+README, both store descriptions, licence, screenshots, the Workshop upload, the
+Nexus package and the Nexus publish as done (published on Steam, Nexus, and
+announced in 2 Reddit posts, 2026-09-14; **v1.1.1 published to both stores
+2026-09-15**); only the settings screen is left. Recalculate whenever a
+category moves, and keep the `Progreso:` line of this project's block in
+`../game proyects.txt` in sync.
+
+**Not yet reflected in the table, decide with Dragón before changing it:** a
+subscriber has reported microstutters against 1.1.0 (see "Next steps" #1). If
+that reproduces and turns out to be the mod's doing, it is a performance defect
+in a shipped build and the affected category should come down accordingly —
+but do not move the number unilaterally.
 
 ---
 
-## Where we stand — read this first (end of the 2026-09-12 session)
+## Where we stand — read this first (end of the 2026-09-15 session)
 
-**v1.1.0 is the stable, published build.** Dragón: *"consider this version we
-currently have as the last stable version of our mod as its better than anything
-we have gotten before"*.
+**v1.1.1 IS PUBLISHED on both stores.** It is v1.1.0 plus exactly ONE confirmed
+fix (owned Pals no longer roll a personality and no longer show a tag) — 2
+files, 41 lines, nothing else. Everything from the despawn investigation was
+reverted rather than shipped; see "KNOWN LIMITATION" below.
+
+- **Nexus:** published 2026-09-14 11:56PM via the file row's **Update** button
+  (not "Add file" — see "Publishing procedure" below). Mod version header
+  reads 1.1.1, one file listed, 1.1.0 archived, changelog entry saved.
+- **Steam Workshop:** published 2026-09-15 00:29 on the same item
+  **3797816321** — no duplicate item. Change note: *"Owned Pals no longer roll
+  a random personality or show a personality tag - that system is for wild Pals
+  only."*
+- **Known Issues** (the bonded-Pal despawn) is now stated on BOTH store pages,
+  in Dragón's own wording, which is the accurate one — following starts at
+  `FOLLOW_TRIGGER_RATIO = 0.5` (`Trust.lua:35`), so "50%+ friendship bar" is
+  literal, and "complete the bond" is correct because filling the bar fires the
+  sphere-less capture and an owned Pal is no longer spawner-owned.
+
+**FIRST THING TOMORROW (2026-09-16): the microstutter report.** A Workshop
+commenter, *Goldaer*, reports the mod introduces noticeable microstutters,
+visible on Steam's performance overlay. Filed against 1.1.0, so 1.1.1 does not
+change it. Dragón saw the comment and deferred it deliberately: *"we will
+tackle that tomorrow, tonight i want to sleep"*. This is now the top open item,
+ahead of the settings screen. Relevant prior work: the `[RADIAL-REDIRECT-PERF]`
+timing line (suppressed by default, prints any scan taking 15ms or more), the
+gate-before-reflection rule for global hooks, and the fact that run 37 already
+ruled out logging as the cause of fight lag.
 
 - **GitHub:** `master` is the only branch. Commit `1d06a5a` is the stable code;
   later commits add the store packages, docs, and a rewritten public README.
 - **Steam Workshop:** item **3797816321**, "PalBonds - The Befriending Mod",
-  updated to 1.1.0 by Dragón. Visibility (hidden or public) is his call. He
-  pasted his final edit of the description back into
-  `release/workshop-description.txt`, so that file now matches the live page.
-- **Nexus Mods:** package ready; Dragón plans to publish it 2026-09-13.
-  `release/PalBonds-v1.1.0.zip` holds one `PalBonds/` folder (enabled.txt,
-  README.txt, LICENSE, the 8 scripts, byte-identical to the Workshop 1.1.0
-  scripts). `release/nexus-description.txt` is his text with Nexus headings,
-  the Nexus UE4SS requirement and an install section.
+  published at 1.1.0. https://steamcommunity.com/sharedfiles/filedetails/?id=3797816321
+- **Nexus Mods:** published 2026-09-14. https://www.nexusmods.com/palworld/mods/5623
+- **Reddit:** announced in 2 posts.
+- **The mod now has real subscribers beyond Dragón.** Anything pushed to
+  Steam/Nexus from here on reaches them too — see "Publishing safety" below
+  before touching the uploader.
 - **Confirmed in live play** (runs 37-39 and the raid-boss test): following,
   combat assist, self-defence, the churn and hit-lag fixes, feed by rarity, the
   alpha x2 bar, the F8 cheer stopping with the Pal, and bonding a raid boss
   without breaking anything.
 
-**Dragón's machine right now (not in the repo):**
-- **Manual install DISABLED.** `Pal\Binaries\Win64\dwmapi.dll` is renamed
-  `dwmapi.dll.MODS-DISABLED` and `ue4ss\Mods\PalBonds\enabled.txt` is renamed
-  `enabled.txt.MODS-DISABLED`. He plays the Workshop copies: subscribed to
-  PalBonds (3797816321) and UE4SS Experimental (3625223587). Never enable both
-  UE4SS copies at once; the game crashes when two load.
-- **`steamapps\workshop\content\1623730\3797816321\` is both his subscription
-  and the uploader's working folder.** Never unsubscribe on this PC: Steam
-  deletes the folder, which is how the uploader lost the item once. To publish
-  an update: replace the 8 scripts there, bump `Version` in its Info.json,
-  upload with the Palworld Mod Uploader, and mirror the result in
-  `release/workshop/PalBonds/` (the recoverable copy).
-- The folders 3797815819 and 3797816106 in that directory are leftover uploader
-  templates, not real Workshop items (the owner gets an error page). Harmless.
+### Publishing safety — read before touching anything Steam/Nexus-facing
+
+Dragón, 2026-09-14, after seeing changes land in his local Workshop content
+folder: *"the idea is that we dont upload things we havent checked yet... we
+cant risk something breaking the game for others or causing more problems than
+what it fix"*.
+
+- `steamapps\workshop\content\1623730\3797816321\` is a **local folder** on
+  Dragón's disk. It is both his subscription (what his game reads when he
+  plays the Workshop copy) and the Palworld Mod Uploader's source folder. It
+  is completely fine — expected, even — to keep deploying fixes there so
+  Dragón can test them in a real session; that is how testing before
+  publishing works in this project. **Editing files in it does not reach
+  Steam's servers or any other subscriber.** Only running the Mod Uploader
+  (which bumps `Version` in `Info.json` and pushes a new version) does that,
+  and only that action affects the other subscribers who now exist.
+- Never run, or suggest running, the Mod Uploader, `git push` to a shared
+  remote treated as a release, or the Nexus upload flow unless Dragón
+  explicitly asks for that specific step, separately from "deploy this fix so
+  I can test it."
+- **One step at a time.** When Dragón names a later step alongside the current
+  one ("check the Nexus page, then we do the Steam Workshop"), that is him
+  describing the order of work, not authorising the second half. Do the step he
+  asked for, report, and stop — including the read-only prep for the next step,
+  which from his side looks identical to starting it. He interrupted a turn
+  over exactly this on 2026-09-15.
+
+### Publishing procedure — both stores, as actually performed for 1.1.1
+
+**Nexus (mod 5623).** Use the **Update** button on the existing file's row, NOT
+"Add file". "Add file" creates an independent second entry and leaves the old
+one live; Update links them, archives 1.1.0 (still downloadable under "File
+archive"), and — the part that matters — tells everyone who downloaded the old
+file, including Vortex and the Nexus app, that an update exists. Fields that
+were used: category Main, display name `PalBonds V1.1.1`, file version `1.1.1`,
+**tick "update mod version to match"** (this is what bumps the page header;
+without it the page keeps advertising the old version), allow mod manager
+download, set as primary, plus a changelog entry. The changelog is what Vortex
+shows at the update prompt, so it is worth filling in.
+
+**Steam Workshop (item 3797816321).** The uploader's source folder is
+`steamapps\workshop\content\1623730\3797816321\`. Publishing means: replace the
+8 scripts, bump `Version` in `Info.json`, leave `.workshop.json` **untouched**,
+then Dragón runs the Palworld Mod Uploader.
+
+- `.workshop.json` holds `publishedfileid` and is the only thing tying the
+  local folder to the published item. Preserve it and the uploader updates
+  3797816321; lose it and the uploader would publish a DUPLICATE mod page.
+  After a successful publish the uploader writes `changenote` and
+  `last_published_version` back into it — a cheap way to confirm the push
+  landed.
+- **Reload the uploader** before publishing if it was open while the files
+  changed; it reads `Info.json` at scan time. The version it displays is the
+  proof — if it still shows the old number it has stale data, and uploading
+  then would push new scripts under the old version.
+- Edit `Version` **in place** in the live `Info.json` rather than copying
+  `release/workshop/PalBonds/Info.json` over it, so no other field or the file's
+  line endings can drift.
+- `Info.json`'s `MinRevision` is a floor, not a pin — a Palworld update does not
+  require changing it.
+
+**Dragón's machine right now (not in the repo), as of 2026-09-15 — WORKSHOP
+MODE, manual install disabled:**
+- **Re-subscribed to both Workshop items** (PalBonds 3797816321, UE4SS
+  Experimental 3625223587) so the item folder would be recreated for the
+  uploader. Confirmed working in game before the upload.
+- **Manual install is DISABLED**, deliberately and BEFORE resubscribing, so two
+  UE4SS loaders and two copies of PalBonds could never run at once:
+  `Pal\Binaries\Win64\dwmapi.dll` → `dwmapi.dll.MODS-DISABLED` (kills the whole
+  manual stack) and `ue4ss\Mods\PalBonds\enabled.txt` →
+  `enabled.txt.MODS-DISABLED` (second layer). Both are plain renames; all 8
+  scripts under `ue4ss\Mods\PalBonds\Scripts\` are intact. Reverse the two
+  renames to go back to manual/DEV mode.
+- **The copy the game runs is `Mods\NativeMods\UE4SS\Mods\PalBonds\`, and it is
+  currently at 1.1.1** — md5-identical to `mod/` on all 8 scripts. Steam's
+  re-download on resubscribe brought it current, which is NOT the usual
+  behaviour (see the fourth-copy warning below): normally that copy is written
+  once and never re-synced. **Always verify it by hash rather than assuming
+  either way.**
+- The pre-unsubscribe backup at
+  `save-backups/workshop-3797816321-before-unsubscribe-2026-09-14/` is still
+  the insurance copy if Steam ever refuses a resubscribe. It contains a
+  `.workshop.json` with the real `publishedfileid`, which means the uploader
+  folder can be rebuilt **by hand, without resubscribing at all** — worth
+  remembering, because resubscribing is what forces the manual install off.
+- **The live install now runs the clean v1.1.1 build**, byte-identical to
+  `mod/` on all 8 scripts — every diagnostic and experiment from the despawn
+  investigation was reverted, and `DEBUG_LOGGING` / `SHOW_DIAGNOSTICS` are
+  back to `false` (the shipped configuration). To debug again, set them
+  `true` in the live install's `Logger.lua` only; `palbonds-live.log` is
+  written to `Pal\Binaries\Win64\palbonds-live.log` (opened in `"w"` mode, so
+  it truncates fresh each launch), and **remember that `SHOW_DIAGNOSTICS` is
+  a separate switch** — `DEBUG_LOGGING` alone leaves every suppressed tag
+  invisible, which cost two test runs this session.
+- **Historical, for when Dragón resubscribes to Workshop later for QA:**
+  `steamapps\workshop\content\1623730\3797816321\` was both his subscription
+  and the uploader's working folder — publishing still means replacing the 8
+  scripts there, bumping `Version` in `Info.json`, and uploading with the
+  Palworld Mod Uploader. **Found 2026-09-14, still true whenever Workshop is
+  subscribed again:** the file the game actually runs while Workshop-
+  subscribed is a FOURTH copy, not the Workshop content folder itself —
+  Palworld's mod manager copies each subscribed mod once into
+  `Palworld\Mods\NativeMods\UE4SS\Mods\<ModName>\` and does not keep it synced
+  afterward (confirmed stale a full day after the source was fixed). Any
+  future Workshop-based test needs that copy refreshed by hand too, and
+  `palbonds-live.log` has always lived at `Pal\Binaries\Win64\palbonds-live.log`
+  regardless of which Mods subfolder the script loaded from — never inside a
+  Mods folder itself. The folders 3797815819 and 3797816106 next to the real
+  item are leftover uploader templates, not real Workshop items — harmless.
 - **Save backups (gitignored):** `save-backups/2026-09-12_before-raid-boss-test/`
   (SaveGames plus `SteamCloud_1623730`, every file MD5-verified),
-  `save-backups/workshop-3797816321-published-1.0.0/` and
-  `save-backups/recreated-workshop-folder-3797816321/`. To restore saves: close
-  Palworld, replace the contents of `%LOCALAPPDATA%\Pal\Saved\SaveGames\` with
-  the backup's (and `Steam\userdata\<account>\1623730\` with
-  `SteamCloud_1623730`), then launch. The Global Palbox is the local
-  `GlobalPalStorage.sav` and is included. Real Steam and world IDs are
-  deliberately not written in this public file.
+  `save-backups/workshop-3797816321-published-1.0.0/`,
+  `save-backups/recreated-workshop-folder-3797816321/`, and
+  `save-backups/workshop-3797816321-before-unsubscribe-2026-09-14/`. To
+  restore saves: close Palworld, replace the contents of
+  `%LOCALAPPDATA%\Pal\Saved\SaveGames\` with the backup's (and
+  `Steam\userdata\<account>\1623730\` with `SteamCloud_1623730`), then launch.
+  The Global Palbox is the local `GlobalPalStorage.sav` and is included. Real
+  Steam and world IDs are deliberately not written in this public file.
 
 **Stable-build flags:** `DEBUG_LOGGING = false` in every tree (to debug, set it
 `true` in the live install's `Logger.lua` only), `ACTION_CHANGE_PROBE = false`,
@@ -83,6 +209,21 @@ we have gotten before"*.
   `Palworld/Mods/NativeMods/UE4SS/Mods/` (Workshop UE4SS).
 - Thunderstore needs a different layout (manifest.json, 256x256 icon,
   mod/scripts, mod/enabled.txt, shimloader dependency). Not built.
+
+## Species name mapping
+
+Dragón refers to his own Pals by their in-game species name; the code and
+every log line show the internal `CharacterID`/class name instead. Confirmed
+mappings so far (from `docs/hook-points-archive.md`'s species-mapping
+correction and repeated log cross-references) — **check here before ever
+flagging a log's species name as a "mismatch" or "mix-up":**
+
+| Dragón's name | Internal class / CharacterID |
+|---|---|
+| Petallia | `BP_FlowerDoll_C` (alpha/boss form: `BP_FlowerDoll_BOSS_C`) |
+| Tanzee | `BP_Monkey_C` |
+| Flopie | `BP_FlowerRabbit_C` |
+| Daedream | `BP_DreamDemon_C` |
 
 ## What this mod is
 
@@ -126,6 +267,90 @@ death/respawn, commit `94adf54`) are in 1.1.0. Confirmed in live play:
   and a flat +50000 friendship head start
 - Betrayal (player hits the Pal) and bond loss by distance
 - F9 personality tags on/off, F10 passive friendship gain on/off
+
+### Owned-Pal tag fix, 2026-09-14 — CONFIRMED, and the only change in v1.1.1
+
+Dragón noticed already-captured Pals were rolling a random personality tier
+(and showing its tag) the first time they were summoned as the active Otomo
+or placed to work at a base. Root cause: `Personality.GetOrInitState` creates
+state for every `PalCharacter` the periodic scan finds via `FindAllOf` —
+owned or wild — and only checked monster/NPC status before rolling, never
+ownership. Enforcement already refused to ever *write* a rolled tier onto an
+owned Pal's real AI (`try_enforce_personality_with_sensor`'s existing
+`Capture.IsAlreadyOwned` check), but nothing stopped the roll itself from
+being assigned and displayed for a Pal that was already the player's own.
+
+**The fix, both halves:**
+1. `Personality.GetOrInitState` checks `Capture.IsAlreadyOwned(palActor)`
+   before rolling, in the same "checked before anything else" position as the
+   existing monster/NPC exclusion — an owned Pal gets `rolledTier = "normal"`
+   unconditionally, same treatment as NPCs/bosses/village NPCs.
+2. `Indicator.lua`'s `personality_display_text` checks the same thing first,
+   before even the broken-bond label, and returns an empty string for any
+   owned Pal — **no tag at all**, per Dragón: *"owned pals should not show
+   tags at all, they're already part of the player's roster so they dont need
+   any tag."*
+
+**Confirmed live.** Dragón summoned 22 base Pals + 1 Otomo (23 owned) plus
+whatever wild Pals were nearby. The log's breakdown: 22 `normal (already
+owned)`, 1 `normal (not a confirmed monster)` — together exactly his 23 owned
+Pals, all excluded — plus 24 genuinely wild Pals rolling real variety and 11
+more landing on `normal` by honest chance (the 35% weight). Then the display
+half was confirmed separately: *"now it looks as it should."*
+
+Minor known quirk, not urgent: one Otomo took the "not a confirmed monster"
+branch rather than "already owned". Same visible result either way.
+
+**Three process lessons from getting here, all of which cost real test runs:**
+1. **A deploy that misses one copy looks exactly like a fix that doesn't
+   work.** The first test showed no change because the build never reached
+   the copy the game actually runs. See "Deploying a change".
+2. **`SHOW_DIAGNOSTICS` is a separate switch from `DEBUG_LOGGING`**, and
+   `[PERSONALITY-ROLL]` is in `SUPPRESSED_TAGS` — so the log looked empty
+   while the code was running fine. Two more tests were spent concluding "it
+   never ran" from a filtered log, against Dragón's direct in-game
+   observation. **His direct observation was right; the log was blind.**
+3. When a log can't distinguish two explanations (here: "excluded because
+   owned" vs "rolled normal by chance"), **fix the log rather than guess** —
+   adding the reason to the line is what actually settled it.
+
+
+### Dev-vs-QA install — Dragón's call, 2026-09-14, adopted
+
+Dragón, after two wasted test cycles in one session: *"felt like we were much
+better before working entirely on local... working with the mod subscribed is
+useful to check what the other players are seeing, but that should be QA, not
+our DEV."* Correct, and now backed by concrete evidence from the same session:
+
+- The Workshop-subscribed setup has (at least) two copies to keep in sync —
+  the subscription/uploader folder AND the separate native-mods copy Palworld
+  actually runs — versus one copy for a manual install. Missing the second
+  one silently produced "the fix didn't work" instead of "the fix never ran,"
+  costing a full test cycle before it was even noticed.
+- `DEBUG_LOGGING = false` is correct for the stable/shipped build, but it also
+  means `palbonds-live.log` — the fast, direct diagnostic this project has
+  relied on since its first session — writes nothing at all. Confirming
+  anything now requires reading UE4SS's own log instead
+  (`Palworld\Mods\NativeMods\UE4SS\UE4SS.log`, or
+  `Pal\Binaries\Win64\ue4ss\UE4SS.log` for a manual install), which mixes
+  engine noise with mod output and has none of `Logger.lua`'s own filtering.
+- A manual install lets `DEBUG_LOGGING` be flipped `true` in exactly one file,
+  in Dragón's own dwmapi-toggled copy, with zero effect on what any subscriber
+  sees — the same isolation the "Publishing safety" section above already
+  established for local edits, just applied to the *manual* copy instead of
+  the Workshop one.
+
+**Going forward: active development uses the manual install; the Workshop
+subscription is for periodic QA only** — confirming what real subscribers
+experience on a build about to be published, not day-to-day iteration. To
+switch back to manual for a dev session: re-enable
+`Pal\Binaries\Win64\dwmapi.dll` and
+`ue4ss\Mods\PalBonds\enabled.txt` (reverse the `.MODS-DISABLED` rename), and
+make sure the Workshop-based UE4SS ("UE4SS Experimental", 3625223587) is not
+also active at the same time — **never both**, the game crashes when two
+UE4SS copies load. Exact toggle mechanics for disabling a subscribed Workshop
+mod without unsubscribing are Dragón's own call/action in Palworld's in-game
+mod list; not yet exercised this session.
 
 ### Cleanup pass, 2026-09-11
 
@@ -201,9 +426,16 @@ implementations).
 
 ### Deploying a change
 
-Copy the changed `.lua` to all three locations (dev, release staging, live
-install) and confirm with `md5sum` that all three match. A change that is only
-in `mod/` has not been tested by anyone.
+Copy the changed `.lua` to **every** location listed under "Where we stand"'s
+"Dragón's machine right now" note — dev tree, release staging, the manual live
+install, the Workshop content folder, AND (2026-09-14 on) the Workshop native
+mods copy (`Palworld\Mods\NativeMods\UE4SS\Mods\PalBonds\Scripts\`), which is
+the one Dragón's actual play session runs while manual install stays disabled
+— and confirm with `md5sum` that all of them match. A change that is only in
+`mod/` has not been tested by anyone; a change that reaches everywhere except
+the native-mods copy tests nothing either, and looks exactly like "the fix
+didn't work" instead of "the fix never ran" — this already cost one full test
+cycle.
 
 ### Verifying a change — do this before asking Dragón to test
 
@@ -475,13 +707,22 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 
 ## Known open defects
 
-1. **Bonded Pals get despawned by their wild spawner** (run 35, and pass 200
-   before it). Not wandering and not a teleport: two Petallias went unreadable
-   in the same second and reported an identical distance. The spawner
-   (`APalNPCSpawnerBase`, with `Tick_Despawning`,
-   `LocationResetDistance_SpawnerToCharacterTooFar`, `RemoveGroupCharacter`)
-   still owns them. Mechanism to find first: how capture detaches a Pal from its
-   spawner group.
+0. **Microstutters reported by a subscriber — UNVERIFIED, top priority.**
+   Workshop comment from *Goldaer*, 2026-09-14, against 1.1.0: the mod
+   "appears to introduce a lot of microstutters that are really noticeable",
+   visible on Steam's performance overlay. Not reproduced by us yet and not
+   yet confirmed to be the mod's doing. This is the first report of a
+   performance problem from someone who is not Dragón, which makes it more
+   valuable than an internal hunch — he runs one machine and one save.
+   Treat it as real until measurement says otherwise. Scheduled for
+   2026-09-16.
+1. **Bonded Pals despawn when the player travels far from where they were
+   bonded.** Investigated exhaustively on 2026-09-14 and then deliberately
+   **PARKED as a known limitation** by Dragón. The mechanism is now fully
+   understood and the dead ends are recorded — read
+   "KNOWN LIMITATION: bonded wild Pals despawn when you travel far" below
+   **before** touching this again, and do not re-run the experiments listed
+   there as dead ends.
 2. **Singleplayer only.** Not designed for co-op or dedicated servers; see
    "Multiplayer support" under Pending. Official servers do not allow mods.
 3. **`LoopAsync` fallbacks still present** in `Trust.lua` and `Indicator.lua`,
@@ -496,7 +737,8 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 6. **`find_targeted_pal` costs 42-47ms per scan** while the radial menu is open.
 7. **No settings screen.** The F9 and F10 toggles are session-only.
 8. **Friendly fire** is contained, not prevented (see the combat section).
-9. **Hotkeys fire while typing in chat** (see Pending).
+9. **Hotkeys fire while typing in chat** — declined by Dragón 2026-09-14 as
+   not worth fixing (see Pending).
 
 ---
 
@@ -527,10 +769,13 @@ four modules, not a patch.
 identified it with the F7 probe, which has since been removed). Played as the
 last statement of `do_play`, logs `[EMOTE]` only on failure.
 
-**Hotkeys fire while typing in chat.** The Kick Keybind reference mod caches
-`PalEditableTextBox` / `PalMultiLineEditableTextBox` / `EditableTextBox` and
-checks `HasKeyboardFocus()` before acting. This project's F8/F9/F10 binds have
-no such guard. Small, worth doing.
+**Hotkeys fire while typing in chat — DECLINED, do not propose again.** The
+Kick Keybind reference mod caches `PalEditableTextBox` /
+`PalMultiLineEditableTextBox` / `EditableTextBox` and checks
+`HasKeyboardFocus()` before acting; this project's F8/F9/F10 binds have no such
+guard. Dragón, 2026-09-14: F8/F9/F10 are "hardly touched during typing," so
+fixing this isn't necessary. Left here only as a historical note of the
+mechanism, in case the calculus changes later.
 
 
 **Play's target-busy gate — do not fix in isolation.** Dragón's call, 2026-09-11:
@@ -560,19 +805,125 @@ these belong in the same piece of work.
 ## Next steps
 
 In order:
-1. **Dragón publishes on Nexus** with `release/PalBonds-v1.1.0.zip` and
-   `release/nexus-description.txt`, and decides when the Workshop item goes
-   public.
-2. **Spawner despawn** (known defect 1): find how capture detaches a Pal from
-   its spawner, then apply that to bonded followers. A read-only probe that logs
-   a bonded Pal's spawner and group comes first.
-3. **Hotkey guard while typing in chat** (small, Pending).
-4. **Settings screen** decision: where the F9/F10 toggles and balance knobs
+1. **Microstutters reported by a real user** (Goldaer, Workshop comment,
+   2026-09-14, against 1.1.0). Dragón's call at the end of the 2026-09-15
+   session: tackle this first, tomorrow. This is a performance defect affecting
+   subscribers, which outranks new features. Start by reproducing it with
+   Steam's performance overlay, then use `[RADIAL-REDIRECT-PERF]` (needs BOTH
+   `DEBUG_LOGGING` and `SHOW_DIAGNOSTICS` true — see "Diagnostics") rather than
+   guessing; run 37 already ruled out logging itself as the fight-lag cause, so
+   do not re-run that.
+2. **Settings screen** decision: where the F9/F10 toggles and balance knobs
    would live. The last part of the Polish category.
-5. **Multiplayer** only if Dragón wants it (see Pending).
+3. **Multiplayer** only if Dragón wants it (see Pending).
+4. **Bonded-Pal despawn** — parked as a known limitation, see below. Worth
+   revisiting only with fresh eyes and a specific new idea, not by
+   re-running the experiments already recorded there.
 
 Deliberately NOT next: the controller swap (see "Two routes to the right
 brain"), a fallback only, and the current approach works.
+
+## KNOWN LIMITATION: bonded wild Pals despawn when you travel far — parked 2026-09-14
+
+Dragón's call after a long, thorough investigation: *"i think we will leave
+this as a known limitation that maybe in a future with a fresh mind we can
+fix."* **None of the code from that investigation shipped.** The whole
+experimental tree is preserved at
+`stale/2026-09-14_despawn-investigation-scripts/` if any of it is ever wanted
+again; the release build is clean v1.1.0 plus only the owned-Pal tag fix.
+
+### What the symptom actually is
+
+A bonded (following, not yet captured) Pal vanishes once the player travels
+far enough from where she was bonded. She is **not** drifting, **not** being
+abandoned, and the player does **not** need to teleport or change maps.
+Dragón watched it happen directly, many times, while she was following
+normally right beside him.
+
+### What is now CONFIRMED, with evidence
+
+1. **The despawn is a gameplay call, not engine streaming.**
+   `UPalCharacterManager::DespawnCharacterByHandle` was hooked read-only and
+   caught the real call live, on a Pal being tracked, `isFollowing=true`.
+2. **Distance from the player is irrelevant.** Measured at the moment of
+   death across three separate runs: **978**, **1564**, and ~1500 units —
+   ordinary following range every time.
+3. **She is in the persistent level; only her SPAWNER is in a streamed cell.**
+   ```
+   Pal:     .../PL_MainWorld5.PL_MainWorld5:PersistentLevel.BP_FlowerDoll_C_...
+   Spawner: .../PL_MainWorld5/_Generated_/MainGrid_L0_X-7_Y6_...:PersistentLevel.BP_PalSpawner_..._UAID_...
+   ```
+   Cell streaming destroys the spawner; gameplay code then despawns the Pals
+   that spawner owned. (Confirmed against Epic's World Partition docs:
+   runtime-spawned actors in the persistent level are not unloaded by cell
+   streaming.)
+4. **The spawner object is rebuilt fresh on every visit.** Two probes at the
+   same landmark, before and after travelling away, returned the same class
+   and grid cell but different instance suffixes (`..._1932335164` vs
+   `..._1932343169`).
+5. **Her identity SURVIVES the despawn.** At +3s and +15s after the despawn
+   call: `handle valid=true, parameter readable=true, friendship=74` (and 60
+   for a second Pal). The `UPalIndividualCharacterHandle`, the
+   `UPalIndividualCharacterParameter` and her real accumulated friendship all
+   outlive the actor. **This is the most promising fact for any future fix.**
+6. **No live actor remains.** `TryGetIndividualActor` returns a Lua wrapper
+   around a NULL UObject (`actorIsValid=false`, location unreadable) — the
+   same null-wrapper trap `Personality.lua`'s header already documents.
+
+### Dead ends — do NOT re-run these
+
+- **`RemoveGroupCharacter` at bond time** (detach her from the spawner's wild
+  group). Ran clean, returned ok, changed nothing. The wild GROUP list and the
+  spawner's SPAWNED-handle list (`GetAllSpawnedNPCHandle`) are different
+  things, and despawn travels by handle, not by group.
+- **Periodic re-homing to the nearest spawner** (`AddGroupCharacterByGroupId`,
+  then `AddGroupCharacter`). Worked exactly as designed — correct wild-Pal
+  spawners, correct remove-then-add sequencing, tracked her across 4+ grid
+  cells over 2 minutes — and she still despawned. Logical group membership
+  does not protect the actor.
+- **Home-radius mitigation** (stop her before she reaches the danger zone,
+  with a toast). Built and working, but **rejected by Dragón for a real
+  design flaw**: the radius is anchored to wherever the player stood when
+  bonding started, not to the zone's actual centre, so a player who bonds
+  near a corner still loses her well inside the "safe" budget. *"which will
+  eventually lead to players still finding the pals can despawn."*
+- **Blocking the despawn call from Lua.** Not possible: UE4SS's Lua
+  `RegisterHook` has no cancel/veto (verified against the official docs and
+  the Palworld modding wiki — return values can be overridden, execution
+  cannot be skipped).
+
+### Two crashes came out of this, same signature — read before trying again
+
+`EXCEPTION_ACCESS_VIOLATION reading address 0x0000000000000048`, twice,
+both immediately around `AddGroupCharacterByGroupId`. The second one was
+pinpointed exactly: the log's final line was the "removing from previous
+spawner" message with no matching "re-homed to" line after it. The constant
+across both was that function's third parameter — an `FString DebugName`
+being **constructed fresh from a Lua literal** and passed into a native call.
+That is the same root-cause category as this project's older "Crash #4"
+(`docs/hook-points-archive.md`). Switching to the plain
+`AddGroupCharacter(handle)` — no string, no constructed value — stopped the
+crashes completely. **Standing rule reinforced: never build a value from
+scratch in Lua to hand into a native call if a no-argument variant exists.**
+
+### If this is picked up again, start here
+
+The identity surviving (point 5) is the whole opportunity. The route is
+`UPalCharacterManager::SpawnCharacterByHandle(Handle, FNetworkActorSpawnParameters, callback)`
+— respawn the SAME individual, with her real trust intact, rather than
+preventing the despawn at all. Two cautions:
+- `FNetworkActorSpawnParameters` is a 0x78 struct containing an `FName` and a
+  `TSubclassOf<AController>`. **Omit the `FName` rather than construct one** —
+  a zeroed field is `NAME_None`, which is safer than the conversion that
+  caused both crashes.
+- Its `ControllerClass` field is interesting on its own: a respawn through it
+  could in principle bring her back running `BP_MonsterAIController_Otomo_C`,
+  the "right brain" this project has wanted since the controller finding.
+- A simpler-looking alternative, `UPalOtomoHolderComponentBase::ActivatePalByHandle(Handle, FVector, FRotator, bool)`,
+  needs no risky parameters at all, but is the Otomo-holder path and most
+  likely requires her to be party-owned — the early-capture trade-off Dragón
+  has already declined twice.
+
 
 ## Where the real detail lives
 

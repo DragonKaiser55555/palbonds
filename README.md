@@ -89,6 +89,22 @@ loaded.
 
 Get close and look directly at the Pal for any of these.
 
+## Known issues
+
+- **A bonded wild Pal (50%+ friendship bar) may despawn if it moves too far
+  from its spawn location.** This is Palworld's own wild-Pal lifecycle: the
+  game unloads the spawn area you left and clears the Pals that belonged to
+  it, and a bonded Pal is still a wild Pal until you catch her. It is not
+  something a mod can currently veto — UE4SS's Lua `RegisterHook` has no
+  cancel, so the despawn call can be observed but not blocked. If you want to
+  keep a companion permanently, complete the bond; otherwise bonding again in
+  a new area costs nothing but food. The full investigation, including the
+  approaches that did *not* work, is in [`CLAUDE.md`](./CLAUDE.md).
+- **Microstutter reports, under investigation.** At least one player reports
+  noticeable microstutters with the mod active. Not yet reproduced or
+  confirmed to be the mod's doing. If you see it, a comment on either store
+  page with your specs helps.
+
 ## Scope
 
 Singleplayer and self-hosted worlds only. Mods are not permitted on official

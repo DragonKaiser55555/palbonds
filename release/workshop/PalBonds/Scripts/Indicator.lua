@@ -978,11 +978,25 @@ local BROKEN_BOND_FALLBACK = "Wary"
 local function personality_display_text(actor, disposition)
     if not personalityLabelsVisible then return "" end
 
+    -- 2026-09-14, Dragón's instruction: "owned pals should not show tags at
+    -- all, they're already part of the player's roster so they dont need any
+    -- tag." Checked before EVERYTHING else below, including the broken-bond
+    -- label — an owned Pal (active Otomo or base worker) gets no tag under
+    -- any circumstance. This is the display half of the same-day fix that
+    -- stopped owned Pals being randomly rolled a personality at all; that
+    -- one made the tag read "Normal" instead of a random word, and this one
+    -- removes it entirely.
+    local okCap, CaptureMod = pcall(require, "Capture")
+    if okCap and CaptureMod and CaptureMod.IsAlreadyOwned then
+        if safe_call(function() return CaptureMod.IsAlreadyOwned(actor) end) then
+            return ""
+        end
+    end
+
     -- Checked before anything else, including the bonding thresholds. A
     -- permanently fled Pal has had its friendship reset to zero, so the ratio
     -- tests below would fall through to its personality tag and hide the one
     -- fact that actually matters about it.
-    local okCap, CaptureMod = pcall(require, "Capture")
     if okCap and CaptureMod and CaptureMod.HasPermanentlyFled then
         if safe_call(function() return CaptureMod.HasPermanentlyFled(actor) end) then
             local why = CaptureMod.GetFledReason and safe_call(function() return CaptureMod.GetFledReason(actor) end)
