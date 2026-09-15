@@ -100,10 +100,16 @@ Get close and look directly at the Pal for any of these.
   keep a companion permanently, complete the bond; otherwise bonding again in
   a new area costs nothing but food. The full investigation, including the
   approaches that did *not* work, is in [`CLAUDE.md`](./CLAUDE.md).
-- **Microstutter reports, under investigation.** At least one player reports
-  noticeable microstutters with the mod active. Not yet reproduced or
-  confirmed to be the mod's doing. If you see it, a comment on either store
-  page with your specs helps.
+- **Microstutters — found and fixed in v1.1.2.** A player reported noticeable
+  microstutters with the mod active, and measurement confirmed them: the mod
+  was searching the game's entire object list on timers and during the radial
+  menu, several times a second, at 40–100ms per search. v1.1.2 replaces those
+  searches with references the mod already has. Standing still, frame pacing
+  with the mod is now close to the game without it (1% low 33 fps vs 36 fps
+  with the mod off, down from 13–16 fps before), and bonding and fighting
+  stutter a fraction as often. A few rare safety-net checks remain on purpose.
+  If you still see stutters, a comment on either store page with your specs
+  helps.
 
 ## Scope
 

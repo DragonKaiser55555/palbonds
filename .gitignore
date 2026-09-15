@@ -18,3 +18,7 @@ save-backups/
 # them; see tools/harness/README.md.
 tools/harness/node_modules/
 tools/harness/package-lock.json
+
+# PresentMon frame-time captures from performance test runs (large, machine-
+# specific, not part of the product).
+perf-captures/

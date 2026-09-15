@@ -60,10 +60,29 @@ for (let i = 0; i < 10; i++) {
 }
 expect('the player is looked up at most twice for 30 hits', str('__WALKS'), (v) => Number(v) <= 2);
 
-console.log('\n=== THE CACHE STILL NOTICES A NEW PLAYER ===');
-run('__WALKS = 0; __CLOCK = __CLOCK + 3', 'age');
+// 2026-09-15: the player lookup moved to PlayerRef.lua, which keeps a valid
+// reference until it is invalid, the player dies, or the world changes, with a
+// 60s safety-net re-search (it was a 2s cache in Trust.lua).
+console.log('\n=== A VALID PLAYER IS NOT SEARCHED FOR AGAIN A FEW SECONDS LATER ===');
+run('__WALKS = 0; __CLOCK = __CLOCK + 3', 'age3');
 hate('__PLAYER', '__ENEMY');
-expect('after the cache ages out, the next hit looks the player up again', str('__WALKS'), (v) => Number(v) >= 1);
+expect('3s later, still valid: no new walk', str('__WALKS'), (v) => Number(v) === 0);
+
+console.log('\n=== THE SAFETY-NET RE-CHECK STILL HAPPENS ===');
+run('__WALKS = 0; __CLOCK = __CLOCK + 61', 'age61');
+hate('__PLAYER', '__ENEMY');
+expect('after the 60s safety-net interval, the next hit looks the player up again', str('__WALKS'), (v) => Number(v) >= 1);
+
+console.log('\n=== A PLAYER THAT BECAME INVALID IS SEARCHED FOR IMMEDIATELY ===');
+// +1.1s: past the damage gate's 1s tracked-address refresh (so this hit really
+// asks for the player again), well short of PlayerRef's 10s safety net (so any
+// walk is caused by the invalid player, not by the timer).
+run('__WALKS = 0; __CLOCK = __CLOCK + 1.1; __PLAYER.IsValid = function() return false end', 'invalidate');
+run('__NEWPLAYER = __obj("BP_Player_Female_C_RESPAWNED"); __NEWPLAYER.K2_GetActorLocation = function() return __vec(0,0,0) end', 'newplayer');
+run('local realFA = FindAllOf; FindAllOf = function(n) if n == "PalPlayerCharacter" then __WALKS = __WALKS + 1; return { __NEWPLAYER } end return realFA(n) end', 'respawn');
+hate('__NEWPLAYER', '__ENEMY');
+expect('an invalid kept player triggers a new walk right away', str('__WALKS'), (v) => Number(v) >= 1);
+expect('and the new player is the one returned', str('require("PlayerRef").Get() == __NEWPLAYER'), (v) => v === 'true');
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);

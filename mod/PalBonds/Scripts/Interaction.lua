@@ -589,7 +589,7 @@ Interaction.StopPlayerCheer = stop_player_cheer
 
 local function do_play()
     Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting Play", PLAY_KEY))
-    local player = FindFirstOf("PalPlayerCharacter")
+    local player = require("PlayerRef").Get()
     if not player or not player:IsValid() then
         Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
         return
@@ -1360,6 +1360,11 @@ grant_wild_interaction = function(pal, amount, label)
 -- because nothing is played on either of them. do_play() checks both because
 end
 local function closeRadialMenuActionWindow()
+    -- Profiling (2026-09-15): closing the radial menu stalled 108ms on average
+    -- (up to 140ms) in run D with no world search involved, so time the two
+    -- things it can do. Profiler.start() is nil when profiling is off.
+    local okProf, Prof = pcall(require, "Profiler")
+    if not okProf then Prof = nil end
     if radialMenuRedirectedThisWindow and lastDecidedInstruction then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] window closing with a substituted wild Pal and a decided instruction=" .. tostring(lastDecidedInstruction) .. " — firing the real action now")
         if lastDecidedInstruction == "care" then
@@ -1368,11 +1373,15 @@ local function closeRadialMenuActionWindow()
             -- playing on this Pal because of the substitution — calling
             -- do_pet() here would try to play a SECOND animation and, far
             -- worse, would be swallowed by its own anti-spam gate.
+            local tPet = Prof and Prof.start()
             safe_call(function()
                 grant_wild_interaction(lastRedirectedWildPalActor, PET_FRIENDSHIP_GAIN, "Pet (radial)")
             end)
+            if Prof then Prof.stop("radial close: pet grant (grant_wild_interaction)", tPet) end
         elseif lastDecidedInstruction == "feed" then
+            local tFeed = Prof and Prof.start()
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
+            if Prof then Prof.stop("radial close: feed dispatch (do_real_wild_feed_via_worker_menu)", tFeed) end
             if not realFeedOk then
 
                 -- Two-hundred-and-eighty-sixth pass (2026-09-09) -- REMOVED, and
@@ -1437,6 +1446,14 @@ end
 -- issue #1328 makes FindFirstOf read out of bounds and it lacks the null guard
 -- FindAllOf has (see the known-defects list).
 local function find_player_controller()
+    -- 2026-09-15 (profiling): the player's character already holds its
+    -- controller, so ask it first. The world search below cost 53ms on a single
+    -- F8 press in run D and is now only the fallback when that read fails.
+    local player = require("PlayerRef").Get()
+    if player ~= nil then
+        local pc = safe_call(function() return player.Controller end)
+        if pc ~= nil and safe_call(function() return pc:IsValid() end) then return pc end
+    end
     local list = safe_call(function() return FindAllOf("BP_PalPlayerController_C") end)
     if type(list) ~= "table" then return nil end
     for _, pc in ipairs(list) do
@@ -2242,7 +2259,7 @@ function Interaction.Init()
             local returned = hook_get(ReturnValue)
             do
                 local ok, err = pcall(function()
-                    local player = FindFirstOf("PalPlayerCharacter")
+                    local player = require("PlayerRef").Get()
                     if not player or not player:IsValid() then return end
                     local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
                     if not originLoc then
@@ -2594,7 +2611,7 @@ function Interaction.Init()
             hookLabel, paramDesc
         ))
         local ok, err = pcall(function()
-            local player = FindFirstOf("PalPlayerCharacter")
+            local player = require("PlayerRef").Get()
             if not player or not player:IsValid() then
                 Logger.log("[PalBonds/Interaction] [WORKER-BIND-FIX] no local player — skipping")
                 return

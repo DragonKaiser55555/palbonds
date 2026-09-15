@@ -219,6 +219,31 @@ local hasInspectedGaugeWidget = false
 -- destroyed and recreated (which happens naturally as Pals leave/re-enter
 -- view) — an acceptable gap, not worth a more invasive fix yet.
 local hasRegisteredBindHook = false
+
+-- ===========================================================================
+-- NAMEPLATES FROM THE HOOK, NOT FROM A WORLD SWEEP (2026-09-15, profiling)
+-- ===========================================================================
+-- Tags and trust bars used to be created only by scan_for_gauge_widgets, which
+-- ran FindAllOf("WBP_PalNPCHPGauge_C") every 2 seconds for the whole session:
+-- ~29 object-array walks a minute at 40-100ms each, the single most frequent
+-- stall the mod caused. The BindFromHandle hook already fires for every
+-- nameplate that attaches to a Pal, so it now puts that nameplate here, and the
+-- 2-second tick runs install_trust_bar on just these. A nameplate stays pending
+-- until its tag is installed (its Pal may not resolve on the first try), and is
+-- dropped when it becomes invalid or its Unbind fires.
+--
+-- The world sweep is kept for what the hook cannot see:
+--   * every tick until the hook is registered (the class only becomes hookable
+--     once the player is in-world), exactly as before;
+--   * NAMEPLATE_SWEEPS_AFTER_HOOK more ticks after it registers, for nameplates
+--     that attached before the hook existed;
+--   * then one sweep every NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS ticks (~30s) as
+--     a safety net, so a nameplate the hook somehow missed still gets its tag,
+--     just later instead of never.
+local pendingGauges = {}
+local NAMEPLATE_SWEEPS_AFTER_HOOK = 5
+local NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS = 15
+local nameplateSweepsSinceHook = 0
 local bindHookAttempts = 0
 -- Two-hundred-and-ninety-seventh pass (2026-09-11): was 5 — five attempts for
 -- an entire session, consumed one per gauge sighting. Once spent, personality
@@ -395,7 +420,9 @@ local function register_bind_hook_immediate(round)
             local self = hook_get(Context)
             local handle = hook_get(TargetHandle)
             if self == nil or handle == nil then return end
-            gaugeHandleByKey[describe_widget(self)] = handle
+            local key = describe_widget(self)
+            gaugeHandleByKey[key] = handle
+            pendingGauges[key] = self
         end)
     end)
     if hookOk then
@@ -406,7 +433,9 @@ local function register_bind_hook_immediate(round)
             RegisterHook(unbindPath, function(Context)
                 local self = hook_get(Context)
                 if self == nil then return end
-                gaugeHandleByKey[describe_widget(self)] = nil
+                local key = describe_widget(self)
+                gaugeHandleByKey[key] = nil
+                pendingGauges[key] = nil
             end)
         end)
         Logger.log("[PalBonds/Indicator] [TAGS] (immediate) RegisterHook(" .. unbindPath .. ") = " .. (unbindOk and "OK" or ("FAILED (non-fatal, BindFromHandle hook still stands): " .. tostring(unbindErr))))
@@ -486,7 +515,9 @@ local function register_bind_hook_once(gaugeWidget)
                 local self = hook_get(Context)
                 local handle = hook_get(TargetHandle)
                 if self == nil or handle == nil then return end
-                gaugeHandleByKey[describe_widget(self)] = handle
+                local key = describe_widget(self)
+                gaugeHandleByKey[key] = handle
+                pendingGauges[key] = self
             end)
         end)
         -- Success is logged once and permanently visible; failures only on the
@@ -508,7 +539,9 @@ local function register_bind_hook_once(gaugeWidget)
                 RegisterHook(unbindPath, function(Context)
                     local self = hook_get(Context)
                     if self == nil then return end
-                    gaugeHandleByKey[describe_widget(self)] = nil
+                    local key = describe_widget(self)
+                    gaugeHandleByKey[key] = nil
+                    pendingGauges[key] = nil
                 end)
             end)
             Logger.log("[PalBonds/Indicator] [TAGS] RegisterHook(" .. unbindPath .. ") = " .. (unbindOk and "OK" or ("FAILED (non-fatal, BindFromHandle hook still stands): " .. tostring(unbindErr))))
@@ -1453,6 +1486,13 @@ end
 -- placeholder for the rest of its life. Drops any entry whose bar or
 -- gaugeWidget has gone invalid (Pal despawned/left range, or the gauge
 -- widget itself was destroyed) rather than erroring on it.
+-- 2026-09-15 (profiling), see the label block inside update_trust_bars:
+-- a label-only tag rebuilds its text when its personality or F9 visibility
+-- changes, and otherwise at most this often as a safety net.
+local LABEL_REFRESH_SECONDS = 10.0
+-- A tag still showing "?" (no personality created yet) retries creating it at
+-- most this often per Pal.
+local LABEL_STATE_RETRY_SECONDS = 10.0
 local function update_trust_bars()
 
     -- Hundred-and-eightieth pass: promotions (moving an entry from its
@@ -1522,7 +1562,12 @@ local function update_trust_bars()
                     end
                     if entry.bar ~= nil then
                         local ratio = get_friendship_ratio(entry.actor)
-                        if ratio then
+
+                        -- 2026-09-15 (profiling): written only when the value
+                        -- changed. It used to be two widget writes per bar
+                        -- every 2 seconds whether or not anything moved.
+                        if ratio and ratio ~= entry.lastRatio then
+                            entry.lastRatio = ratio
                             pcall(function() entry.bar:SetPercent(ratio) end)
                             pcall(function() entry.bar:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
                         end
@@ -1540,9 +1585,49 @@ local function update_trust_bars()
                     if entry.label then
                         local labelOk, labelValid = pcall(function() return entry.label:IsValid() end)
                         if labelOk and labelValid then
-                            local palId = safe_call(Personality.GetStableId, entry.actor)
+                            -- 2026-09-15 (profiling): this block ran in full for
+                            -- EVERY label on screen every 2 seconds — a four-call
+                            -- id rebuild, the owned/fled checks, a friendship read
+                            -- — and was the largest remaining recurring cost in run
+                            -- D. Now:
+                            --   * the Pal's id is resolved once per actor;
+                            --   * a label-only Pal (no bar, so no bonding progress
+                            --     that could change its text) rebuilds its text only
+                            --     when its personality or the F9 visibility changed,
+                            --     and otherwise at most every LABEL_REFRESH_SECONDS
+                            --     as a safety net;
+                            --   * a Pal with a bar (being bonded) still updates every
+                            --     tick, since its label follows its progress.
+                            -- And a label still waiting on "?" (no personality yet —
+                            -- its Pal's AI has not sensed near the player) creates
+                            -- that one Pal's personality now instead of waiting for
+                            -- the ~64s safety scan, retried at most every
+                            -- LABEL_STATE_RETRY_SECONDS.
+                            local nowLabel = os.clock()
+                            if entry.labelPalId == nil or entry.labelActor ~= entry.actor then
+                                entry.labelPalId = safe_call(Personality.GetStableId, entry.actor)
+                                entry.labelActor = entry.actor
+                            end
+                            local palId = entry.labelPalId
                             local disposition = palId and Personality.GetDisposition(palId)
-                            local text = personality_display_text(entry.actor, disposition)
+                            if disposition == nil and palId ~= nil
+                                and (nowLabel - (entry.stateTriedAt or -1e9)) >= LABEL_STATE_RETRY_SECONDS then
+                                entry.stateTriedAt = nowLabel
+                                safe_call(function() Personality.GetOrInitState(entry.actor) end)
+                                disposition = Personality.GetDisposition(palId)
+                            end
+                            local needsText = entry.bar ~= nil
+                                or entry.labelLastText == nil
+                                or entry.labelLastDisposition ~= disposition
+                                or entry.labelLastVisible ~= personalityLabelsVisible
+                                or (nowLabel - (entry.labelCheckedAt or -1e9)) >= LABEL_REFRESH_SECONDS
+                            local text = entry.labelLastText
+                            if needsText then
+                                entry.labelCheckedAt = nowLabel
+                                entry.labelLastDisposition = disposition
+                                entry.labelLastVisible = personalityLabelsVisible
+                                text = personality_display_text(entry.actor, disposition)
+                            end
                             if entry.labelLastText ~= text then
                                 entry.labelLastText = text
 
@@ -1778,15 +1863,48 @@ local function scan_for_gauge_widgets()
     -- widget(s)" line is it declining to rebuild), so calling it on every live
     -- gauge every couple of seconds costs nothing for gauges that already have
     -- their label and fixes the ones that missed the hook.
-    safe_call(function()
-        local gauges = FindAllOf("WBP_PalNPCHPGauge_C")
-        if gauges == nil then return end
-        for _, g in ipairs(gauges) do
-            if g ~= nil and safe_call(function() return g:IsValid() end) then
-                safe_call(function() install_trust_bar(g) end)
-            end
+    -- 2026-09-15 (profiling): see NAMEPLATES FROM THE HOOK near the top of this
+    -- file. Every tick installs tags on the nameplates the BindFromHandle hook
+    -- reported, which needs no search. The world sweep below it now runs only
+    -- until that hook is registered, for NAMEPLATE_SWEEPS_AFTER_HOOK ticks after,
+    -- and then every NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS ticks as a safety net.
+    -- Profiler sections are nil when profiling is off.
+    local okProf, Prof = pcall(require, "Profiler")
+    if not okProf then Prof = nil end
+
+    local tPending = Prof and Prof.start()
+    for key, g in pairs(pendingGauges) do
+        if not safe_call(function() return g:IsValid() end) then
+            pendingGauges[key] = nil
+        else
+            safe_call(function() install_trust_bar(g) end)
+            if barInstalledForGauge[key] then pendingGauges[key] = nil end
         end
-    end)
+    end
+    if Prof then Prof.stop("nameplate tick: install_trust_bar on hook-reported gauges", tPending) end
+
+    local runWorldSweep
+    if not hasRegisteredBindHook then
+        runWorldSweep = true
+    elseif nameplateSweepsSinceHook < NAMEPLATE_SWEEPS_AFTER_HOOK then
+        nameplateSweepsSinceHook = nameplateSweepsSinceHook + 1
+        runWorldSweep = true
+    else
+        runWorldSweep = (gaugeFlagScanCount % NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS) == 0
+    end
+    if runWorldSweep then
+        safe_call(function()
+            local gauges = FindAllOf("WBP_PalNPCHPGauge_C")
+            if gauges == nil then return end
+            local tInstall = Prof and Prof.start()
+            for _, g in ipairs(gauges) do
+                if g ~= nil and safe_call(function() return g:IsValid() end) then
+                    safe_call(function() install_trust_bar(g) end)
+                end
+            end
+            if Prof then Prof.stop("nameplate sweep: install_trust_bar over all gauges", tInstall) end
+        end)
+    end
 
     -- Two-hundred-and-eighty-eighth pass (2026-09-09) -- PERFORMANCE.
     --
@@ -1870,7 +1988,9 @@ local function scan_for_gauge_widgets()
 
     -- Fifty-seventh pass: refresh every trust bar that resolved a real
     -- Pal actor, every tick, so they actually move.
+    local tBars = Prof and Prof.start()
     update_trust_bars()
+    if Prof then Prof.stop("nameplate sweep: update_trust_bars", tBars) end
 
     -- Two-hundred-and-thirty-seventh pass (2026-09-07) — REMOVED FROM THE
     -- TICK, and this is a real crash suspect, not just cleanup.

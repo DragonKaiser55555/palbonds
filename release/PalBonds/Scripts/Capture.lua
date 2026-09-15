@@ -688,7 +688,7 @@ local JOIN_FRIENDSHIP_POINT_GRANT = 50000
 function Capture.OnTrustMaxed(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
-    local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+    local player = safe_call(function() return require("PlayerRef").Get() end)
     if not player or not (safe_call(function() return player:IsValid() end)) then
         Logger.log("[PalBonds/Capture] no valid local player found — cannot capture, leaving Pal as a bonding-follower for now")
         return
@@ -776,7 +776,7 @@ end
 -- that the capture path needed after resolving names too late twice.
 local function notify_bond_lost(pal, reason)
     pcall(function()
-        local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+        local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
         local utility = get_pal_utility()
         if utility == nil then return end
@@ -820,7 +820,7 @@ end
 -- reshaping them for a toggle.
 function Capture.ShowToast(message)
     pcall(function()
-        local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+        local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
         local utility = get_pal_utility()
         if utility == nil then return end
@@ -838,7 +838,7 @@ function Capture.ShowToast(message)
 end
 function Capture.NotifyTrustShaken(pal)
     pcall(function()
-        local player = safe_call(function() return FindFirstOf("PalPlayerCharacter") end)
+        local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
         local utility = get_pal_utility()
         if utility == nil then return end

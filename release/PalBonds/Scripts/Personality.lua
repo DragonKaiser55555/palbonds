@@ -456,7 +456,13 @@ end
 -- that exact mistake caused the ninety-fourth pass's lag bug), reused by
 -- both GetPresetClassName (species default) and find_sensor_component
 -- (enforcement/Won-Over) below.
-local SENSOR_INDEX_REFRESH_SECONDS = 5
+-- 2026-09-15 (profiling): was 5. A rebuild is a world-wide
+-- FindAllOf("PalAISensorComponent") at 40-75ms, and it ran 7-10 times a minute.
+-- The index is now a last resort: GetPresetClassName and every other lookup
+-- try the sensor the SelectResponseBySenses hook cached first, and that hook
+-- sees practically every wild Pal near the player. A Pal missing from a stale
+-- index is simply retried by its caller later.
+local SENSOR_INDEX_REFRESH_SECONDS = 30
 local sensorIndexByOwnerKey = {}
 local sensorIndexBuiltAt = nil
 
@@ -577,7 +583,7 @@ end
 -- exactly where this breaks instead of just "nil". Logs every call for
 -- now (still only from the already-rare pet/feed event, not per-tick) —
 -- trim back to once-per-failure-type once the real cause is known.
-function Personality.GetPresetClassName(palActor)
+function Personality.GetPresetClassName(palActor, palId)
     if palActor == nil then return nil end
 
     -- NINETY-FOURTH PASS: dedup key for log_diag_once below — best-effort,
@@ -585,28 +591,40 @@ function Personality.GetPresetClassName(palActor)
     -- fails (rare, but this key only needs to be "stable enough," not
     -- perfect).
     local actorKey = safe_call(function() return palActor:GetFullName() end) or tostring(palActor)
-    local sensorClass = get_sensor_component_class()
-    if sensorClass == nil then
-        log_diag_once(actorKey, "no-sensor-class", "[PalBonds/Personality] [DIAG] GetPresetClassName: could not resolve PalAISensorComponent class via StaticFindObject")
-        return nil
-    end
-    local sensorOk, sensor = pcall(function()
-        return palActor:GetComponentByClass(sensorClass)
-    end)
-    local sensorValidOk, sensorIsValid = false, false
-    if sensorOk and sensor ~= nil then
-        sensorValidOk, sensorIsValid = pcall(function() return sensor:IsValid() end)
-    end
-    if not (sensorOk and sensor ~= nil and sensorValidOk and sensorIsValid) then
 
-        -- Hundred-and-thirty-fifth pass: GetComponentByClass confirmed
-        -- broken for this component (see find_sensor_component_via_index's
-        -- own comment above) — fall back to the FindAllOf-based index
-        -- before giving up.
-        sensor = find_sensor_component_via_index(palActor)
-        if sensor == nil then
-            log_diag_once(actorKey, "no-sensor", "[PalBonds/Personality] [DIAG] GetPresetClassName: GetComponentByClass AND the FindAllOf-based fallback both failed for " .. tostring(actorKey))
+    -- 2026-09-15 (profiling): the sensor the SelectResponseBySenses hook already
+    -- cached for this Pal comes FIRST. Without it, a new Pal went straight from
+    -- the broken GetComponentByClass to find_sensor_component_via_index, whose
+    -- rebuild is FindAllOf("PalAISensorComponent") over the whole world — 40-75ms,
+    -- 7-10 times a minute in the profiled session. palId is optional so every
+    -- existing caller keeps working; without it this behaves exactly as before.
+    local sensor = palId and find_cached_sensor_fwd and find_cached_sensor_fwd(palId) or nil
+    if sensor == nil then
+        local sensorClass = get_sensor_component_class()
+        if sensorClass == nil then
+            log_diag_once(actorKey, "no-sensor-class", "[PalBonds/Personality] [DIAG] GetPresetClassName: could not resolve PalAISensorComponent class via StaticFindObject")
             return nil
+        end
+        local sensorOk, found = pcall(function()
+            return palActor:GetComponentByClass(sensorClass)
+        end)
+        local sensorValidOk, sensorIsValid = false, false
+        if sensorOk and found ~= nil then
+            sensorValidOk, sensorIsValid = pcall(function() return found:IsValid() end)
+        end
+        if sensorOk and found ~= nil and sensorValidOk and sensorIsValid then
+            sensor = found
+        else
+
+            -- Hundred-and-thirty-fifth pass: GetComponentByClass confirmed
+            -- broken for this component (see find_sensor_component_via_index's
+            -- own comment above) — fall back to the FindAllOf-based index
+            -- before giving up.
+            sensor = find_sensor_component_via_index(palActor)
+            if sensor == nil then
+                log_diag_once(actorKey, "no-sensor", "[PalBonds/Personality] [DIAG] GetPresetClassName: GetComponentByClass AND the FindAllOf-based fallback both failed for " .. tostring(actorKey))
+                return nil
+            end
         end
     end
     local presetOk, preset = pcall(function() return sensor.AIResponsePreset end)
@@ -720,7 +738,7 @@ function Personality.GetOrInitState(palActor)
         -- GetSpeciesDefaultDisposition, once again just to populate the
         -- presetClassName field below — which meant every [DIAG] failure
         -- line got logged twice per new Pal. One call now, reused for both.
-        local presetClassName = Personality.GetPresetClassName(palActor)
+        local presetClassName = Personality.GetPresetClassName(palActor, palId)
         local speciesDefault = Personality.PresetClassNameToDisposition(presetClassName)
 
         -- Ninety-second pass: roll this individual's personality tier ONCE,
@@ -1294,9 +1312,17 @@ end
 -- unreliable path, kept as a fallback for whatever the reactive hook
 -- below misses). Safe to call repeatedly — becomes a no-op once
 -- state.enforcementApplied is true.
-local function try_enforce_personality(palActor, palId)
+-- cacheOnly (2026-09-15, profiling): use only the sensor the
+-- SelectResponseBySenses hook cached, never the find_sensor_component fallback
+-- and its world-wide index. The regular (hook-fed) personality scan passes it:
+-- a Pal with no cached sensor is one whose AI has not sensed near the player
+-- yet, and the hook enforces it itself the moment it does. Without this, every
+-- such Pal retried the index on every 8s scan, rebuilding it (~40-100ms) every
+-- time it went stale — still ~1.7 times a minute in the 2026-09-15 run D.
+local function try_enforce_personality(palActor, palId, cacheOnly)
     local state = PersonalityState[palId]
     if not state or state.enforcementApplied then return end
+    if cacheOnly and not (find_cached_sensor_fwd and find_cached_sensor_fwd(palId)) then return end
 
     -- Two-hundred-and-sixth pass (2026-09-06): try the reactive hook's
     -- sensor cache BEFORE falling back to find_sensor_component.
@@ -1392,9 +1418,16 @@ end
 -- extra work beyond a table write.
 local cachedSensorByPalId = {}
 local function cache_sensor_for_pal(sensor, pawn)
-    local palId = Personality.GetOrInitState(pawn)
+    -- 2026-09-15 (profiling): cache FIRST, then create the state. GetOrInitState
+    -- resolves the Pal's preset through GetPresetClassName, which now looks in
+    -- this cache before falling back to a world-wide index rebuild. Caching after
+    -- GetOrInitState meant every brand-new Pal's first sense missed its own
+    -- sensor and paid for that rebuild (FindAllOf over the whole world).
+    local palId = Personality.GetStableId(pawn)
     if palId then cachedSensorByPalId[palId] = sensor end
-    return palId
+    local stateId = Personality.GetOrInitState(pawn)
+    if stateId and stateId ~= palId then cachedSensorByPalId[stateId] = sensor end
+    return stateId
 end
 
 -- Read-only accessor other functions in this file use INSTEAD of calling
@@ -1441,13 +1474,34 @@ local handledSensorAddresses = {}
 -- rolled personality, and the proactive scan (PERSONALITY_SCAN_INTERVAL_MS)
 -- already exists as the backstop for exactly this -- it is the documented
 -- fallback for when this hook cannot be registered at all.
+-- 2026-09-15 (profiling) — THE PERSONALITY SCAN'S PAL LIST COMES FROM HERE.
+--
+-- The 8s personality scan used to find Pals with FindAllOf("PalCharacter") over
+-- the whole world (40-85ms, plus a player lookup of the same cost). This hook
+-- already sees every wild Pal near the player, as the game's own AI evaluates
+-- it, so it now records each Pal it resolves in pawnByPalId and refreshes that
+-- Pal's lastSeenAt on every later sense. The cheap already-handled early return
+-- stores the Pal's id instead of `true` so it can refresh lastSeenAt too, with
+-- one table lookup and no reflection.
+--
+-- senseHookArmed tells the scan whether this list can be trusted: until the
+-- hook has registered, the scan keeps doing the world search exactly as before.
+local pawnByPalId = {}
+local senseHookArmed = false
 local function on_sensor_select_response(Context)
     local sensor = safe_call(function() return Context:get() end)
     if not sensor then return end
 
     -- Cheap identity first. Everything below this line is expensive.
     local addr = safe_call(function() return sensor:GetAddress() end)
-    if addr ~= nil and handledSensorAddresses[addr] then return end
+    if addr ~= nil then
+        local seenId = handledSensorAddresses[addr]
+        if seenId ~= nil then
+            local seenState = seenId ~= true and PersonalityState[seenId] or nil
+            if seenState then seenState.lastSeenAt = os.clock() end
+            return
+        end
+    end
     local sensorKey = safe_call(function() return sensor:GetFullName() end)
     if not sensorKey then return end
     local owner = safe_call(function() return sensor:GetOuter() end)
@@ -1456,8 +1510,11 @@ local function on_sensor_select_response(Context)
     if not (validOk and isValid) then return end
     local palId = cache_sensor_for_pal(sensor, pawn)
     if not palId then return end
+    pawnByPalId[palId] = pawn
+    local resolvedState = PersonalityState[palId]
+    if resolvedState then resolvedState.lastSeenAt = os.clock() end
     if handledSensorKeys[sensorKey] then
-        if addr ~= nil then handledSensorAddresses[addr] = true end
+        if addr ~= nil then handledSensorAddresses[addr] = palId end
         return
     end
     handledSensorKeys[sensorKey] = true
@@ -1473,7 +1530,7 @@ local function on_sensor_select_response(Context)
     -- The whole point of the address check is to skip work already DONE, so it
     -- has to be set where the work finishes -- the same place handledSensorKeys
     -- has always been set -- not where it starts.
-    if addr ~= nil then handledSensorAddresses[addr] = true end
+    if addr ~= nil then handledSensorAddresses[addr] = palId end
     try_enforce_personality_with_sensor(pawn, palId, sensor)
 end
 local SENSOR_HOOK_MAX_ROUNDS = 20
@@ -1486,6 +1543,7 @@ local function register_sensor_sense_hook(round)
         end)
     end)
     if ok then
+        senseHookArmed = true
         Logger.log(string.format("[PalBonds/Personality] [ENFORCE] round %d: SelectResponseBySenses hook registered — reactive enforcement armed", round))
         return
     end
@@ -2041,38 +2099,79 @@ end
 -- state.enforcementApplied and a re-sense costs one cheap early-out.
 local PERSONALITY_PRUNE_EVERY_N_SCANS = 75          -- ~10 minutes at 8s
 local PERSONALITY_UNSEEN_PRUNE_SECONDS = 600.0
+-- 2026-09-15 (profiling): this scan stalled the game ~119ms every 8.1s — a
+-- world-wide FindAllOf("PalCharacter"), a second world-wide search for the
+-- player, and, through GetOrInitState, sometimes a third for the sensor index.
+--
+-- Once the SelectResponseBySenses hook is armed, the scan works from the Pals
+-- that hook reported (pawnByPalId, see the hook) with no search at all. Every
+-- PERSONALITY_SAFETY_SCAN_EVERY_N_SCANS scans (~64s) it still does the full
+-- world search as a SAFETY NET, for any Pal the hook has not reported — one
+-- whose AI never evaluated its senses near the player, or one skipped by the
+-- recycled-address limitation described at the hook. Until the hook is armed,
+-- or if it never registers, every scan is the full world search, exactly as
+-- before. The player is excluded through PlayerRef, which keeps its reference
+-- instead of searching again.
+local PERSONALITY_SAFETY_SCAN_EVERY_N_SCANS = 8
 local personalityScanCount = 0
 local function scan_nearby_wild_pals_for_personality()
-    local pals = safe_call(function() return FindAllOf("PalCharacter") end)
-    if not pals then return end
-    -- FindAllOf, not FindFirstOf: UE4SS issue #1328 (FindFirstOf derefs before
-    -- its null check). Same guarded lookup the other modules moved to.
-    local player = nil
-    local players = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
-    if type(players) == "table" then
-        for _, p in ipairs(players) do
-            if p ~= nil and safe_call(function() return p:IsValid() end) then player = p break end
-        end
-    end
-    local playerName = player and safe_call(function() return player:GetFullName() end)
+    personalityScanCount = personalityScanCount + 1
     local now = os.clock()
-    for _, palActor in ipairs(pals) do
-        safe_call(function()
-            local validOk, isValid = pcall(function() return palActor ~= nil and palActor:IsValid() end)
-            if not (validOk and isValid) then return end
-            local actorName = safe_call(function() return palActor:GetFullName() end)
-            if actorName and playerName and actorName == playerName then
-                return
+
+    -- Profiler sections; Profiler.start() is nil when profiling is off, so each
+    -- stop() is one nil check.
+    local okProf, Prof = pcall(require, "Profiler")
+    if not okProf then Prof = nil end
+
+    local worldScan = (not senseHookArmed)
+        or (personalityScanCount % PERSONALITY_SAFETY_SCAN_EVERY_N_SCANS == 0)
+    if worldScan then
+        local pals = safe_call(function() return FindAllOf("PalCharacter") end)
+        if pals then
+            local okRef, PlayerRef = pcall(require, "PlayerRef")
+            local playerName = okRef and PlayerRef and safe_call(PlayerRef.Name) or nil
+            for _, palActor in ipairs(pals) do
+                safe_call(function()
+                    local validOk, isValid = pcall(function() return palActor ~= nil and palActor:IsValid() end)
+                    if not (validOk and isValid) then return end
+                    local tName = Prof and Prof.start()
+                    local actorName = safe_call(function() return palActor:GetFullName() end)
+                    if Prof then Prof.stop("personality scan: GetFullName per Pal", tName) end
+                    if actorName and playerName and actorName == playerName then
+                        return
+                    end
+                    local tState = Prof and Prof.start()
+                    local palId = Personality.GetOrInitState(palActor)
+                    if Prof then Prof.stop("personality scan: GetOrInitState per Pal", tState) end
+                    if palId == nil then return end
+                    pawnByPalId[palId] = palActor
+                    local st = PersonalityState[palId]
+                    if st then st.lastSeenAt = now end
+                    local tEnforce = Prof and Prof.start()
+                    try_enforce_personality(palActor, palId)
+                    if Prof then Prof.stop("personality scan: try_enforce_personality per Pal", tEnforce) end
+                end)
             end
-            local palId = Personality.GetOrInitState(palActor)
-            if palId == nil then return end
-            local st = PersonalityState[palId]
-            if st then st.lastSeenAt = now end
-            try_enforce_personality(palActor, palId)
-        end)
+        end
+    else
+        local tHook = Prof and Prof.start()
+        for palId, pawn in pairs(pawnByPalId) do
+            safe_call(function()
+                if not safe_call(function() return pawn:IsValid() end) then
+                    pawnByPalId[palId] = nil
+                    return
+                end
+                local st = PersonalityState[palId]
+                if st and st.enforcementApplied then return end
+                local id = palId
+                if st == nil then id = Personality.GetOrInitState(pawn) end
+                if id == nil then return end
+                try_enforce_personality(pawn, id, true)
+            end)
+        end
+        if Prof then Prof.stop("personality scan: hook-reported Pals (no world search)", tHook) end
     end
 
-    personalityScanCount = personalityScanCount + 1
     if personalityScanCount % PERSONALITY_PRUNE_EVERY_N_SCANS == 0 then
         local pruned, kept = 0, 0
         for palId, st in pairs(PersonalityState) do
@@ -2082,6 +2181,7 @@ local function scan_nearby_wild_pals_for_personality()
             elseif (now - st.lastSeenAt) > PERSONALITY_UNSEEN_PRUNE_SECONDS then
                 PersonalityState[palId] = nil
                 cachedSensorByPalId[palId] = nil
+                pawnByPalId[palId] = nil
                 pruned = pruned + 1
             else
                 kept = kept + 1

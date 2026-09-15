@@ -33,6 +33,8 @@ node selfdefencetest.js <SCRIPTS> prelude_323.lua  # a companion hit outside a p
 node captest.js     <SCRIPTS> prelude_323.lua      # per-Pal install caps recover (rate, not lifetime)
 node reachtest.js   <SCRIPTS> prelude_323.lua      # no fight past the recall distance or during a recall
 node hitcosttest.js <SCRIPTS> prelude_323.lua      # a multi-hit burst must not walk the object array per hit
+node profiletest.js <SCRIPTS>                      # the dev profiler: off = untouched globals, on = same 14 hooks, returns/errors pass through, reports only at depth 0
+node perffixtest.js <SCRIPTS>                      # microstutter fixes: PlayerRef keeps the player, no sensor-index rebuild on a new Pal, hook-fed personality scan, hook-fed nameplates -- and every fallback still searches
 node feedtest.js    <SCRIPTS> prelude_emote.lua    # feed amount by item rarity
 node playstoptest.js <SCRIPTS> prelude_emote.lua   # the player's cheer stops with the Pal's Play animation
 python hoistcheck.py <SCRIPTS>                     # calls before their definition

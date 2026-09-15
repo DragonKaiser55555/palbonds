@@ -362,32 +362,19 @@ end
 -- triggers a fresh, still-guarded FindAllOf. The name is cached with it, so the
 -- per-hit "is the attacker the player" test is a string compare, not another
 -- reflection call.
-local PLAYER_CACHE_SECONDS = 2.0
-local cachedPlayer, cachedPlayerName, cachedPlayerAt = nil, nil, -99
+--
+-- 2026-09-15 (profiling): that 2-second cache still searched the whole world
+-- on every second 1.5s Trust tick — ~27 object-array walks a minute at 40-100ms
+-- each, whether or not anything was bonding. The lookup now lives in
+-- PlayerRef.lua, shared by every module: the reference is kept until it goes
+-- invalid and re-checked at most every 10s. Same IsValid-on-every-use
+-- protection and the same FindAllOf-not-FindFirstOf rule as described above.
+local PlayerRef = require("PlayerRef")
 find_player = function()
-    local now = os.clock()
-    if cachedPlayer ~= nil and (now - cachedPlayerAt) < PLAYER_CACHE_SECONDS
-        and safe_call(function() return cachedPlayer:IsValid() end) then
-        return cachedPlayer
-    end
-    cachedPlayer, cachedPlayerName = nil, nil
-    local list = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
-    if type(list) ~= "table" then return nil end
-    for _, p in ipairs(list) do
-        if p ~= nil and safe_call(function() return p:IsValid() end) then
-            cachedPlayer, cachedPlayerAt = p, now
-            return p
-        end
-    end
-    return nil
+    return PlayerRef.Get()
 end
 local function find_player_name()
-    local p = find_player()
-    if p == nil then return nil end
-    if cachedPlayerName == nil then
-        cachedPlayerName = safe_call(function() return p:GetFullName() end)
-    end
-    return cachedPlayerName
+    return PlayerRef.Name()
 end
 
 -- REMOVED for the stable build (2026-09-12): timed_hook and [HIT-COST], the

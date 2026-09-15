@@ -155,13 +155,12 @@ end
 -- path that guards. Honest about the limits -- the upstream bug is unfixed and
 -- this reduces exposure rather than removing it, and the deep UE4SS recursion
 -- in that stack is not something a mod can reach at all.
+--
+-- 2026-09-15 (profiling): every call here walked the whole object array. The
+-- same guarded lookup now lives in PlayerRef.lua, which keeps the reference
+-- until it goes invalid instead of searching on every call.
 local function find_player()
-    local list = safe_call(function() return FindAllOf("PalPlayerCharacter") end)
-    if type(list) ~= "table" then return nil end
-    for _, p in ipairs(list) do
-        if p ~= nil and safe_call(function() return p:IsValid() end) then return p end
-    end
-    return nil
+    return require("PlayerRef").Get()
 end
 
 -- BondingState[key] = true while the Pal is actively following under
@@ -2479,6 +2478,8 @@ function Combat.ResetForNewWorld(why)
     playerCacheAgePasses = 9999
     playerCombatActive = false
     shuttingDown = false
+    -- 2026-09-15: the shared player reference belongs to the old world too.
+    pcall(function() require("PlayerRef").Invalidate() end)
     Logger.log(string.format(
         "[PalBonds/Combat] [WORLD-RESET] %s — dropped every reference to the old world (%d follower(s), %d follow action(s)). Nothing of ours points at destroyed actors any more.",
         tostring(why), followers, actions

@@ -18,21 +18,48 @@ Following stays at 95% for the open spawner-despawn defect. Polish counts the
 README, both store descriptions, licence, screenshots, the Workshop upload, the
 Nexus package and the Nexus publish as done (published on Steam, Nexus, and
 announced in 2 Reddit posts, 2026-09-14; **v1.1.1 published to both stores
-2026-09-15**); only the settings screen is left. Recalculate whenever a
-category moves, and keep the `Progreso:` line of this project's block in
-`../game proyects.txt` in sync.
+2026-09-15**; **v1.1.2 committed to GitHub 2026-09-15, stores pending**); only
+the settings screen is left. Recalculate whenever a category moves, and keep
+the `Progreso:` line of this project's block in `../game proyects.txt` in sync.
 
-**Not yet reflected in the table, decide with Dragón before changing it:** a
-subscriber has reported microstutters against 1.1.0 (see "Next steps" #1). If
-that reproduces and turns out to be the mod's doing, it is a performance defect
-in a shipped build and the affected category should come down accordingly —
-but do not move the number unilaterally.
+**Microstutter note for the table:** the reported stutter WAS the mod's doing
+(measured 2026-09-15) and is fixed in v1.1.2, so no category was moved; the
+percentage stays as it was.
 
 ---
 
-## Where we stand — read this first (end of the 2026-09-15 session)
+## Where we stand — read this first (2026-09-15, after the performance work)
 
-**v1.1.1 IS PUBLISHED on both stores.** It is v1.1.0 plus exactly ONE confirmed
+**v1.1.2 = the microstutter fix, committed and pushed to GitHub as the new
+stable version on Dragón's instruction** (*"lets update all of this to github
+as the new stable version - we will have to upload it to nexus and the steam
+workshop too, but one step at a time"*). **Nexus and the Steam Workshop are
+still on v1.1.1** — publishing 1.1.2 there is the NEXT step, following
+"Publishing procedure" below, and only when Dragón starts it.
+
+- **What 1.1.2 is:** the two fix rounds in "Known open defects" #0 (PlayerRef,
+  hook-fed nameplates and personality scan, sensor cache first, label/bar
+  update gating, cache-only regular scan, death/world-exit player tracking,
+  controller from the character) plus the dev profiler shipped OFF. Release
+  trees and `release/PalBonds-v1.1.2.zip` verified md5-identical to `mod/`
+  (10 scripts incl. the new `PlayerRef.lua` and `Profiler.lua` with
+  `PROFILING = false`); Workshop `Info.json` Version 1.1.2.
+- **Verified in game (runs D, E and an unrecorded run F):** no Lua errors, 14
+  hooks, bonding/joining/fights/betrayal/death-respawn all normal. Standing
+  still, 1% low 33 fps with the mod vs 36 fps with it off (13–16 before);
+  bonding 13 stutters/min vs 91; fighting 19 vs 55. Dragón after run F: *"the
+  game feels significantly better and less laggy"*.
+- **LESSON — the frame recorder itself caused felt lag.** Run E (recorded,
+  with PresentMon's live console stats on) felt laggier than run D (whose
+  recording silently failed). Dragón's theory, then his unrecorded run F: *"it
+  was the recording itself the one who caused lag, i suspected it because it
+  felt constant, not when doing interactions"*. Use PresentMon for numbers,
+  never judge FEEL during a recorded run, and keep `--no_console_stats`.
+- **Dev install still has `PROFILING = true`** in its `Profiler.lua` (only that
+  line differs from `mod/`). It adds a little overhead; set it false there when
+  performance work is done.
+
+**v1.1.1 (still what the stores serve)** is v1.1.0 plus exactly ONE confirmed
 fix (owned Pals no longer roll a personality and no longer show a tag) — 2
 files, 41 lines, nothing else. Everything from the despawn investigation was
 reverted rather than shipped; see "KNOWN LIMITATION" below.
@@ -50,18 +77,15 @@ reverted rather than shipped; see "KNOWN LIMITATION" below.
   literal, and "complete the bond" is correct because filling the bar fires the
   sphere-less capture and an owned Pal is no longer spawner-owned.
 
-**FIRST THING TOMORROW (2026-09-16): the microstutter report.** A Workshop
-commenter, *Goldaer*, reports the mod introduces noticeable microstutters,
-visible on Steam's performance overlay. Filed against 1.1.0, so 1.1.1 does not
-change it. Dragón saw the comment and deferred it deliberately: *"we will
-tackle that tomorrow, tonight i want to sleep"*. This is now the top open item,
-ahead of the settings screen. Relevant prior work: the `[RADIAL-REDIRECT-PERF]`
-timing line (suppressed by default, prints any scan taking 15ms or more), the
-gate-before-reflection rule for global hooks, and the fact that run 37 already
-ruled out logging as the cause of fight lag.
+**The microstutter report (Workshop commenter *Goldaer*, against 1.1.0) is
+RESOLVED in v1.1.2** — reproduced, profiled and fixed on 2026-09-15. The full
+record (A/B baseline, profiler, both fix rounds, runs A–F with numbers, and the
+remaining minor stalls) is under "Known open defects" #0. Worth telling Goldaer
+on the Workshop page once 1.1.2 is published there.
 
-- **GitHub:** `master` is the only branch. Commit `1d06a5a` is the stable code;
-  later commits add the store packages, docs, and a rewritten public README.
+- **GitHub:** `master` is the only branch. **The v1.1.2 commit (2026-09-15) is
+  the stable code.** Earlier: `1d06a5a` was the 1.0 stable code, `b10e763` was
+  v1.1.1.
 - **Steam Workshop:** item **3797816321**, "PalBonds - The Befriending Mod",
   published at 1.1.0. https://steamcommunity.com/sharedfiles/filedetails/?id=3797816321
 - **Nexus Mods:** published 2026-09-14. https://www.nexusmods.com/palworld/mods/5623
@@ -135,20 +159,40 @@ then Dragón runs the Palworld Mod Uploader.
 - `Info.json`'s `MinRevision` is a floor, not a pin — a Palworld update does not
   require changing it.
 
-**Dragón's machine right now (not in the repo), as of 2026-09-15 — WORKSHOP
-MODE, manual install disabled:**
-- **Re-subscribed to both Workshop items** (PalBonds 3797816321, UE4SS
-  Experimental 3625223587) so the item folder would be recreated for the
-  uploader. Confirmed working in game before the upload.
-- **Manual install is DISABLED**, deliberately and BEFORE resubscribing, so two
-  UE4SS loaders and two copies of PalBonds could never run at once:
-  `Pal\Binaries\Win64\dwmapi.dll` → `dwmapi.dll.MODS-DISABLED` (kills the whole
-  manual stack) and `ue4ss\Mods\PalBonds\enabled.txt` →
-  `enabled.txt.MODS-DISABLED` (second layer). Both are plain renames; all 8
-  scripts under `ue4ss\Mods\PalBonds\Scripts\` are intact. Reverse the two
-  renames to go back to manual/DEV mode.
-- **The copy the game runs is `Mods\NativeMods\UE4SS\Mods\PalBonds\`, and it is
-  currently at 1.1.1** — md5-identical to `mod/` on all 8 scripts. Steam's
+**Dragón's machine right now (not in the repo), as of 2026-09-15 11:11 — DEV
+MODE, Workshop mods switched off in-game but still subscribed:**
+- **Switching between Workshop and dev no longer needs unsubscribing (found and
+  verified 2026-09-15).** Palworld's own mod manager keeps its state in
+  `Palworld\Mods\PalModSettings.ini` (`bGlobalEnableMod`, one `ActiveModList=`
+  line per active mod). Dragón unticked BOTH Workshop items in-game (PalBonds
+  and UE4SS Experimental), which emptied `ActiveModList`. The Workshop files
+  stay on disk under `Mods\NativeMods\UE4SS\` and `Mods\ManagedMods\`, but the
+  game **does not load them while unticked** — proven by
+  `Mods\NativeMods\UE4SS\UE4SS.log` keeping its pre-toggle timestamp across
+  later launches. With that confirmed, the two manual-install renames were
+  reversed (`dwmapi.dll`, `ue4ss\Mods\PalBonds\enabled.txt` restored) and the
+  manual stack loaded alone: one UE4SS (`Loading mods from:
+  ...\Pal\Binaries\Win64\ue4ss\Mods`), PalBonds initialised, Dragón petted a
+  wild Cattiva and it joined, no crash.
+  - **To go back to Workshop mode:** close the game, rename `dwmapi.dll` →
+    `dwmapi.dll.MODS-DISABLED` and `enabled.txt` → `enabled.txt.MODS-DISABLED`
+    FIRST, then tick both items in-game. Never have the local `dwmapi.dll`
+    active while the Workshop UE4SS is ticked — two UE4SS loaders crash the game.
+  - **The safety check before re-enabling local:** launch once with local still
+    disabled and confirm the Workshop `UE4SS.log` timestamp did not change.
+  - **The game DOES detect the manual install.** It shows its "mods active"
+    warning with only the local UE4SS running, even though the Workshop items
+    are off. (An earlier assumption that it could not see a manual install was
+    wrong.)
+- **The two UE4SS builds differ.** Local/dev: `v3.0.1 Beta #0, Git SHA
+  ba2efd55`, GUI console ON in its `UE4SS-settings.ini` — which is why Dragón
+  sees a live log window in dev mode. Workshop (what subscribers run): `Git SHA
+  2281fa31`, console OFF. **Matters for performance work:** a stutter measured
+  on the dev build is not automatically what subscribers get.
+- **The copy the game runs in dev mode is `Pal\Binaries\Win64\ue4ss\Mods\PalBonds\`,
+  at 1.1.1** — md5-identical to `mod/` on all 8 scripts, `DEBUG_LOGGING` and
+  `SHOW_DIAGNOSTICS` both `false` in its `Logger.lua`. The Workshop copy at
+  `Mods\NativeMods\UE4SS\Mods\PalBonds\` is also 1.1.1 but dormant. Steam's
   re-download on resubscribe brought it current, which is NOT the usual
   behaviour (see the fourth-copy warning below): normally that copy is written
   once and never re-synced. **Always verify it by hash rather than assuming
@@ -707,15 +751,215 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 
 ## Known open defects
 
-0. **Microstutters reported by a subscriber — UNVERIFIED, top priority.**
-   Workshop comment from *Goldaer*, 2026-09-14, against 1.1.0: the mod
-   "appears to introduce a lot of microstutters that are really noticeable",
-   visible on Steam's performance overlay. Not reproduced by us yet and not
-   yet confirmed to be the mod's doing. This is the first report of a
-   performance problem from someone who is not Dragón, which makes it more
-   valuable than an internal hunch — he runs one machine and one save.
-   Treat it as real until measurement says otherwise. Scheduled for
-   2026-09-16.
+0. **Microstutters — FIXED in v1.1.2 (committed to GitHub 2026-09-15; stores
+   still serve 1.1.1).** Kept here as the investigation record. Confirmed as
+   the mod's doing on 2026-09-15. Reported by Workshop commenter *Goldaer* (2026-09-14, against
+   1.1.0): the mod "appears to introduce a lot of microstutters that are
+   really noticeable", visible on Steam's performance overlay. Dragón confirms
+   he feels it too and had grown used to it.
+
+   **Baseline measurement** (PresentMon, dev install 1.1.1, same spot, standing
+   still, no followers, 2 minutes each; captures in `perf-captures/`, analysed
+   with `node tools/perf/analyze-presentmon.js`):
+
+   | | PalBonds ON (runA) | PalBonds OFF (runB, UE4SS still loaded) |
+   |---|---|---|
+   | avg fps | 68.1 | 70.2 |
+   | 1% low | **16.2 fps** | 36.1 fps |
+   | 0.1% low | **7.9 fps** | 32.2 fps |
+   | worst frame | **139 ms** | 41.7 ms |
+   | hitch events | 163 (81.6/min) | 87 (43.5/min) |
+   | repeating stall series | **8.115s ~119ms (13/15 slots), 2.050s ~48ms (49/58), 3.065s ~48ms (26/39)** | **none** |
+
+   The average barely moves, which is why it is easy to grow used to; the
+   lows collapse. Every repeating series disappears with the mod off, and the
+   remaining ~87 unpatterned hitches exist in both runs (the game's own). The
+   stalls are CPU-side (CPU-busy equals frame time), i.e. game thread. Each
+   period equals a mod timer's delay plus its own stall, because the mod's
+   timers reschedule after their work: 8.115s = personality scan (8000ms) +
+   ~119ms; 2.050s = nameplate sweep (`SCAN_INTERVAL_MS` 2000) + ~48ms; 3.065s =
+   every second Trust tick (1500ms). The mapping is by period only — the
+   profiler (Next steps #1) is what proves which code each stall is.
+
+   **The 3.065s series is traced in code (Dragón asked why it runs with no
+   followers).** `tick_followers` (`Trust.lua`, the 1.5s tick) calls
+   `find_player()` on its first lines, BEFORE looping over `State` to see
+   whether anything is following. `find_player` caches the player for
+   `PLAYER_CACHE_SECONDS = 2.0`; a 2.0s cache on a ~1.53s tick expires on every
+   second tick, so a full `FindAllOf("PalPlayerCharacter")` object-array walk
+   runs every ~3.07s for the whole session, with or without a single bonded
+   Pal. The cache was built for the per-hit damage path (run 37) and does its
+   job there; the tick simply pays for it regardless. The same idle-cost shape
+   applies to the 2s nameplate sweep and the 8s personality scan, which also
+   run whether or not anything needs them.
+
+   **Profiled run C (2026-09-15, 12:46–12:56, profiler ON, dev install).**
+   Dragón's timeline, from F3 at 12:47:41: 2 min idle; walking; fast travel +
+   mounted; feeding wild Pals via the radial menu; walking until they joined;
+   several followers; a fight with followers; closing the game. Summarise
+   with `node tools/perf/analyze-profile.js <palbonds-profile.log> --phase
+   "HH:MM:SS label" ...`. Key results:
+   - **The clock is trustworthy:** os.clock 611.5s vs wall 612s over the
+     session. The 2026-09-07 "os.clock is CPU time" note in Combat.lua is
+     WRONG for this build; os.clock is wall time at 1ms resolution.
+   - **Nearly every stall is a world search** (`FindAllOf` / `FindFirstOf`).
+     Hooks and loops are cheap: `SelectResponseBySenses` 0.03ms/call (8718
+     calls in 2 min idle = 231ms total), Combat fast loop <1ms/pass,
+     `update_trust_bars` 3–20ms, `try_enforce_personality` and per-Pal
+     `GetFullName` ~0.
+   - **A single search costs ~40ms idle and 55–100ms in play**, growing with
+     what is loaded; timer runs containing several reached 246ms.
+   - **Frozen time per minute from world searches alone:** idle ~2.9s (~5%),
+     fight ~5.6s (~9%), **feeding via the radial menu ~7.9s (~13%)**.
+   - **Biggest single offender in active play (Dragón's hunch was right):**
+     the radial redirect hook `TryGetSpawnedOtomo` post-callback, 3.2–3.8s per
+     minute while feeding / with several followers, driven by
+     `FindFirstOf("PalPlayerCharacter")` at `Interaction.lua:2245`, called on
+     EVERY hook fire while the 15s radial window is open (~4/s, ~50–60ms each).
+     `WBP_PlayerRadialMenu_C:CloseMenu` also stalled up to 187ms.
+   - **Steady sources, all session:** nameplate sweep
+     `FindAllOf("WBP_PalNPCHPGauge_C")` ~29/min (1.2–1.9s/min); player lookups
+     `FindAllOf("PalPlayerCharacter")` ~27/min (1.1–1.9s/min; Trust tick,
+     personality scan, and during fights the `PalHate:DamageEvent` hook, one
+     61ms); personality scan `FindAllOf("PalCharacter")` 7–13/min;
+     `FindAllOf("PalAISensorComponent")` 7–10/min (40–75ms).
+   - **Why the sensor index still rebuilds:** `GetOrInitState` →
+     `GetPresetClassName` tries `GetComponentByClass` (broken for this
+     component), then goes straight to `find_sensor_component_via_index`,
+     a world-wide rebuild at most every 5s. It never checks
+     `cachedSensorByPalId`, which the `SelectResponseBySenses` hook already
+     fills for practically every wild Pal nearby.
+   - **Fixes IMPLEMENTED 2026-09-15 (approved by Dragón: "sure go ahead...
+     the idea is that we polish it as much as we can"), harness-tested, in
+     the dev install, NOT yet measured in game (run D):**
+     (a) **`Scripts/PlayerRef.lua`** (new) — the only player lookup. Keeps
+     the reference, IsValid on every use, re-searches when invalid, plus a
+     **10s safety-net re-search** even while valid (a dead character can
+     linger as a valid object after respawn), and waits 2s after a search
+     that found nobody. Replaces Trust `find_player`/`find_player_name`,
+     Combat `find_player`, Capture's 4 and Interaction's 3 `FindFirstOf`
+     player lookups (incl. the radial redirect), and the personality scan's.
+     (b) **Nameplates from the hook** (Indicator.lua, "NAMEPLATES FROM THE
+     HOOK"): BindFromHandle puts the gauge in `pendingGauges`, every 2s tick
+     runs `install_trust_bar` on those with no search, Unbind/invalid drops
+     them. The world sweep runs every tick until the hook registers, 5 more
+     ticks after, then **every 15 ticks (~30s) as a safety net**.
+     Discovered while doing this: the sweep was the ONLY thing that created
+     tags; the hook only recorded the Pal handle.
+     (c) **Personality scan from the sense hook**: the hook records
+     `pawnByPalId` and refreshes `lastSeenAt` (its early return now stores
+     the Pal id instead of `true`); `senseHookArmed` is set on registration.
+     Armed scans iterate those Pals (skip enforced ones, drop invalid) with no
+     search; **every 8th scan (~64s) is the full world search as a safety
+     net**; unarmed, every scan is the world search as before.
+     (d) **Sensor cache first**: `GetPresetClassName(palActor, palId)` checks
+     `cachedSensorByPalId` before `GetComponentByClass`/the index;
+     `cache_sensor_for_pal` now caches BEFORE `GetOrInitState` (it was after,
+     so every new Pal's first sense rebuilt the index);
+     `SENSOR_INDEX_REFRESH_SECONDS` 5 -> 30.
+     Tests: `tools/harness/perffixtest.js` (30 checks, both directions — the
+     search is gone in the common case AND every fallback still searches),
+     verified to fail against two deliberate regressions (cache order
+     reverted; palId ignored). `hitcosttest.js` updated to the 10s semantics
+     plus an invalid-player re-search check. **Harness limit found:** fengari
+     has 32-bit integers, so the real `GetStableId` (`% 0x100000000` mask)
+     always returns nil there — tests replace it; no earlier test had ever
+     exercised it. All 13 existing suites, harness3 (14 hooks, identical),
+     profiletest, syntax and both static checkers pass.
+     **RELEASE WARNING (extends the profiler one):** both release trees need
+     `Profiler.lua` (switch OFF) AND `PlayerRef.lua`, or the mod fails to
+     load. Run C's profile log is archived at
+     `perf-captures/runC-palbonds-profile.log`.
+     **Run C frame baseline** (whole capture incl. a fast-travel load):
+     avg 45.6 fps, 1% low 6.2 fps, 79 hitch events/min.
+   - **Run D (2026-09-15 13:35–13:45, first fix round, profiler ON).** Dragón:
+     "it felt a lot smoother". No Lua errors, 14 hooks. The frame capture was
+     NOT recorded (the in-game F3 never reached PresentMon; no CSV was ever
+     created). Profile (`perf-captures/runD-palbonds-profile.log`), per
+     minute over the session: radial redirect 37 ms/min (was 3.2–3.8 s);
+     player searches 6.2/min (the 10s safety net); nameplate sweeps 3.7/min
+     (was ~29); personality world scans 1.3/min (was 7–13); world-search
+     freezing ~0.67 s/min total (was 2.9–7.9). Remaining, in order:
+     `update_trust_bars` 244 ms/min (138 frames >=8ms, every label
+     recomputed every 2s); sensor index still rebuilt ~1.7/min (Pals the
+     safety scan found but the hook never reported retried it every scan);
+     radial `CloseMenu` 108ms mean / 140 max with no search involved; player
+     safety net ~6/min up to 102ms; tags showing "?" longer (tags now wait for
+     the hook or the ~64s safety scan); F8 Play 150ms once (controller
+     search).
+   - **Second fix round IMPLEMENTED 2026-09-15 (Dragón: "go ahead... the
+     specifics or the code related things, i will leave that up to you"),
+     harness-tested, in the dev install, awaiting run E:**
+     1. `update_trust_bars`: bar written only when its ratio changed; label
+        Pal id resolved once per actor; label-only tags rebuild text only on
+        personality/F9-visibility change or every `LABEL_REFRESH_SECONDS`
+        (10s); tags with a bar (bonding) still every tick.
+     2. `try_enforce_personality(palActor, palId, cacheOnly)`: the hook-fed
+        scan passes `cacheOnly`, so a Pal without a hook-cached sensor never
+        falls back to the world-wide index there (the safety scan still can).
+     3. Profiler sections inside `closeRadialMenuActionWindow` (pet grant,
+        feed dispatch) to name the 108ms in run E.
+     4. `PlayerRef` death/world-exit (Dragón's idea): IsDead/IsDying checked
+        at most once per second; after a death the body is still returned
+        while the world is searched every 2s until a DIFFERENT or living
+        character appears; `Combat.ResetForNewWorld` calls
+        `PlayerRef.Invalidate()`; safety net 10s -> 60s.
+     5. A tag still "?" creates that Pal's personality on the spot
+        (`GetOrInitState`, retried at most every `LABEL_STATE_RETRY_SECONDS`
+        = 10s per Pal).
+     6. `find_player_controller` reads `player.Controller` first; the world
+        search is only the fallback.
+     Tests: `perffixtest.js` now 42 checks (death/respawn, world reset,
+     cache-only scan for a never-sensed Pal added), each new one verified to
+     fail against a deliberate regression (cacheOnly removed -> 7 index
+     rebuilds; death check disabled -> 4 respawn failures).
+     `hitcosttest.js` moved to the 60s safety net. All 13 existing suites,
+     harness3 (14 hooks, identical), profiletest, syntax and both static
+     checkers pass. **Not yet in-game verified — nothing committed** (Dragón:
+     GitHub only once in-game testing confirms the changes work).
+     **Untested by the harness (widgets too deep to stub):** fix 1's label
+     gating and fix 5's on-the-spot personality creation — watch tags in run E.
+   - **Run E (2026-09-15, F3 at 14:35:06, second fix round, profiler ON).**
+     Dragón: "felt slightly laggier than the previous one" (run D, which has
+     no frame capture). Timeline: 2 min idle; moving + F9 tags on/off; fast
+     travel + mount; bonding; new Pal + fight; new Pal + betrayal; fast travel
+     + bond + death; respawn (the bonded Pal waited at the respawn spot, then
+     died fighting a hostile). No Lua errors, 14 hooks. Captures:
+     `perf-captures/runE-fixes2-1.csv` (full session) and `-2.csv` (1.8s,
+     from an extra F3 — confirms extra presses create new numbered files,
+     never overwrite), profile `perf-captures/runE-palbonds-profile.log`.
+     Frame comparison over matching windows (`analyze-presentmon.js --range`):
+     | window | 1% low | p99 | hitches/min | mod timer series |
+     |---|---|---|---|---|
+     | idle A (mod on, pre-fix) | 16.2 | 41.6ms | 81.6 | 2.05s/3.07s/8.1s |
+     | idle B (mod OFF) | 36.1 | 26.3ms | 43.5 | none |
+     | idle C (pre-fix, profiled) | 13.4 | 54.7ms | 117 | 2.05s/8.1s |
+     | **idle E** | **33.2** | **25.4ms** | **39.0** | none |
+     | bonding C 240-300s | 4.1 | 110ms | 91 | several |
+     | **bonding E 240-300s** | **13.3** | **39ms** | **13** | none |
+     | fighting C 420-480s | 5.7 | 111ms | 55 | 2.1s/8.2s |
+     | **fighting E 300-360s** | **13.9** | **48ms** | **19** | none |
+     **Idle with the mod is now within noise of the mod turned off.** The
+     median frame time in E's play windows was HIGHER than C's (bonding 24.5
+     vs 21.0ms) — the game itself was working harder in those areas, which is
+     the likeliest thing felt as "laggier"; the mod's stutter dropped.
+     Profile checks: player searches once a minute in play; death noticed
+     ~14:43:37, respawn searches every 2-3s stopped ~14:43:57 when the new
+     character was found; searches every 3s after 14:44:24 = the game closing.
+     **Remaining mod stalls, biggest first (next candidates):**
+     1. The ~64s personality SAFETY scan: 115-155ms in ONE frame — its
+        `FindAllOf("PalCharacter")` (60-80ms) plus a sensor-index rebuild
+        (55-70ms) via `GetOrInitState` for Pals with no cached sensor.
+     2. Each feed: `do_real_wild_feed_via_worker_menu` 100-146ms (the whole
+        radial CloseMenu cost; now named by the profiler section).
+     3. Fix 5 (on-the-spot personality for "?" tags) hit the index twice,
+        60-80ms each.
+     4. Nameplate safety sweep ~every 30s, up to 95ms; player safety search
+        once a minute, 40-96ms.
+   - PresentMon capture `perf-captures/runC-profiled-1.csv` was still locked
+     by a running elevated PresentMon at the end of the session (the game
+     exited but `--terminate_on_proc_exit` did not close it). Stopping it
+     needs an elevated command, i.e. a UAC prompt for Dragón.
 1. **Bonded Pals despawn when the player travels far from where they were
    bonded.** Investigated exhaustively on 2026-09-14 and then deliberately
    **PARKED as a known limitation** by Dragón. The mechanism is now fully
@@ -805,14 +1049,63 @@ these belong in the same piece of work.
 ## Next steps
 
 In order:
-1. **Microstutters reported by a real user** (Goldaer, Workshop comment,
-   2026-09-14, against 1.1.0). Dragón's call at the end of the 2026-09-15
-   session: tackle this first, tomorrow. This is a performance defect affecting
-   subscribers, which outranks new features. Start by reproducing it with
-   Steam's performance overlay, then use `[RADIAL-REDIRECT-PERF]` (needs BOTH
-   `DEBUG_LOGGING` and `SHOW_DIAGNOSTICS` true — see "Diagnostics") rather than
-   guessing; run 37 already ruled out logging itself as the fight-lag cause, so
-   do not re-run that.
+0. **Publish v1.1.2 to Nexus and the Steam Workshop** — only when Dragón starts
+   it, one store at a time, following "Publishing procedure" and "Publishing
+   safety". The files are ready: `release/PalBonds-v1.1.2.zip` (Nexus) and
+   `release/workshop/PalBonds/` (Workshop, Version 1.1.2). Both need the new
+   `PlayerRef.lua` and `Profiler.lua` — already included. Changelog material:
+   the README "Known issues" microstutter entry.
+1. **DONE in v1.1.2 — Microstutters reported by a real user** (Goldaer,
+   Workshop comment, 2026-09-14, against 1.1.0). Record kept below and in
+   "Known open defects" #0. **Started 2026-09-15, plan agreed with Dragón.**
+   Dragón confirms he feels the stutter himself with the mod active and had
+   grown used to it. Note for when the next player reports anything: the
+   `[RADIAL-REDIRECT-PERF]` line covers only the radial menu, and the verbose
+   debug log narrates events without timing them — neither finds a stutter.
+   The agreed plan:
+   1. **Baseline, no code:** PresentMon (`Proyectos\_tools\PresentMon\PresentMon-2.5.1-x64.exe`,
+      Intel-signed, needs elevation → a UAC prompt on Dragón's screen) records
+      every frame to `perf-captures/` (gitignored). Same spot, standing still,
+      2 minutes, PalBonds ON vs OFF (OFF = rename the dev install's
+      `enabled.txt`; UE4SS stays loaded). Analyse spike count, 1% lows, and
+      the spike **rhythm**.
+   2. **Profiler: BUILT 2026-09-15.** `Scripts/Profiler.lua`, switch
+      `local PROFILING = false` (shipped). When true, `main.lua` (which requires
+      it FIRST) wraps the UE4SS globals — `RegisterHook`, `RegisterKeyBind`,
+      `ExecuteInGameThreadWithDelay`, `ExecuteWithDelay`, `ExecuteInGameThread`,
+      `LoopAsync`, `LoopInGameThreadWithDelay`, `NotifyOnNewObject`, plus the
+      world searches `FindAllOf` / `FindFirstOf` / `StaticFindObject` — so
+      every hook, timer and search in every module is timed with no module
+      edits. Hooks are named by path, timers by source `File.lua:line`,
+      searches by class. Manual `Profiler.start()/stop()` sections only in the
+      personality scan (GetFullName / GetOrInitState / try_enforce per Pal) and
+      the nameplate sweep (install_trust_bar loop, update_trust_bars). Output:
+      `palbonds-profile.log` (gitignored by `*.log`), one report per 10s —
+      per system calls / total / avg / max / >=8ms / >=16ms, then every call
+      >= 8ms as a STALL line; times are inclusive. Each report prints os.clock
+      elapsed next to wall elapsed: **if they disagree, the durations are not
+      trustworthy** (see the os.clock doubt in Profiler.lua's header).
+      Tested by `tools/harness/profiletest.js` (37 checks), which was verified
+      to fail against two deliberately broken wrappers (returns dropped;
+      report written mid-callback). fengari has no `io.open`, so the test uses
+      an in-memory one.
+      **Dev install has it ON** (only `Profiler.lua`'s switch line differs from
+      `mod/`). **RELEASE WARNING:** `main.lua` now requires `Profiler.lua`, so
+      `release/PalBonds/` and `release/workshop/PalBonds/` MUST get
+      `Profiler.lua` with the switch OFF at the next release, or the mod fails
+      to load.
+   3. **One measured run** with profiler + PresentMon at the same spot.
+   4. **Fix causes, never cut features.** Leading suspects, unmeasured:
+      the 8s personality scan (`FindAllOf("PalCharacter")` +
+      `FindAllOf("PalPlayerCharacter")` + a `GetFullName()` per Pal — the
+      radial menu's own `FindAllOf("PalCharacter")` scan measured 36-74ms),
+      the 2s nameplate sweep (`FindAllOf("WBP_PalNPCHPGauge_C")`), the ~2s
+      Trust player-cache `FindAllOf`, and the always-on
+      `SelectResponseBySenses` hook. Likely direction, to be confirmed with
+      Dragón after measurement: track Pals and nameplates from the hooks
+      that already hand them to us, so world-wide sweeps become rare safety
+      nets. Confirm any suspect with an **in-session toggle**, not two runs.
+   5. **Re-measure**, Dragón judges the feel, then 1.1.2 under the usual rules.
 2. **Settings screen** decision: where the F9/F10 toggles and balance knobs
    would live. The last part of the Polish category.
 3. **Multiplayer** only if Dragón wants it (see Pending).
