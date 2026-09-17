@@ -1359,6 +1359,102 @@ grant_wild_interaction = function(pal, amount, label)
 --   * it does NOT require the TARGET to be idle
 -- because nothing is played on either of them. do_play() checks both because
 end
+-- ===========================================================================
+-- A PET ONLY COUNTS IF IT HAPPENED (2026-09-16)
+-- ===========================================================================
+-- Dragón petted two wild Pals mid-attack; the pet visibly failed, yet each
+-- gained +50. The grant used to run the moment the radial menu closed with
+-- "care" chosen, which says what the player ASKED for, not what happened.
+-- The log showed the difference: a pet that works puts the Pal into
+-- BP_AIActionPairCall_Petting_C within a moment (the Chillet, and both second
+-- pets); both failed pets left the Pal in BP_AIAction_CombatPal_C.
+--
+-- So the grant now waits: the Pal's current action is checked every
+-- PET_VERIFY_POLL_MS for up to PET_VERIFY_MAX_SECONDS, and the points are
+-- given the first time it is seen being petted. If that never happens, the
+-- pet failed and nothing is granted. The check is a few reads on one Pal,
+-- only after a pet was chosen.
+local PET_VERIFY_POLL_MS = 250
+local PET_VERIFY_MAX_SECONDS = 4.0
+local PET_ACTION_MARKER = "Petting"
+
+-- The Pal's current action: its full name and its address (nil if unreadable).
+local function current_action(pal)
+    local cur = safe_call(function()
+        local ctrl = pal.Controller
+        if ctrl == nil or not ctrl:IsValid() then return nil end
+        local ac = ctrl:GetAIActionComponent()
+        if ac == nil or not ac:IsValid() then return nil end
+        local a = ac:GetCurrentAction_BP()
+        if a == nil or not a:IsValid() then return nil end
+        return a
+    end)
+    if cur == nil then return nil, nil end
+    return safe_call(function() return cur:GetFullName() end), safe_call(function() return cur:GetAddress() end)
+end
+
+-- 2026-09-16, run 3 (Lyleen): a second pet chosen while the FIRST pet's
+-- animation was still playing was confirmed instantly ("after 0.00s") and paid
+-- again. Only a NEW petting animation counts now: one already playing when the
+-- pet is chosen is remembered and ignored, and an animation that already paid
+-- never pays twice. If addresses cannot be read, the check instead requires
+-- the Pal to be seen doing something else first.
+local paidPetActionByPal = {}
+
+local function is_pet_action(name)
+    return name ~= nil and tostring(name):find(PET_ACTION_MARKER, 1, true) ~= nil
+end
+
+local function grant_pet_when_it_happens(pal)
+    if pal == nil then return end
+    local palKey = safe_call(function() return pal:GetFullName() end) or tostring(pal)
+    local startedAt = os.clock()
+    local lastSeen = nil
+    local startName, startAddr = current_action(pal)
+    local oldAddr = is_pet_action(startName) and startAddr or nil
+    local sawGap = not is_pet_action(startName)
+    local function check()
+        if not safe_call(function() return pal:IsValid() end) then
+            Logger.log("[PalBonds/Interaction] [PET-CHECK] the Pal is gone before the pet happened — nothing granted")
+            return
+        end
+        local name, addr = current_action(pal)
+        lastSeen = name or lastSeen
+        if is_pet_action(name) then
+            local isNew
+            if addr ~= nil and (oldAddr ~= nil or not sawGap) then
+                isNew = addr ~= oldAddr
+            else
+                isNew = sawGap
+            end
+            if isNew and addr ~= nil and paidPetActionByPal[palKey] == addr then isNew = false end
+            if isNew then
+                paidPetActionByPal[palKey] = addr
+                Logger.log(string.format("[PalBonds/Interaction] [PET-CHECK] pet confirmed after %.2fs — granting", os.clock() - startedAt))
+                safe_call(function() grant_wild_interaction(pal, PET_FRIENDSHIP_GAIN, "Pet (radial)") end)
+                return
+            end
+        else
+            sawGap = true
+        end
+        if (os.clock() - startedAt) >= PET_VERIFY_MAX_SECONDS then
+            local busy = lastSeen and tostring(lastSeen):match("^(%S+)") or "unknown action"
+            if is_pet_action(lastSeen) then busy = busy .. ", still the PREVIOUS pet" end
+            Logger.log("[PalBonds/Interaction] [PET-CHECK] the pet never happened (Pal was busy: " .. busy .. ") — nothing granted")
+            return
+        end
+        local ok = pcall(function()
+            ExecuteInGameThreadWithDelay(PET_VERIFY_POLL_MS, function() safe_call(check) end)
+        end)
+        if not ok then
+            Logger.log("[PalBonds/Interaction] [PET-CHECK] could not schedule the check — nothing granted")
+        end
+    end
+    check()
+end
+-- Exported for tools/harness/bosstest.js, like FeedGrantAmount.
+Interaction.GrantPetWhenItHappens = grant_pet_when_it_happens
+
 local function closeRadialMenuActionWindow()
     -- Profiling (2026-09-15): closing the radial menu stalled 108ms on average
     -- (up to 140ms) in run D with no world search involved, so time the two
@@ -1374,9 +1470,9 @@ local function closeRadialMenuActionWindow()
             -- do_pet() here would try to play a SECOND animation and, far
             -- worse, would be swallowed by its own anti-spam gate.
             local tPet = Prof and Prof.start()
-            safe_call(function()
-                grant_wild_interaction(lastRedirectedWildPalActor, PET_FRIENDSHIP_GAIN, "Pet (radial)")
-            end)
+            -- 2026-09-16: granted only once the pet is seen happening.
+            local petTarget = lastRedirectedWildPalActor
+            safe_call(function() grant_pet_when_it_happens(petTarget) end)
             if Prof then Prof.stop("radial close: pet grant (grant_wild_interaction)", tPet) end
         elseif lastDecidedInstruction == "feed" then
             local tFeed = Prof and Prof.start()

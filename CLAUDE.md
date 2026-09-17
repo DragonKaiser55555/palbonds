@@ -18,7 +18,7 @@ Following stays at 95% for the open spawner-despawn defect. Polish counts the
 README, both store descriptions, licence, screenshots, the Workshop upload, the
 Nexus package and the Nexus publish as done (published on Steam, Nexus, and
 announced in 2 Reddit posts, 2026-09-14; **v1.1.1 published to both stores
-2026-09-15**; **v1.1.2 committed to GitHub 2026-09-15, stores pending**); only
+2026-09-15**; **v1.1.2 on GitHub, Nexus and the Steam Workshop 2026-09-15**); only
 the settings screen is left. Recalculate whenever a category moves, and keep
 the `Progreso:` line of this project's block in `../game proyects.txt` in sync.
 
@@ -33,9 +33,22 @@ percentage stays as it was.
 **v1.1.2 = the microstutter fix, committed and pushed to GitHub as the new
 stable version on Dragón's instruction** (*"lets update all of this to github
 as the new stable version - we will have to upload it to nexus and the steam
-workshop too, but one step at a time"*). **Nexus and the Steam Workshop are
-still on v1.1.1** — publishing 1.1.2 there is the NEXT step, following
-"Publishing procedure" below, and only when Dragón starts it.
+workshop too, but one step at a time"*). **Then PUBLISHED to both stores the
+same afternoon, all verified:**
+- **Nexus:** Dragón uploaded `release/PalBonds-v1.1.2.zip` via the Update
+  button. The page header reads 1.1.2 (last updated 15 Sep 3:13PM). There is
+  one main file, "PalBonds V1.1.2", and the changelog is saved in Dragón's
+  wording. That last point was confirmed from his screenshot: the Changelogs
+  accordion never renders its entries in the logged-out in-app browser, so
+  don't call it empty from there.
+- **Steam Workshop:** the same item 3797816321, so no duplicate. The change note
+  is dated 15 Sep, and `.workshop.json` now reads `last_published_version`
+  1.1.2 with the change note.
+- **The game's installed copy updated when Dragón re-ticked the items:**
+  `Mods\NativeMods\UE4SS\Mods\PalBonds\` is md5-identical to the release (10
+  scripts, profiler OFF), and ManagedMods records Version 1.1.2. The Workshop
+  UE4SS loaded PalBonds cleanly (14 hooks, no Lua errors). Dragón's quick run
+  on the published build: *"i think it did [feel smoother]"*.
 
 - **What 1.1.2 is:** the two fix rounds in "Known open defects" #0 (PlayerRef,
   hook-fed nameplates and personality scan, sensor cache first, label/bar
@@ -76,6 +89,104 @@ reverted rather than shipped; see "KNOWN LIMITATION" below.
   `FOLLOW_TRIGGER_RATIO = 0.5` (`Trust.lua:35`), so "50%+ friendship bar" is
   literal, and "complete the bond" is correct because filling the bar fires the
   sphere-less capture and an owned Pal is no longer spawner-owned.
+
+**URGENT (2026-09-16): v1.1.2 — the SHIPPED version — crashes on a world
+change.** Bond a Pal, quit to the menu, load a world →
+`EXCEPTION_ACCESS_VIOLATION reading 0x338`. Dragón confirmed it with the
+Workshop 1.1.2 copy (vanilla fine, 1.1.1 fine in two runs: pet-only and
+feed-only). Cause, from the 1.1.1 log vs the dev log: 1.1.1's fast loop
+re-searched for the player every ~4 s, the search came back empty on quit and
+`[WORLD-RESET]` dropped every reference; 1.1.2's `PlayerRef.lua` kept returning
+the old character (still passing UE4SS IsValid during teardown), so the reset
+never ran. The harness reproduces this exactly (`worldchangetest.js`: section C
+fails on 1.1.2, passes on 1.1.1).
+**Fix (PlayerRef.lua only):** once a second, `UKismetSystemLibrary::IsValid` on
+the kept player (engine check, no search); and while a Pal is following, a real
+search every 4 s (1.1.1's cadence; never runs with no follower). Both log
+`[PLAYER-LIFE]`. **HOTFIX BUILD, in Dragón's game folder for a live test:**
+`git show f31b823:release/workshop/PalBonds/Scripts/*.lua` (the exact 1.1.2
+release) + `mod/PalBonds/Scripts/PlayerRef.lua` from the working tree, with
+`DEBUG_LOGGING` and `PROFILING` on. Today's dev scripts are parked in the game
+folder as `ue4ss/Mods/PalBonds/Scripts.dev-2026-09-16`. If the live test holds,
+this becomes a 1.1.3 hotfix (ship from 1.1.2 + PlayerRef, logging OFF) before
+the boss/Friendly work; do not ship until Dragón confirms in game.
+**CONFIRMED 2026-09-16:** several quit/reload runs, no crash; the reset fired
+("5 follower(s)"). Cost: ~11 player searches/min at ~39 ms each while a Pal
+follows — Dragón: "almost imperceptible... acceptable for now".
+**Dragón's call: 1.1.3 = the crash fix PLUS the finished work.** The full dev
+tree (`mod/PalBonds/Scripts`, DEBUG_LOGGING + PROFILING on) is in his game
+folder as the release candidate. Candidate list given to him: (1) crash fix,
+(2) boss tag + bar, (3) failed pets give nothing, (4) no double pay, (5) 3 s
+abandon grace — all confirmed live; (6) x2 meter for gym/raid/predator bosses,
+(7) humans show Normal and keep their AI, (8) self-defence reach 3000,
+(9) 20% brief follow (cat confirmed; no passive gain during it, fixed
+2026-09-16) — awaiting the RC run. NOT included: three-boss layout, the
+despawn-while-following gap, and the spies (strip before shipping).
+**Dragón narrowed it (2026-09-16): 1.1.3 = items 1–7.** Items 8 and 9 wait for
+the next update ("once we polish it further"). They stay in the code behind
+module switches, both `false` for 1.1.3: `Personality.FRIENDLY_BRIEF_FOLLOW`
+(false = the exact 1.1.2 20% behaviour, `legacy_friendly_reset`, plus the
+human-NPC guard) and `Combat.SELF_DEFENCE_EXTENDED_REACH` (false = 1800). The
+harness tests both states (bosstest G = shipped; B/D switch them on). The dev
+copy in his game folder is now the 1.1.3 candidate (`mod/` + DEBUG_LOGGING on,
+PROFILING off). He confirmed humans show Normal in the previous run; the last
+run checks the boss x2 meter, then GitHub/Nexus/Workshop — build the release
+from `mod/` with logging OFF; the spies are diagnostics-gated and silent there.
+
+**v1.1.3 BUILT (2026-09-16), items 1–7, after Dragón's final run** (sleeping
+Pal refused, quit/reload with a fed follower fine, boss bars fine, gym Lyleen
+bar 250 = x2 and a double pet refused, humans Normal; three bosses at once
+still unchecked, too rare). `release/PalBonds/Scripts` and
+`release/workshop/PalBonds/Scripts` are byte-identical to `mod/` (10 files,
+logging/diagnostics/profiling all false, both held-back switches false),
+`release/workshop/PalBonds/Info.json` Version 1.1.3,
+`release/PalBonds-v1.1.3.zip` built (same layout as 1.1.2, LICENSE included;
+the 1.1.2 zip removed) and the full harness run against the UNZIPPED package.
+READMEs updated (bosses x2 wording; crash-fix known-issue entry). Next, one step
+at a time as Dragón directs: Nexus (Update button), then Workshop, and GitHub
+only when he asks. The dev copy in his game folder still has DEBUG_LOGGING on.
+**Nexus 1.1.3 LIVE (2026-09-16 20:31):** header 1.1.3, one main file "PalBonds
+V1.1.3" (267 KB), changelog entry in Dragón's one-line-per-change wording.
+Workshop upload folder updated to 1.1.3 (10 scripts identical to release,
+Info.json Version edited in place, `.workshop.json` untouched — note it still
+says last_published_version 1.1.1, so the uploader does NOT write that back).
+Local dev copy disabled again (dwmapi.dll / enabled.txt → *.MODS-DISABLED) for
+his Workshop test.
+**Workshop 1.1.3 PUBLISHED (2026-09-16, `.workshop.json` now says
+last_published_version 1.1.3) — BUT the world-change crash STILL happens with
+the Workshop install** (0x338 at 20:53:31). The game's copy
+(`Mods/NativeMods/UE4SS/Mods/PalBonds/Scripts`) is byte-identical to the
+release. Key difference from every successful fix test: the Workshop UE4SS is
+a different build (`v3.0.1 Beta, Git SHA 2281fa31`) from the manual one
+(`ba2efd55`). Both log "FCallbackGarbageCollector", so that is not it. The
+crashed session's UE4SS.log was overwritten by his relaunch 20 s later and the
+release writes no mod log. Next: DEBUG_LOGGING + SHOW_DIAGNOSTICS switched on
+in the GAME'S Workshop copy (local only, not published) for a logged repro;
+he must not relaunch before the logs are read.
+**Logged repro (21:01–21:06): NO crash in several tries.** Three quits with a
+follower (PinkCat, PlantSlime, and the boss WeaselDragon/Chillet following):
+each time `[PLAYER-SPY] search (kept player became invalid)` → `[WORLD-RESET]
+the player left the world`. So the fix works on the Workshop UE4SS too; the
+20:53 crash is unexplained. Dragón: "im pretty sure all i did was just try to
+bond with a boss and then quit and re-join a world", but repeating that didn't
+crash; parked until it happens again.
+**NEXT SESSION, FIRST TASK — suspect for that crash:** `Indicator.lua`'s
+`bossEntries` / `pendingBossGauges` (new in 1.1.3) hold boss-bar widgets and
+their `TargetCharacter`, and `Combat.ResetForNewWorld` does NOT clear them
+(nor `trackedBars`, the old pass-285 note). The gauge canvas is GameInstance-
+lived, so after a world change the 2 s tick can read a widget whose boss is
+gone — `Trust.HasBondingState(actor)` / `get_friendship_ratio(actor)` on an
+actor that UE4SS may still call valid (it did for the player). Fix: an
+`Indicator.ResetForNewWorld()` called from `Combat.ResetForNewWorld`, plus
+harness coverage; ship as 1.1.4 once tested. His game's Workshop copy is left
+with DEBUG_LOGGING on (SHOW_DIAGNOSTICS off) so a repeat leaves a log.
+
+**NEXT SESSION STARTS HERE (Dragón, 2026-09-15): the boss display update.**
+Bosses show neither the trust bar nor the rolled personality tag, because
+their HP bar is a different widget from the one Indicator.lua attaches to.
+Full notes are in "Next steps" 0b. **2026-09-16: built and deployed to the
+dev copy, awaiting its first test run** together with the 20% reset spies
+("Next steps" 0c).
 
 **The microstutter report (Workshop commenter *Goldaer*, against 1.1.0) is
 RESOLVED in v1.1.2** — reproduced, profiled and fixed on 2026-09-15. The full
@@ -139,8 +250,10 @@ download, set as primary, plus a changelog entry. The changelog is what Vortex
 shows at the update prompt, so it is worth filling in.
 
 **Steam Workshop (item 3797816321).** The uploader's source folder is
-`steamapps\workshop\content\1623730\3797816321\`. Publishing means: replace the
-8 scripts, bump `Version` in `Info.json`, leave `.workshop.json` **untouched**,
+`steamapps\workshop\content\1623730\3797816321\`. Publishing means: replace EVERY
+script from `release/workshop/PalBonds/Scripts/` (10 since v1.1.2, which added
+`PlayerRef.lua` and `Profiler.lua` — copying only the old 8 would ship a build
+that fails to load), bump `Version` in `Info.json`, leave `.workshop.json` **untouched**,
 then Dragón runs the Palworld Mod Uploader.
 
 - `.workshop.json` holds `publishedfileid` and is the only thing tying the
@@ -159,7 +272,122 @@ then Dragón runs the Palworld Mod Uploader.
 - `Info.json`'s `MinRevision` is a floor, not a pin — a Palworld update does not
   require changing it.
 
-**Dragón's machine right now (not in the repo), as of 2026-09-15 11:11 — DEV
+**BUG UNDER INVESTIGATION (2026-09-15, found on the published v1.1.2): the
+"abandoned" status never triggers.** Dragón bonded a Pal, then ran far away to
+see the "left behind" toast, but the bond never broke.
+
+- **His question:** could it be the player-check change made for the
+  stutters (PlayerRef)?
+- **Code facts:**
+  - `EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = false`, so punishment is not switched
+    off.
+  - Past `MAX_FOLLOW_DISTANCE` (3000) and not fighting for
+    `DRIFT_GRACE_SECONDS` wipes friendship and calls
+    `on_follower_lost_all_trust("too far from player")`, which gives the
+    "abandoned" toast.
+  - **`DRIFT_GRACE_SECONDS` is 3 as of 2026-09-15 (was 15).** Dragón asked
+    when the window had appeared: he expected the pre-pass-323 rule, where
+    crossing the leash ended the bond instantly unless the Pal was fighting.
+    The history shows pass 323 (2026-09-12) added the 15s window after his
+    complaint about losing Petallia right after a fight, and that he was only
+    consulted on march-vs-warp, not on the window covering ordinary drift. He
+    then set it to 3: *"ok, shorten that to 3 seconds"*. A Pal that is
+    fighting is still fully protected, with no clock at all.
+  - A scratch harness run of the REAL Trust tick with diagnostics on still
+    breaks the bond correctly. The logic works offline, so the in-game cause
+    is an input.
+- **DIAGNOSED from the spy run (log archived at
+  `perf-captures/bug-abandon-palbonds-live.log`, 19:20–19:23):**
+  - **The player lookup is NOT the cause.** PlayerRef kept the same
+    `BP_Player_Female_C` all run (safety-net searches only), and neither Pal
+    was ever "fighting".
+  - **Pal 1, Ribbuny Botan: abandonment WORKED.** Recalled past 1800, drift
+    clock started at 3475, still 10340 units away at 15s. Then "losing all
+    trust", `follow stopped: too far from player`, and the bond-lost message
+    "Ribbuny Botan was left behind and gave up on you." Whether it appeared on
+    screen still needs Dragón's confirmation.
+  - **Pal 2, `BP_FlowerRabbit_C`: the bug.** Drift clock started at 4514
+    (19:22:23). Its distance then jumped 6402 → 11082 → **261373** with "no
+    controller", its last trace was a TRAINER-REASSERT to Destination (0,0), and
+    its spy lines stopped at 10.6s of 15s. No break, no toast, and it was still
+    counted as a follower at the world reset ("1 follower(s)").
+  - **Cause:** the known spawner despawn (see "KNOWN LIMITATION" below)
+    removed the actor mid-countdown. `tick_followers` only processes a
+    follower inside `if stillValid then` (Trust.lua ~1167–1506) and has **no
+    `else`**, so an invalid follower is skipped silently forever. Its State
+    entry, and Combat's follower references, linger until the world reset.
+- **Fix to decide with Dragón (it changes what the player sees):** when a
+  following Pal goes invalid, end the bond cleanly and tell the player.
+  Open questions:
+  - which message when its drift clock was running (probably the "left
+    behind" one);
+  - which message when it despawned while following nearby, which the known
+    limitation says also happens;
+  - whether an invalid Pal's trust should be kept or wiped. Its identity and
+    friendship survive the despawn.
+
+  Also clean up Trust State and Combat's `FollowerActors`/`BondingState` for
+  it. The spies stay until the fix is verified in game.
+- **Spies added (in `mod/`, diagnostics-gated, REMOVE once this is answered):**
+  - `[LEASH-SPY]` every 3s per follower, showing distance, pastLeash, fighting
+    plus the reason and hate-target name, the drift clock, the player name and
+    both positions.
+  - `[LEASH-SPY] leash check SKIPPED` when there is no player position.
+  - `[PLAYER-SPY]` on every PlayerRef search (with its reason), death,
+    respawn and invalidation.
+  - `Combat.IsBusyFighting` now also returns the reason and target; its first
+    return value is unchanged.
+  - All suites pass; the spy paths were checked offline with diagnostics on.
+
+**UPDATE 2026-09-15, after the publish — back in DEV MODE with FULL LOGGING to
+chase a bug Dragón found.** He described it only as "not terrible"; the details
+were still to come, and he wants the fix ideally in tomorrow's update.
+
+- **Workshop items:** Dragón unticked both in-game. Verified: no
+  `ActiveModList` lines, so it is safe for the manual UE4SS to load alone.
+- **Dev install re-enabled:** the `dwmapi.dll` and `enabled.txt` renames were
+  reversed.
+- **The dev copy is v1.1.2 except three switch lines:** `DEBUG_LOGGING = true`
+  and `SHOW_DIAGNOSTICS = true` in its `Logger.lua`, and `PROFILING = true` in
+  its `Profiler.lua`.
+- **Logs:**
+  - `Pal\Binaries\Win64\palbonds-live.log`, written in "w" mode, so it is
+    overwritten on every launch. Read it before the next launch.
+  - `Pal\Binaries\Win64\palbonds-profile.log`.
+- **Before any future publish:** switch all three back to false. They are only
+  ever changed in the live dev copy; `mod/` and `release/` stay false.
+
+The Workshop-mode snapshot below is how the machine was right after the
+publish, before this.
+
+**Dragón's machine at 2026-09-15 15:26 — WORKSHOP MODE on the published v1.1.2:**
+- **Both Workshop items are ticked in-game.** `PalModSettings.ini` lists
+  `ActiveModList=UE4SSExperimentalPW` and `ActiveModList=PalBonds`.
+- **The game's installed copy is v1.1.2.** `Mods\NativeMods\UE4SS\Mods\PalBonds\`
+  is md5-identical to `release/workshop/PalBonds/Scripts/` (10 scripts,
+  `PROFILING = false`). `Mods\ManagedMods\PalBonds\Info.json` reads Version
+  1.1.2. The InstallManifest shows LastInstallTimeUtc 18:25:55 and tracks 11
+  files.
+  - Re-ticking the items after the upload DID recopy it this time. Before that
+    the copy was still 1.1.1, with the two new files missing, so keep checking
+    by hash after every publish.
+  - The InstallManifest's `LastWorkshopUpdateTimeUtc` still shows the old
+    03:29:50 value; the files are what count.
+- **The Workshop UE4SS loaded it cleanly at 15:25:57:** 14 hooks, no Lua errors.
+- **The uploader folder** `steamapps\workshop\content\1623730\3797816321\`
+  holds the same 10 scripts and Version 1.1.2. Its `.workshop.json` reads
+  `last_published_version` 1.1.2.
+- **The dev install is DISABLED** (`dwmapi.dll.MODS-DISABLED`,
+  `enabled.txt.MODS-DISABLED`); its local UE4SS.log is untouched since 15:04.
+  - Its `Profiler.lua` still has `PROFILING = true`. Its other 9 scripts match
+    v1.1.2.
+  - To go back to dev mode, follow the order in the DEV MODE notes below:
+    untick both items in-game first, then reverse the two renames.
+
+The DEV MODE notes that follow describe how the machine was during the
+performance work.
+
+**Dragón's machine during the performance work, 2026-09-15 11:11 — DEV
 MODE, Workshop mods switched off in-game but still subscribed:**
 - **Switching between Workshop and dev no longer needs unsubscribing (found and
   verified 2026-09-15).** Palworld's own mod manager keeps its state in
@@ -988,6 +1216,24 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 
 ## Pending, deliberately deferred
 
+**Real player reports to fold in (Steam Workshop, LuWicki97, read 2026-09-15):**
+- *"been testing this with a friend via invite code. I befriended a digtoise
+  and somehow my friend ended up getting it in his team instead."* That player
+  concludes co-op isn't functional yet.
+  - **Likely cause, unconfirmed:** every player lookup takes the FIRST valid
+    `PalPlayerCharacter` in the object list. That was true of the old
+    `FindAllOf`/`FindFirstOf` sites, and it is now true of `PlayerRef.Get()`.
+    In co-op there are several, so the capture/grant can target another
+    player.
+  - A real fix needs "the player who interacted", e.g. from the hook context
+    or the local controller, not "a player".
+- *"often the options didn't pop up properly... tried on a lyleen and
+  azurmane next. I didn't get an option at all."* Digtoise worked "somewhat
+  fine". This may be the big-Pal targeting (aim sphere from the capsule, see
+  `find_targeted_pal`), or it may be co-op-specific. Not reproduced yet.
+- Dragón replied on the Workshop page (2026-09-15): the mod is only tested in
+  singleplayer; for big Pals, aim at the lower body and get close.
+
 **Multiplayer support (co-op worlds, community dedicated servers): analysed
 2026-09-12, not started.** Dragón asked what it would take. Official Pocketpair
 servers do not allow mods at all, so that is not a goal. For player-hosted co-op
@@ -1049,12 +1295,320 @@ these belong in the same piece of work.
 ## Next steps
 
 In order:
-0. **Publish v1.1.2 to Nexus and the Steam Workshop** — only when Dragón starts
-   it, one store at a time, following "Publishing procedure" and "Publishing
-   safety". The files are ready: `release/PalBonds-v1.1.2.zip` (Nexus) and
+0. **DONE 2026-09-15 — v1.1.2 published to Nexus and the Steam Workshop**,
+   verified on both pages and in the game's installed copy (see "Where we
+   stand"). Kept for reference: it was done one store at a time, following
+   "Publishing procedure" and "Publishing safety". The files are ready: `release/PalBonds-v1.1.2.zip` (Nexus) and
    `release/workshop/PalBonds/` (Workshop, Version 1.1.2). Both need the new
    `PlayerRef.lua` and `Profiler.lua` — already included. Changelog material:
    the README "Known issues" microstutter entry.
+0b. **NEXT UPDATE (Dragón, 2026-09-15: "save this for tomorrow, it will be
+   our next update we have to work on") — bosses show neither the trust bar
+   nor the personality tag.**
+   - **Symptom 1:** a boss Pal never shows its friendship/trust bar.
+   - **Symptom 2:** a boss Pal never shows the personality it rolled.
+   - **Same cause for both, in Dragón's words: "since they have a different HP
+     bar".** What the code confirms: everything Indicator.lua draws attaches to
+     the regular nameplate widget, `WBP_PalNPCHPGauge_C`. That covers the
+     `BindFromHandle`/`Unbind` hooks, the `pendingGauges` install path, the
+     world sweep `FindAllOf("WBP_PalNPCHPGauge_C")`, and `install_trust_bar`
+     parenting into that widget's `ProgressBar_HP` panel. A boss's HP bar is a
+     different widget, so nothing ever attaches to it.
+   - **Found in the UE4SS CXXHeaderDump (2026-09-16), not yet seen live:**
+     - `WBP_BossEnemyHPGauge_C` (parent `UPalUICharacterHPGaugeBase`, the same
+       base as the normal gauge) has a direct `TargetCharacter` field and a
+       `SetTargetCharacter(APalCharacter*)` function, so the Pal comes with the
+       widget and no handle lookup is needed. Also `OnDead`, `OnRequestClose`,
+       `Destruct`.
+     - Its child `WBP_IngameBossHP` (`WBP_IngameBossHP_C`) is the visible
+       top-of-screen bar: `BossGaugeHP` / `BossGaugeHP_Back` (ProgressBars),
+       `Text_BossName`, `Text_LvValue`, `CanvasPanel_Prefix`, `SizeBox_Overall`.
+     - The owner is `WBP_PalNPCHPGaugeCanvas`: `DisplayedBossUGaugeMap`
+       (APalCharacter → gauge), `Add Boss Gauge`, `OnEndPlayBossPal`,
+       `OnBossDead`.
+     - The species flag is `UseBossHPGauge` (data table), plus
+       `GetIsBoss`/`GetIsRaidBoss`/`GetIsTowerBoss`/`GetIsPredatorBoss`.
+     - Plan: hook `SetTargetCharacter`, attach bar + tag inside the boss
+       widget, clean up on `Destruct`/`OnDead`. Placement is Dragón's call.
+   - **BUILT 2026-09-16, harness-tested (`bosstest.js`), deployed to the dev
+     copy, NOT yet seen in game.** Dragón's calls: every boss type shows it
+     ("i've been able to bond with all type of bosses so far"); the trust bar
+     goes under the HP bar "like always, ideally with the same length too";
+     the tag goes under the bar, as on nameplates. He flagged that several
+     bosses stack their bars vertically, so the same offsets may overlap the
+     next bar. `Indicator.lua` "BOSS HP BAR" section: hook-fed
+     (`pendingBossGauges` → `bossEntries`), one `FindAllOf` only right after
+     the hook installs, refreshed on the existing 2 s tick. Bar/tag go into
+     `BossGaugeHP`'s own panel (the "BossHP" canvas). Bar height = 35% of the
+     HP bar's, clamped 6–10. Tag style copied from `Text_LvTitle` (falls back
+     to `Text_BossName`), height 22 — both guesses to check.
+     `[BOSS-GEOM]` (diagnostics only) prints the real layout, nesting chain
+     and clipping once per session.
+   - **Run 1 (2026-09-16, Chillet alpha):** tag appeared ("Bonding"), trust
+     bar invisible. Cause: `BossGaugeHP`'s slot is anchored, and
+     GetPosition/GetSize returned (4,18)/(4,8) — raw offsets, where 4 is a
+     RIGHT MARGIN, not a width. The bar was built 4px wide (a yellow dot at
+     the left end of the HP bar in his screenshot). Fixed: our widgets now
+     copy the HP bar's anchors and alignment and reuse its left/right
+     offsets, so they get the same length either way; the HP bar is 8 tall
+     at Y 18, so the trust bar sits at Y 28, 6 tall. `bosstest.js` A1b
+     models the stretched layout and fails without the anchor copy.
+     Nesting seen: `BossHP` canvas < `SizeBox_128` < `VerticalBox_94` <
+     `CanvasPanel_BossHP` < `SizeBox_Overall` < `CanvasPanel_0`; clipping 0.
+     Seen attaching to alpha, predator and ThunderBird bosses. Stacking with
+     two bosses still untested.
+   - **Design reminders:**
+     - Bonding a boss already works (the raid-boss test, alpha x2 bar); only
+       the display is missing.
+     - Keep the 1.1.2 performance rules: hook-driven, no timed world sweeps, a
+       rare safety net only.
+     - The label-only vs bar entry logic and "owned Pals show no tag" must
+       carry over.
+0c. **Idea (Dragón, 2026-09-16, "just curiosity"): a Pal crossing 20% should
+   stop what it was doing / stop attacking.** It is already coded:
+   `Personality.MaybeBecomeFriendlyByBar` swaps the real AI preset to friendly
+   and runs `interrupt_and_resense`, which cancels the current action, resets
+   `ResponsedMaxBiologicalGrade` and re-senses. Two gaps: it has never been
+   confirmed live on a Pal that was ATTACKING at the time, and nothing clears
+   the Pal's hate target, so it may resume the fight. Only for unowned,
+   not-yet-following Pals whose disposition wasn't already friendly.
+   - **Third gap, found 2026-09-16:** a Pal that ROLLED Curious (internal
+     "friendly") never gets the reset at all, because the function returns at
+     its first check. The commenter's Curious attacker is exactly that case.
+   - **Dragón's theory to confirm (2026-09-16):** the commenter's Timid Pal
+     joined a same-species Hostile's fight (the joiner behaviour), and after
+     the reset it simply joined again because the Hostile was still there.
+   - **Spies in place:** `[WON-OVER-SPY]` in `Personality.lua` (diagnostics
+     only): state before the reset, which path ran (reset / no reset and
+     why), then the Pal's action and hate target every 2 s for 20 s, tagging
+     the target `(THE PLAYER)` or `(SAME SPECIES)`. Remove once answered.
+   - **Run 1 (2026-09-16), what the log shows (Dragón's own account still
+     to compare):**
+     - Chillet alpha (tracked 'notinterested'): reset ran cleanly; it was
+       calm before and after (petting / looking at the player).
+     - **Timid Lamball: NO reset — a real bug.** Its species preset is
+       friendly, and `state.presetClassName` still holds that species value
+       even though enforcement had swapped its real AI to a private escape
+       preset. So the "preset already friendly" check skips the reset of a
+       Pal whose real AI is NOT friendly. It kept attacking the player for
+       the whole 21 s watch. Fix candidate: record the enforced preset in
+       `presetClassName` (or check `enforcementApplied`/`rolledTier`).
+     - Curious Chikipi: no reset (the rolled-Curious gap); attacked the
+       player for ~10 s, then was being petted and started following.
+     - Both reached 50% on the next pet (bar 125 at a 0.25x level gap) and
+       followed while their hate was still on the player.
+     - **Dragón's corrections (what really happened):** one pet took each
+       Pal past 20% but under 50% (Lamball 23 s and Chikipi 10 s between
+       Friendly and following — enough time; I misread this). The Lamball
+       did NOT join the fight against the other Lamball: it stayed angry at
+       him after bonding and he killed that Lamball alone. It only fought
+       the Chikipi because a hit landed on it. The log misled me because
+       `[HATE-ASSIST] pushed hate` is our command, and `fighting=true
+       (follow suspended for a fight)` is our own flag — neither shows what
+       the Pal actually did.
+     - **NEW BUG (Dragón, 2026-09-16): a failed pet still grants points.**
+       Both first pets were done mid-attack animation and visibly failed,
+       yet `[BALANCE-TEST]` granted +50. The spy confirms it: both Pals were
+       still in `BP_AIAction_CombatPal_C` 2 s later, whereas successful pets
+       show `BP_AIActionPairCall_Petting_C` (Chillet; both second pets).
+     - Hate API available: `UPalHate` has only `ChangeHate(Attacker, delta)`,
+       `ForceHateUp_...`, `DamageEvent`, `AttackSuccessEvent`,
+       `SelfDeathEvent` — no clear/reset function.
+     - **Dragón's rules (2026-09-16):** (a) "friendly > curious": a rolled
+       Curious Pal gets the 20% reset too. (b) "friendly means it shouldnt
+       attack unless to defend itself or at least it should forgive if it was
+       angry before." His scenario: Curious + Feral roam together, the Feral
+       attacks, the Curious joins, the player kills the Feral, the Curious
+       keeps attacking, the player gets it to Friendly → it must stop.
+     - **BUILT 2026-09-16, harness-tested (`bosstest.js` B1–B5, C1–C3, D1,
+       all failing on the previous code), deployed, NOT yet seen in game:**
+       - `Interaction.lua` PET-CHECK: a radial pet grants only once the Pal
+         runs `...Petting...` (polled every 250 ms, up to 4 s); otherwise
+         "the pet never happened", nothing granted.
+       - `Personality.MaybeBecomeFriendlyByBar`: every wild Pal crossing 20%
+         gets the reset (Curious included); `real_preset_is_friendly` uses
+         the rolled tier over the stale species `presetClassName`; the reset
+         waits for a pet in progress to end (`when_not_petting`, 500 ms, max
+         10 s); a successful swap sets `rolledTier = "friendly"`.
+       - `Personality.ForgivePlayer`: `ChangeHate(player, -step)` with steps
+         100, 200, 400… (max 12) while the player is the Pal's top hate
+         target. Player only; logs `[FORGIVE]`, including "STILL angry" if
+         ChangeHate has no effect (the real unknown for the next run).
+         Called at the 20% reset and from `Combat.StartFollowing`.
+       - `[LEASH-SPY]` now adds `REALLY: <action / hate target>` from
+         `Personality.DescribeFight`, so our "follow suspended" flag is no
+         longer mistaken for the Pal actually fighting.
+     - **Run 2 (2026-09-16 15:38), Dragón:** boss friendship bar now shows
+       correctly (two-boss stacking still to check). Won-over Pals kept
+       attacking; the bonded Garm (alpha wolf) "never defended me once, nor
+       even itself". Pet test inconclusive in the chaos; next time he pets a
+       SLEEPING Pal, which should grant nothing.
+     - **Run 2, what the log shows:**
+       - The ChangeHate forgive is DISPROVEN: five calls, 12 steps and
+         -409,500 each, the player still the top hate target every time; each
+         won-over Pal attacked for the whole 20 s watch. Removed.
+       - What does clear hate on the player: starting to follow. In both runs
+         every new follower dropped it within ~3 s (PinkCat 15:43:25→:28,
+         Lamball and Chikipi in run 1). The companion preset's player slots
+         = Ignore are the only player-facing change → now applied at 20% too
+         (see below).
+       - Garm self-defence: `[SELF-DEFENCE]` fired against a Lifmunk
+         (Carbunclo, a ranged shooter) and was released IN THE SAME SECOND,
+         "its target is out of reach" — the reach rule (target further than
+         1800 from the player → don't fight). Twice. The log now prints the
+         measured distance. Open design question for Dragón.
+       - During his fight with the wild Garm pack: hate pushes logged, 16
+         combat installs, but REALLY showed the Garm in `WildLife` with no
+         hate most of the time, wandering past 1800 → recalled twice. The
+         long-standing wild-AI problem, not new.
+       - PET-CHECK: 6 pets refused at 15:47:28–42 with the Pal in
+         `BP_AIAction_Death_C` (which Pal isn't named; ask Dragón).
+     - **BUILT after run 2 (harness B1–B5 fail on the run-2 code):** the 20%
+       reset always writes a fresh friendly preset with `Discover_Player` and
+       `Damaged_Player` = Ignore; once the Pal no longer hates the player
+       (checked every 1 s, up to 20 s) `Damaged_Player` goes back to the
+       friendly default so it can defend itself
+       (`RESTORE_SELF_DEFENCE_AFTER_FORGIVING`, unverified whether that wakes
+       the old hate). `[FORGIVE]` logs either outcome.
+     - **Run 3 (2026-09-16 16:10), Dragón:** boss bar + tag CONFIRMED correct
+       — "lets settle that for now" (three bosses at once is too rare to find;
+       parked). Sleeping-Pal pet correctly gave nothing. Pals still attacked
+       after Friendly. Lyleen boss pets didn't match the friendship gain.
+       The run felt laggy. His calls: self-defence against ranged attackers
+       YES, with the limit raised to 3000 ("before they touch the abandoned
+       border"); and the next release is built from the shipped version plus
+       these fixes, not this log-heavy dev build.
+     - **Run 3, what the log shows:**
+       - Player slots = Ignore alone does NOT stop it: the Lamball attacked
+         for all 21 s; the Plant Slime "calmed" only by dying.
+       - Lyleen (`BP_LilyQueen_GYM_C`): the 3rd pet was "confirmed after
+         0.00s" because the 2nd pet's animation was still playing — paid
+         twice. Also +10 passive gain between pets (50→60), which is the
+         passive-bonding feature, not a pet.
+       - The killed wolf: 6 pets refused while in `BP_AIAction_Death_C` —
+         correct.
+       - Lag: `palbonds-profile.log` put the two diagnostics-only FindAllOf
+         (`PalUICharacterHPGaugeBase`, `PalUINPCHPGaugeCanvasBase`, run every
+         2 s when SHOW_DIAGNOSTICS is on) at 676 stalls, mean ~145 ms,
+         ~3.5 s/min — the dev build's biggest cost by far.
+     - **BUILT after run 3 (bosstest B1/B4, C4, D fail on the run-3 code):**
+       - FRIENDLY GUARD (`Personality.friendly_guard`): for up to 30 s after
+         the 20% reset, every 500 ms, while the Pal's top hate target is the
+         player and it isn't in a PairCall (pet/feed), its action is
+         cancelled; stops when it calms down (then restores Damaged_Player)
+         or starts following. Modelled on why followers calm down: the
+         follow action keeps taking the slot.
+       - PET-CHECK only pays a NEW petting animation (address differs from
+         the one playing when the pet was chosen; never the same animation
+         twice; without addresses, only after a non-pet read).
+       - `SELF_DEFENCE_RECALL_DISTANCE = 3000` for self-defence fights
+         outside player fights (reach check and recall); player fights keep
+         1800. The out-of-reach message now prints the distance.
+       - Removed the diagnostic panel scan and everything only it used
+         (`check_panel_children`, `check_all_panels`, property dumps,
+         `register_bind_hook_once`, `find_bind_widget_class_path`,
+         `inspect_gauge_widget`) — Indicator.lua 2,483 → 1,881 lines.
+     - **Also built after run 3, before run 4 (bosstest B6 and E fail on the
+       previous code):**
+       - Dragón's idea, "force them to do a rest_animation after reaching
+         20% - one that interrupts shortly after they forgive the player":
+         the guard, after cancelling an attack, starts PalRandomRest (77) on
+         the character ActionComponent when that is idle, and cancels it once
+         the Pal calms down (`FRIENDLY_GUARD_PLAYS_REST`, false = cancel only).
+         Unknown: whether the fight AI respects a character action.
+       - Boss x2 bond meter: run 3 showed `GYM_LilyQueen` (tower Lyleen) at a
+         125 bar while `BOSS_LilyQueen_Dark` got 500 — the "BOSS_" prefix
+         missed gym bosses. `Trust.is_boss_pal` now also accepts "GYM_",
+         `_BOSS`/`_GYM` in the Blueprint class, and any Pal the boss-bar hook
+         reported (`Trust.MarkBossActor`, which also drops a multiplier
+         cached before the bar appeared). Only the Lyleen pair was bonded in
+         run 3; the Centaurs, Lyleen and the predator Mummy were only seen.
+     - **Run 4 (2026-09-16 17:33):**
+       - Lamball (rolled Curious) attacked all through the guard: 60 AI
+         cancels in 30 s, the rest animation started only ONCE (the
+         character ActionComponent was busy almost every tick — its attacks
+         run there), and the watch showed `CombatPal` with hate on the player
+         at every 2 s sample. Cancel+rest is DISPROVEN as a way to stop it:
+         the AI re-picks the attack at once from the hate it still has.
+         Three mechanisms have now failed (ChangeHate, player slots Ignore,
+         cancel+rest). The one that works every time is starting to follow
+         (hate gone in ~3 s). Leading hypothesis, UNTESTED: it is the follow
+         action's `Trainer = player` (a Pal does not keep hate on its own
+         trainer — `FPalHateInfo.bEnabled`), not the slot-holding. Next
+         experiment proposed to Dragón: at 20%, install the follow action
+         briefly (the Pal walks to the player for a few seconds), then drop
+         it. Needs his call — it is a visible behaviour.
+       - Human NPCs (Dragón): all showed "Curious" in town. Cause: humans
+         were kept out of the roll but their disposition fell back to the
+         species default, and the VillageNPC preset maps to "friendly" →
+         "Curious". FIXED: `state.isHuman` → disposition "normal" (tag
+         Normal). Also found: the 20% reset had rewritten the AI preset of the
+         three humans he petted (a SalesPerson and two MobuCitizens) — FIXED,
+         humans are skipped (bosstest B7).
+       - Raid bosses: the object dump has `BP_LegendDeer_RAID_C`; "RAID_" and
+         "_RAID" added to the boss markers (bosstest E2). The boss-bar route
+         also covers them, since raid bosses get the boss HP bar.
+     - **Dragón, after run 4:** humans stay bondable AND capturable like Pals
+       — "in order to let true pacifist runs play out". (Their AI is still
+       never touched by the 20% reset.) Go-ahead for the brief-follow test,
+       with "remove all the other things" so nothing else muddies it.
+     - **BUILT for run 5 (bosstest B1–B5 and F fail on the run-4 code):**
+       `Trust.StartBriefFollow(pal, hatesPlayer, onDone)` — at 20% the Pal
+       gets the REAL follow (st.isFollowing + Combat.StartFollowing, so the
+       companion preset and target discipline come with it), started at once
+       while the pet is still playing (Combat won't install follow over a
+       fight). Polled every 500 ms: released via Trust.StopFollowing once it
+       no longer hates the player and ≥3 s have passed, or at 15 s; kept if
+       the bar passed 50% meanwhile. On release Personality writes a plain
+       friendly preset and re-senses (no cancel). REMOVED: the friendly
+       guard, the rest animation, the player-slot overrides, the
+       Damaged_Player restore, `when_not_petting`, `apply_forced_preset`'s
+       overrides parameter. `Personality.HatesPlayer` is exported.
+       Risks to watch: hitting the Pal during the brief follow counts as
+       betrayal; `Combat.StopFollowing` is the betrayal/abandon removal path
+       (Wait-swap etc.), now used for a friendly release.
+     - **Run 5 (2026-09-16 18:57) — the brief follow ran, then the game
+       CRASHED:** `EXCEPTION_ACCESS_VIOLATION reading 0x338`, GameThread, two
+       UE4SS frames in the stack — the same signature as the world-change
+       crash solved in pass 285 (docs/hook-points.md). Log: LEASH-SPY stopped
+       after 19:08:36 (loops no longer serviced), a HUD widget push at
+       19:08:40, then the crash — the old quit-to-menu pattern. Awaiting what
+       Dragón was doing at that moment.
+       - Brief follow worked mechanically every time: CuteFox, ChickenPal,
+         PinkCat (via Play) released after ~3 s "NO LONGER angry"; SamuraiDog
+         reached 51% during it and kept following. Whether they attacked
+         after release: awaiting Dragón.
+       - SUSPECT: the release goes through `Combat.StopFollowing` (the
+         betrayal path), which could not remove the follow action ("still
+         installed = true") and fell back to `Trainer = the Pal itself`. That
+         left a self-trainer follow action on three wild Pals, where before
+         today this path ran only on rare betrayals. A real follower was also
+         present. Unproven; proposed A/B: follower-only + quit vs
+         brief-follows-only + quit.
+       - CuteFox release: "no readable sensor, friendly preset not written".
+       - **Dragón's answers:** he quit the world and loaded it again → crash
+         (the pass-285 world-change pattern). He then ran the A/B: **a real
+         follower alone + quit/reload also crashes**, so the brief-follow
+         release is NOT required — the world-change crash is back in the dev
+         build. He is now testing the SHIPPED 1.1.2 Workshop copy (verified
+         byte-identical to release/workshop, local dev copy disabled by
+         renaming dwmapi.dll and enabled.txt to *.MODS-DISABLED) to see
+         whether players are exposed, i.e. whether 1.1.2's microstutter work
+         (PlayerRef keeping the player reference, hook-fed nameplates) brought
+         it back.
+       - Behaviour: the cat (PinkCat) visibly stopped attacking after its
+         brief follow. The others reached the bond in one pet — Dragón's
+         diagnosis: while a Pal is briefly treated as following, it gets
+         passive friendship on top of the pet (he named the game's own +10;
+         note also this mod's own follower passive gain in tick_followers).
+         SamuraiDog went 50 → 51% during its 3 s brief follow. To fix: no
+         passive gain during a brief follow.
+     - As the log read it: the
+       companion Lamball joined the player's fight against another Lamball
+       (HATE-ASSIST), a hostile Chikipi attacked the companion Lamball
+       (SELF-DEFENCE), the companion Lamball hit the new companion Chikipi
+       once (FRIENDLY-FIRE), and that Chikipi ran up to ~1650 away while
+       "fighting".
 1. **DONE in v1.1.2 — Microstutters reported by a real user** (Goldaer,
    Workshop comment, 2026-09-14, against 1.1.0). Record kept below and in
    "Known open defects" #0. **Started 2026-09-15, plan agreed with Dragón.**

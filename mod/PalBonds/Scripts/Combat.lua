@@ -611,6 +611,21 @@ local selfDefenceLastHitAt = {}  -- key -> os.clock() of the last hit either way
 -- other every 1-3 seconds -- 45 recalls against 51 fight assignments in run 36,
 -- and the worst install churn this project has measured.
 local COMBAT_RECALL_DISTANCE = 1800.0
+-- 2026-09-16, Dragón: a companion defending ITSELF may go further — "1800 is
+-- too close, let it be 3000 before they touch the abandoned border". Run 2's
+-- Garm dropped both of its self-defence fights against a Lifmunk (a ranged
+-- shooter) in the same second as "out of reach". This limit applies only to a
+-- self-defence fight outside a player fight; player fights keep 1800. It is
+-- the leash distance (Trust MAX_FOLLOW_DISTANCE), and a fighting Pal is
+-- protected from the leash, so the fight ends before the bond is at risk.
+-- RELEASE SWITCH: held back from 1.1.3 for the next update (Dragón, 2026-09-16).
+-- false = self-defence keeps the 1800 limit, as in 1.1.2. A module field so
+-- the harness can test both ways.
+Combat.SELF_DEFENCE_EXTENDED_REACH = false
+local SELF_DEFENCE_EXTENDED_DISTANCE = 3000.0
+local function self_defence_limit()
+    return Combat.SELF_DEFENCE_EXTENDED_REACH and SELF_DEFENCE_EXTENDED_DISTANCE or COMBAT_RECALL_DISTANCE
+end
 local recallActive = {}
 
 -- Straight-line distance between two actors, or nil if either location cannot
@@ -871,30 +886,36 @@ end
 --   * the Pal is running a combat action right now, or
 --   * the Pal has a live hate target (it is fixated on something).
 -- Any one of those means "do not call this abandoning the player".
+--
+-- 2026-09-15: also returns WHY (a short reason) and, for a hate target, the
+-- target itself, so the [LEASH-SPY] diagnostic in Trust.lua can say what kept a
+-- distant follower from being declared abandoned. The first return value is
+-- unchanged, so every existing caller behaves exactly as before.
 function Combat.IsBusyFighting(pal)
-    if pal == nil then return false end
-    if Combat.IsSuspendedForCombat(pal) then return true end
-    local busy = safe_call(function()
+    if pal == nil then return false, "no pal" end
+    if Combat.IsSuspendedForCombat(pal) then return true, "follow suspended for a fight" end
+    local ok, busy, why, with = pcall(function()
         local ctrl = pal.Controller
-        if ctrl == nil or not ctrl:IsValid() then return false end
+        if ctrl == nil or not ctrl:IsValid() then return false, "no controller" end
 
         local ac = ctrl:GetAIActionComponent()
         if ac ~= nil and ac:IsValid() then
             local cur = ac:GetCurrentAction_BP()
             if cur ~= nil and cur:IsValid() then
                 local cname = safe_call(function() return cur:GetFullName() end)
-                if cname ~= nil and tostring(cname):find("Combat") ~= nil then return true end
+                if cname ~= nil and tostring(cname):find("Combat") ~= nil then return true, "combat action", cur end
             end
         end
 
         local hate = ctrl:GetHateSystem()
         if hate ~= nil and hate:IsValid() then
             local target = safe_call(function() return hate:FindMostHateTarget() end)
-            if target ~= nil and safe_call(function() return target:IsValid() end) then return true end
+            if target ~= nil and safe_call(function() return target:IsValid() end) then return true, "hate target", target end
         end
-        return false
+        return false, "not fighting"
     end)
-    return busy == true
+    if not ok then return false, "check failed: " .. tostring(busy) end
+    return busy == true, why, with
 end
 
 function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
@@ -2073,7 +2094,11 @@ local function recall_strayed_followers(followers, originLoc, playerActor)
             local vz = (safe_call(function() return loc.Z end) or oz) - oz
             local dist = math.sqrt(vx * vx + vy * vy + vz * vz)
 
-            if dist <= COMBAT_RECALL_DISTANCE then
+            local limit = COMBAT_RECALL_DISTANCE
+            if not playerCombatActive and selfDefenceEnemy[key] ~= nil and not recallActive[key] then
+                limit = self_defence_limit()
+            end
+            if dist <= limit then
                 if recallActive[key] then
                     recallActive[key] = nil
                     Logger.log(string.format(
@@ -2089,7 +2114,7 @@ local function recall_strayed_followers(followers, originLoc, playerActor)
                 recallActive[key] = true
                 Logger.log(string.format(
                     "[PalBonds/Combat] [RECALL] %s strayed %.0f units (limit %.0f) - action cancelled and marched back to you; repeating every %.0fms until it is home",
-                    tostring(key), dist, COMBAT_RECALL_DISTANCE, RECALL_EVERY_N_PASSES * 100.0))
+                    tostring(key), dist, limit, RECALL_EVERY_N_PASSES * 100.0))
             end
         end)
     end
@@ -3416,10 +3441,15 @@ local function try_real_follow_action(pal, key, playerActor)
                 -- Same rule as the assignment: never keep a Pal on a fight it
                 -- can only reach past the recall distance, or while recalled.
                 local reach = actor_distance(fightTarget, playerActor)
-                if recallActive[key] or (reach ~= nil and reach > COMBAT_RECALL_DISTANCE) then
+                local reachLimit = COMBAT_RECALL_DISTANCE
+                if not playerCombatActive and fightTarget == selfDefenceEnemy[key] then
+                    reachLimit = self_defence_limit()
+                end
+                if recallActive[key] or (reach ~= nil and reach > reachLimit) then
                     clear_combat_action(key)
                     resume_follow_after_combat(key, recallActive[key] and "it is being recalled"
-                        or "its target is out of reach")
+                        or string.format("its target is out of reach: %.0f from the player, limit %.0f",
+                            reach or -1, reachLimit))
                     return
                 end
                 local runningCombat = false
@@ -3819,6 +3849,10 @@ function Combat.StartFollowing(pal)
         if not (okReq and Personality and Personality.ApplyCompanionPreset) then return end
         local palId = Personality.GetOrInitState and Personality.GetOrInitState(pal)
         if not palId then return end
+        -- (2026-09-16: the companion preset's player slots = Ignore are also
+        -- what makes a new follower drop its hate on the player, within ~3 s
+        -- in both spy runs. A ChangeHate-based "forgive" tried here the same
+        -- day had no effect and was removed.)
         Personality.ApplyCompanionPreset(palId, pal, ENABLE_COMBAT_ASSIST)
     end)
 end

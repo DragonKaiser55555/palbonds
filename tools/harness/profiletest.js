@@ -1,8 +1,8 @@
 // 2026-09-15: the development profiler (Profiler.lua). It wraps the UE4SS
 // globals every module depends on, so the checks that matter are the ones a
 // broken wrapper would silently fail:
-//   * OFF (as shipped): nothing is replaced, and the mod registers its 14 hooks.
-//   * ON: the mod still registers the same 14 hooks, in the same order.
+//   * OFF (as shipped): nothing is replaced, and the mod registers its 15 hooks (14 + the boss bar hook, 2026-09-16).
+//   * ON: the mod still registers the same 15 hooks, in the same order.
 //   * ON: a wrapped callback passes through every return value (LoopAsync's
 //     "true" stops its loop), re-raises errors, and wraps post-callbacks too.
 //   * ON: stalls and world searches are recorded and reported, and a report is
@@ -103,7 +103,7 @@ expect('Profiler.lua does not contain "local PROFILING = true"',
 console.log('\n=== OFF: main.lua loads, nothing is replaced ===');
 const off = loadMain(false);
 const offHooks = off.str('table.concat(__HOOKS, "|")');
-expect('14 hooks registered', off.str('#__HOOKS'), (v) => v === '14');
+expect('15 hooks registered', off.str('#__HOOKS'), (v) => v === '15');
 for (const g of ['RegisterHook', 'FindAllOf', 'ExecuteInGameThreadWithDelay', 'LoopAsync', 'RegisterKeyBind']) {
   expect(g + ' is the original function', off.str('rawequal(' + g + ', __ORIG.' + g + ')'), (v) => v === 'true');
 }
@@ -112,7 +112,7 @@ expect('no file is opened by anything at load', off.opens(), (v) => v === 0);
 
 console.log('\n=== ON: main.lua loads, the same hooks register ===');
 const on = loadMain(true);
-expect('14 hooks registered', on.str('#__HOOKS'), (v) => v === '14');
+expect('15 hooks registered', on.str('#__HOOKS'), (v) => v === '15');
 expect('same hook paths in the same order', on.str('table.concat(__HOOKS, "|")') === offHooks, (v) => v === true);
 expect('RegisterHook was replaced', on.str('rawequal(RegisterHook, __ORIG.RegisterHook)'), (v) => v === 'false');
 expect('FindAllOf was replaced', on.str('rawequal(FindAllOf, __ORIG.FindAllOf)'), (v) => v === 'false');

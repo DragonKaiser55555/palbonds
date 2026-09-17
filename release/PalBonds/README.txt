@@ -41,9 +41,11 @@ WHAT IT ADDS
   * Food matters. Feeding gives more trust the rarer the food is. Kinship
     Peaches are special - they can only be found, and they count for a lot.
 
-  * Alphas are harder. On top of the usual level scaling, alpha Pals need twice
-    the trust before they will join you. Even raid bosses can be won over, if
-    you survive long enough.
+  * Bosses are harder. On top of the usual level scaling, every boss - alphas,
+    tower bosses, predators and raid bosses - needs twice the trust before it
+    will join you. Even raid bosses can be won over, if you survive long enough.
+    A boss shows its trust bar and personality tag under its big health bar
+    at the top of the screen.
 
   * A Pal that joins you this way arrives already fond of you, with a large
     friendship head start.

@@ -144,7 +144,16 @@ local MAX_FOLLOW_DISTANCE = 3000.0
 -- and Combat.lua's recall is force-marching it home on the fast loop. Only if
 -- the Pal is STILL beyond the leash when the clock runs out does the bond end.
 -- Coming back inside the leash at any point clears it with no penalty.
-local DRIFT_GRACE_SECONDS = 15.0
+--
+-- 2026-09-15: 15 -> 3 seconds, Dragón's call. He expected crossing the leash to
+-- end the bond immediately (the pre-323 rule) and had not been asked about the
+-- window applying to ordinary drift, only about the post-fight case it was
+-- built for. Three seconds keeps the "walked back in time" escape that the
+-- Petallia/Ribbuny incident needed, without giving the world 15 seconds in
+-- which it can despawn the Pal before the bond resolves (see the abandoned-
+-- status bug, 2026-09-15). Every log line and the in-game wording read this
+-- constant, so they follow automatically.
+local DRIFT_GRACE_SECONDS = 3.0
 local driftingSince = {}
 
 -- Friendly-fire accounting. The per-pair latch keeps the log readable (run 28
@@ -475,6 +484,44 @@ local EASY_TEST_SPEEDUP = 10
 -- trade-off — a rare, minor imprecision against a real, definite,
 -- scales-with-Pal-count lag source.
 local LevelMultiplierCache = {}
+
+-- Pals the game shows a BOSS HP bar for (Indicator.lua's boss-bar hook), keyed
+-- by full name. 2026-09-16, run 3: the "BOSS_" CharacterID prefix missed the
+-- tower/gym Lyleen ("GYM_LilyQueen" got a 125 bar where the "BOSS_" Dark
+-- Lyleen got 500), and Dragón's rule is every boss. The boss bar is the
+-- game's own "this is a boss" (the UseBossHPGauge data flag), so seeing one
+-- counts too.
+local BossActorsSeen = {}
+function Trust.MarkBossActor(palActor)
+    local key = safe_call(function() return palActor:GetFullName() end)
+    if key == nil or BossActorsSeen[key] then return end
+    BossActorsSeen[key] = true
+    -- A multiplier cached before the boss bar appeared was computed without x2.
+    LevelMultiplierCache[key] = nil
+end
+
+-- Any of: a "BOSS_"/"GYM_"/"RAID_" CharacterID prefix, a "_BOSS"/"_GYM"/"_RAID"
+-- Blueprint class (BP_LilyQueen_GYM_C, BP_MummyPal_BOSS_Predator_C, the raid
+-- BP_LegendDeer_RAID_C in the object dump), or a boss bar seen.
+local BOSS_ID_PREFIXES = { "BOSS_", "GYM_", "RAID_" }
+local BOSS_CLASS_MARKERS = { "_BOSS", "_GYM", "_RAID" }
+local function is_boss_pal(palActor, charIdText, fullName)
+    if type(charIdText) == "string" then
+        local up = charIdText:upper()
+        for _, prefix in ipairs(BOSS_ID_PREFIXES) do
+            if up:sub(1, #prefix) == prefix then return true end
+        end
+    end
+    if type(fullName) == "string" then
+        if BossActorsSeen[fullName] then return true end
+        local cls = (fullName:match("^(%S+)") or ""):upper()
+        for _, marker in ipairs(BOSS_CLASS_MARKERS) do
+            if cls:find(marker, 1, true) then return true end
+        end
+    end
+    return false
+end
+
 function Trust.ComputeLevelMultiplier(palActor)
 
     -- Two-hundred-and-seventh pass (2026-09-06): Dragón's balance
@@ -558,7 +605,7 @@ function Trust.ComputeLevelMultiplier(palActor)
         if okS and type(s) == "string" then return s end
         return tostring(cid)
     end)
-    local isBoss = type(charIdText) == "string" and charIdText:upper():sub(1, 5) == "BOSS_"
+    local isBoss = is_boss_pal(palActor, charIdText, cacheKey)
     if isBoss then multiplier = multiplier * BOSS_BAR_MULTIPLIER end
 
     if cacheKey then LevelMultiplierCache[cacheKey] = multiplier end
@@ -878,6 +925,8 @@ function Trust.ResetForNewWorld()
     for _ in pairs(State) do n = n + 1 end
     State = {}
     LevelMultiplierCache = {}
+    BossActorsSeen = {}
+    briefFollow = {}
     Logger.log("[PalBonds/Trust] [WORLD-RESET] dropped " .. n .. " bonding record(s) from the old world")
 end
 
@@ -991,6 +1040,88 @@ function Trust.StopFollowing(pal, reason)
     if okReq and Combat.StopFollowing then
         Combat.StopFollowing(pal)
     end
+end
+
+-- ===================================================================
+-- BRIEF FOLLOW AT 20% (2026-09-16, experiment, Dragón's go-ahead)
+-- ===================================================================
+-- Three ways of making a Friendly Pal stop attacking the player failed in
+-- live runs (ChangeHate, player slots on Ignore, cancel + rest animation).
+-- The one thing that worked every time was starting to follow: the Pal's hate
+-- on the player was gone within ~3 s. So at 20% the Pal gets the REAL follow,
+-- exactly as at 50%, for a short time, and is then released back to being a
+-- wild Pal. Started straight away, while the pet is still playing, because
+-- Combat will not install follow over a Pal it sees fighting — and both
+-- successful cases in the logs started during a pet.
+--
+-- Released once the Pal no longer hates the player (after at least
+-- BRIEF_FOLLOW_MIN_SECONDS, so it is visible), or at BRIEF_FOLLOW_MAX_SECONDS.
+-- If the bar has passed 50% by then (a second pet during the brief follow),
+-- the follow simply stays: that Pal has earned it.
+local BRIEF_FOLLOW_MIN_SECONDS = 3.0
+local BRIEF_FOLLOW_MAX_SECONDS = 15.0
+local BRIEF_FOLLOW_POLL_MS = 500
+local briefFollow = {}
+
+function Trust.IsBriefFollowing(pal)
+    local key = get_key(pal)
+    return key ~= nil and briefFollow[key] ~= nil
+end
+
+-- onDone(calmed, elapsedSeconds, stayedFollowing) is called once at the end.
+function Trust.StartBriefFollow(pal, hatesPlayer, onDone)
+    local st, key = get_state(pal)
+    if not st or st.isFollowing then return false end
+    st.isFollowing = true
+    local token = {}
+    briefFollow[key] = token
+    Logger.log("[PalBonds/Trust] [BRIEF-FOLLOW] " .. tostring(key) .. " reached Friendly — following briefly so it lets go of its anger")
+    local okReq, Combat = pcall(require, "Combat")
+    if okReq and Combat.StartFollowing then
+        Combat.StartFollowing(pal)
+    end
+    local startedAt = os.clock()
+    local function finish(calmed, elapsed, stayed)
+        if onDone then safe_call(onDone, calmed, elapsed, stayed) end
+    end
+    local function check()
+        if briefFollow[key] ~= token then return end
+        if State[key] == nil or not safe_call(function() return pal:IsValid() end) then
+            briefFollow[key] = nil
+            return
+        end
+        if not st.isFollowing then
+            -- Something else ended the follow first (bond lost, death).
+            briefFollow[key] = nil
+            return
+        end
+        local elapsed = os.clock() - startedAt
+        local calmed = not (hatesPlayer and safe_call(hatesPlayer, pal))
+        if (calmed and elapsed >= BRIEF_FOLLOW_MIN_SECONDS) or elapsed >= BRIEF_FOLLOW_MAX_SECONDS then
+            briefFollow[key] = nil
+            local param = get_individual_parameter(pal)
+            local point = param and safe_call(function() return param:GetFriendshipPoint() end)
+            local threshold = point and get_bonding_threshold(pal)
+            local ratio = (point and threshold and threshold > 0) and (point / threshold) or nil
+            if ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
+                Logger.log(string.format("[PalBonds/Trust] [BRIEF-FOLLOW] %s — bar is at %.0f%% now, so it keeps following (calm=%s after %.1fs)",
+                    tostring(key), ratio * 100, tostring(calmed), elapsed))
+                finish(calmed, elapsed, true)
+                return
+            end
+            Logger.log(string.format("[PalBonds/Trust] [BRIEF-FOLLOW] %s — released after %.1fs, %s",
+                tostring(key), elapsed, calmed and "NO LONGER angry at the player" or "STILL angry at the player (time limit)"))
+            Trust.StopFollowing(pal, "brief Friendly follow over")
+            finish(calmed, elapsed, false)
+            return
+        end
+        local ok = pcall(function()
+            ExecuteInGameThreadWithDelay(BRIEF_FOLLOW_POLL_MS, function() safe_call(check) end)
+        end)
+        if not ok then briefFollow[key] = nil end
+    end
+    check()
+    return true
 end
 
 -- Rank hit 0 while following (damage or distance) -> permanent, per
@@ -1314,14 +1445,45 @@ local function tick_followers()
                         -- what it is actually doing. IsSuspendedForCombat stays
                         -- as the fallback for an older Combat.lua.
                         local fightingNow = false
+                        local fightingWhy, fightingWith = nil, nil
                         if okReq and Combat and Combat.IsBusyFighting then
-                            fightingNow = safe_call(function()
-                                return Combat.IsBusyFighting(st.pal)
-                            end) == true
+                            local okBusy, busy, why, with = pcall(Combat.IsBusyFighting, st.pal)
+                            fightingNow = okBusy and busy == true
+                            fightingWhy = okBusy and why or ("check failed: " .. tostring(busy))
+                            fightingWith = okBusy and with or nil
                         elseif okReq and Combat and Combat.IsSuspendedForCombat then
                             fightingNow = safe_call(function()
                                 return Combat.IsSuspendedForCombat(st.pal)
                             end) == true
+                            fightingWhy = "follow suspended for a fight"
+                        end
+
+                        -- [LEASH-SPY] (2026-09-15, diagnostics only). Dragón ran far
+                        -- from a bonded Pal to test the "abandoned" toast and the
+                        -- bond never broke. Every branch below logs when it FIRES,
+                        -- but nothing says why none fired, so this prints the
+                        -- inputs of the decision every 3s per follower: distance
+                        -- against the leash, whether the Pal counts as fighting
+                        -- (and why), the drift clock, and which player character the
+                        -- distance was measured from. Costs one boolean check per
+                        -- follower per tick when diagnostics are off. Remove once
+                        -- the abandonment question is closed.
+                        if Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled() then
+                            local nowSpy = os.clock()
+                            if (nowSpy - (st.leashSpyAt or -1e9)) >= 3.0 then
+                                st.leashSpyAt = nowSpy
+                                local withName = fightingWith and safe_call(function() return fightingWith:GetFullName() end)
+                                local okP, PersonalityMod = pcall(require, "Personality")
+                                local really = okP and PersonalityMod and PersonalityMod.DescribeFight and safe_call(PersonalityMod.DescribeFight, st.pal) or "?"
+                                Logger.log(string.format(
+                                    "[PalBonds/Trust] [LEASH-SPY] %s dist=%.0f leash=%.0f pastLeash=%s fighting=%s (%s%s) REALLY: %s | driftClock=%s player=%s playerLoc=(%.0f,%.0f,%.0f) palLoc=(%.0f,%.0f,%.0f)",
+                                    tostring(key), dist, MAX_FOLLOW_DISTANCE, tostring(dist > MAX_FOLLOW_DISTANCE),
+                                    tostring(fightingNow), tostring(fightingWhy), withName and (": " .. tostring(withName)) or "", tostring(really),
+                                    driftingSince[key] and string.format("%.1fs of %.0fs", nowSpy - driftingSince[key], DRIFT_GRACE_SECONDS) or "not running",
+                                    tostring(safe_call(find_player_name)),
+                                    playerLoc.X or 0, playerLoc.Y or 0, playerLoc.Z or 0,
+                                    palLoc.X or 0, palLoc.Y or 0, palLoc.Z or 0))
+                            end
                         end
 
                         local pastLeash = dist > MAX_FOLLOW_DISTANCE
@@ -1428,6 +1590,20 @@ local function tick_followers()
                             end
                         end
                     end
+                else
+                    -- [LEASH-SPY] (2026-09-15, diagnostics only): the leash check
+                    -- above needs the player's position; without it the check is
+                    -- skipped silently, which would look exactly like "the bond
+                    -- never breaks". Say so, at most every 3s per follower.
+                    if not endedThisPass and Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled() then
+                        local nowSpy = os.clock()
+                        if (nowSpy - (st.leashSpyAt or -1e9)) >= 3.0 then
+                            st.leashSpyAt = nowSpy
+                            Logger.log(string.format(
+                                "[PalBonds/Trust] [LEASH-SPY] %s: leash check SKIPPED, no player position this tick (player lookup returned %s)",
+                                tostring(key), player == nil and "nil" or "a player with no readable location"))
+                        end
+                    end
                 end
                 if lostAllTrust then
                     on_follower_lost_all_trust(st.pal, "too far from player")
@@ -1440,6 +1616,12 @@ local function tick_followers()
                     -- convert a follower the player is trying to keep.
                     -- Interaction-driven joins (petting or feeding a Pal over
                     -- the line) are untouched.
+                elseif briefFollow[key] ~= nil then
+
+                    -- 2026-09-16, run 5: a Pal on its short Friendly follow
+                    -- (Trust.StartBriefFollow) is not a real follower yet and
+                    -- earns no passive trust; the SamuraiDog went 50% -> 51%
+                    -- during its three seconds and was kept as a follower.
                 else
 
                     -- Hundred-and-eighty-fifth pass: applied every tick

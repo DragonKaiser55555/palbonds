@@ -64,10 +64,11 @@ expect('past the leash but FIGHTING -> protected', logs(),
 run('__HATE_TARGET = nil; __CURRENT_ACTION.__name = "BP_AIAction_WildLife_C_9"', 'idle');
 clear(); tick();
 expect('fight over, still far -> grace starts, bond alive', logs(),
-  (t) => t.indexOf('has 15s to return') !== -1 && t.indexOf('losing all trust') === -1);
+  (t) => t.indexOf('has 3s to return') !== -1 && t.indexOf('losing all trust') === -1);
 
-// 3. Inside the window -> nothing happens.
-advance(10); clear(); tick();
+// 3. Inside the window -> nothing happens. (The window is DRIFT_GRACE_SECONDS,
+// 3s since 2026-09-15, so this steps 1s rather than the old 10s.)
+advance(1); clear(); tick();
 expect('inside the grace window -> still alive', logs(),
   (t) => t.indexOf('losing all trust') === -1);
 
@@ -79,11 +80,11 @@ expect('came back inside the leash -> grace cleared', logs(),
 // 5. Strays again and never returns -> the bond ends, but only after the window.
 at(4000); clear(); tick();
 expect('strays again -> a FRESH grace window, not the old one', logs(),
-  (t) => t.indexOf('has 15s to return') !== -1 && t.indexOf('losing all trust') === -1);
+  (t) => t.indexOf('has 3s to return') !== -1 && t.indexOf('losing all trust') === -1);
 
 advance(20); clear(); tick();
 expect('window expired while still away -> bond ends', logs(),
-  (t) => t.indexOf('did not come back within 15s') !== -1);
+  (t) => t.indexOf('did not come back within 3s') !== -1);
 
 // ------------------------------------------------------------------
 console.log('\n=== Combat.IsBusyFighting ===');

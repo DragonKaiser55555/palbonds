@@ -27,165 +27,8 @@ local function describe_pal(pal)
     return "[could not read GetFullName]"
 end
 
--- Forty-sixth pass: does the gauge class even get instantiated at all?
--- Periodic (not per-frame) existence scan, separate cap from the hook
--- diagnostics above.
+-- The 2-second nameplate/boss-bar tick (scheduleScan).
 local SCAN_INTERVAL_MS = 2000
-local MAX_SCAN_LOGS = 25
-local scanLogCount = 0
-local hasLoggedScanAlive = false
-
--- Forty-seventh pass: full, unfiltered property dump of the real live
--- canvas instance, run exactly once. Same ForEachProperty/GetSuperStruct
--- technique already proven in Interaction.lua's dump_interesting_properties
--- (itself modeled on ConsoleCommandsMod/dump_object.lua), just unfiltered
--- and with extra ArrayProperty handling (length + element class names)
--- since the per-Pal gauge slots are very likely held in an array.
-local MAX_PROPERTY_DUMP_LOGS = 700 
-local propertyDumpLogCount = 0
-local hasDumpedCanvas = false
-
--- Forty-eighth pass: once the real live canvas is found, keep a handle to
--- it so later scan ticks can check its panel children without having to
--- re-run FindAllOf/re-match the /Engine/Transient name every time.
-local liveCanvasInstance = nil
-local function property_dump_log(msg)
-    if propertyDumpLogCount >= MAX_PROPERTY_DUMP_LOGS then return end
-    propertyDumpLogCount = propertyDumpLogCount + 1
-    Logger.log(msg)
-    if propertyDumpLogCount == MAX_PROPERTY_DUMP_LOGS then
-        Logger.log("[PalBonds/Indicator] [DIAG-DUMP] reached the property-dump log cap (" .. MAX_PROPERTY_DUMP_LOGS .. ") — stopping here, this should already be enough to see the real field names")
-    end
-end
-local function dump_all_properties(obj, label)
-    local ok, err = pcall(function()
-        if obj == nil or not obj:IsValid() then return end
-        local class = obj:GetClass()
-        local seen = {}
-        while class ~= nil and class:IsValid() do
-            local classNameOk, className = pcall(function() return class:GetFName():ToString() end)
-            property_dump_log(string.format("[PalBonds/Indicator] [DIAG-DUMP] === %s (class %s) ===", label, classNameOk and className or "?"))
-            class:ForEachProperty(function(prop)
-                local propOk, propName = pcall(function() return prop:GetFName():ToString() end)
-                if not (propOk and propName) or seen[propName] then return end
-                seen[propName] = true
-                local typeOk, typeName = pcall(function() return prop:GetClass():GetFName():ToString() end)
-                typeName = typeOk and typeName or "?"
-                local valueStr = "(not read)"
-                local readOk, result = pcall(function()
-                    if typeName == "BoolProperty" or typeName == "ByteProperty"
-                        or typeName == "IntProperty" or typeName == "FloatProperty" then
-                        return tostring(obj[propName])
-                    elseif typeName == "NameProperty" then
-                        local v = obj[propName]
-                        return v and v:ToString()
-                    elseif typeName == "StrProperty" then
-                        local v = obj[propName]
-                        return v and v:ToString()
-                    elseif typeName == "EnumProperty" then
-                        local v = obj[propName]
-                        local enumOk, enumName = pcall(function() return prop:GetEnum():GetNameByValue(v):ToString() end)
-                        return enumOk and string.format("%s(%s)", enumName, tostring(v)) or tostring(v)
-                    elseif typeName == "ObjectProperty" then
-                        local v = obj[propName]
-                        if v == nil then return "nil" end
-                        local vOk, vName = pcall(function() return v:GetFullName() end)
-                        return vOk and vName or "[object, GetFullName failed]"
-                    elseif typeName == "StructProperty" then
-                        local v = obj[propName]
-                        if v == nil then return "nil" end
-                        local vOk, vName = pcall(function() return v:GetFullName() end)
-                        return vOk and vName or "[struct]"
-                    elseif typeName == "ArrayProperty" then
-                        local v = obj[propName]
-                        local numOk, num = pcall(function() return v:GetArrayNum() end)
-                        num = numOk and num or -1
-                        local innerOk, innerTypeName = pcall(function() return prop:GetInner():GetClass():GetFName():ToString() end)
-                        local summary = string.format("array of %s, length=%d", innerOk and innerTypeName or "?", num)
-                        if num > 0 and innerOk and innerTypeName == "ObjectProperty" then
-                            local elementNames = {}
-                            v:ForEach(function(index, elem)
-                                if index <= 5 then
-                                    local eOk, e = pcall(function() return elem:get() end)
-                                    local eNameOk, eName = pcall(function() return e:GetFullName() end)
-                                    elementNames[#elementNames + 1] = (eOk and eNameOk and eName) or "[unreadable]"
-                                end
-                            end)
-                            summary = summary .. " — first elements: " .. table.concat(elementNames, " | ")
-                        end
-                        return summary
-                    end
-                    return nil
-                end)
-                if readOk and result ~= nil then valueStr = tostring(result) end
-                property_dump_log(string.format("[PalBonds/Indicator] [DIAG-DUMP]   %s (%s) = %s", propName, typeName, valueStr))
-            end)
-            class = safe_call(function() return class:GetSuperStruct() end)
-        end
-    end)
-    if not ok then
-        Logger.log("[PalBonds/Indicator] [DIAG-DUMP] property dump failed (non-fatal, caught): " .. tostring(err))
-    end
-end
-
--- Forty-ninth pass: a WrapBox auto-flows its children into ONE shared
--- list layout — not a great structural fit for gauges that each need to
--- float independently above their own Pal's current screen position.
--- Canvas_Root (a CanvasPanel, whose children are each individually
--- positioned via their own CanvasPanelSlot) is structurally the better
--- fit for that job. The forty-eighth pass's own live test was also
--- inconclusive rather than a real negative: that whole session was only
--- ~95 seconds and the WrapBox never got a single child in that time — not
--- enough time to tell whether it's simply the wrong container or just
--- never got exercised. So this pass checks BOTH panel fields, using the
--- same real UPanelWidget:GetChildrenCount()/GetChildAt(Index), factored
--- into one function keyed by field name so either (or both) can be found
--- independently.
-local MAX_PANEL_SCAN_LOGS = 60
-local panelScanLogCount = 0
-local panelState = {} 
-
--- Fiftieth pass fix: child[0] turning out to be the WrapBox itself (not a
--- Pal's gauge) is the exact failure mode this guards against — some
--- container classes are structural fixtures of the widget tree, always
--- present, not per-Pal content. Skip dumping these; the first child whose
--- class ISN'T one of these (and hasn't already been dumped) is almost
--- certainly real per-Pal (or per-entity) gauge content.
-local KNOWN_CONTAINER_CLASSES = {
-    WrapBox = true, CanvasPanel = true, HorizontalBox = true,
-    VerticalBox = true, Overlay = true, ScrollBox = true,
-    UniformGridPanel = true, GridPanel = true, SizeBox = true,
-    Border = true, NamedSlot = true, WidgetSwitcher = true,
-}
-local dumpedClasses = {} 
-local function panel_scan_log(msg)
-    if panelScanLogCount >= MAX_PANEL_SCAN_LOGS then return end
-    panelScanLogCount = panelScanLogCount + 1
-    Logger.log(msg)
-    if panelScanLogCount == MAX_PANEL_SCAN_LOGS then
-        Logger.log("[PalBonds/Indicator] [DIAG-PANEL] reached the panel-scan log cap (" .. MAX_PANEL_SCAN_LOGS .. ") — going quiet")
-    end
-end
-
--- Fifty-first pass: WBP_PalNPCHPGauge_C turned out to be real and alive
--- after all (see file header) — the exact class the old reference mod
--- used, just never individually header-dumped before. Two things worth
--- reading off it specifically, beyond the generic property dump:
---   1. Its `WBP_EnemyGauge` sub-widget (an ObjectProperty, real, seen in
---      the generic dump) — the old mod wrote text into
---      `WBP_EnemyGauge.Text_WorkName`. Dump ITS fields too, since the
---      generic per-class dump only ever looks at direct panel children,
---      never a child's own sub-widget fields.
---   2. Its `SyncId` field (StructProperty, real, confirmed type
---      `/Script/Pal.PalInstanceID` — this project's own already-answered
---      Q5, the stable per-Pal GUID). The generic dump can only print a
---      struct property's type name, not its actual field values (structs
---      have no GetFullName() identity the way UObjects do) — so this
---      tries indexing directly into the struct value for its real
---      sub-fields (`DebugName`, `InstanceId`, `PlayerUId`), the same way
---      this project has successfully read fields off other small
---      hook-argument structs before (e.g. FPalDamageResult.Defender).
-local hasInspectedGaugeWidget = false
 
 -- Fifty-ninth pass: DIAG-HANDLE confirmed the raw `bindedHandle`
 -- property value (`handle:type()` = "TSoftObjectPtrUserdata") does not
@@ -244,125 +87,11 @@ local pendingGauges = {}
 local NAMEPLATE_SWEEPS_AFTER_HOOK = 5
 local NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS = 15
 local nameplateSweepsSinceHook = 0
-local bindHookAttempts = 0
--- Two-hundred-and-ninety-seventh pass (2026-09-11): was 5 — five attempts for
--- an entire session, consumed one per gauge sighting. Once spent, personality
--- tags were dead until the game was restarted. An attempt is one pcall'd
--- RegisterHook and nothing else, and it stops for good on the first success, so
--- the budget bought nothing and cost the feature. Kept as a large finite number
--- rather than infinity purely so a genuinely impossible path cannot log forever;
--- the logging below is throttled separately.
-local MAX_BIND_HOOK_ATTEMPTS = 2000
-local gaugeHandleByKey = {} 
+local gaugeHandleByKey = {}
 
--- Sixty-second pass (2026-09-03): the sixty-first pass's hardcoded short
--- name ("WBP_IndividualParameterBindWidget_C:BindFromHandle") STILL failed
--- with the exact same "no UFunction with the specified name was found"
--- error, even though that's the function's real, confirmed declaring class
--- (from the header dump). That points at UE4SS's short-name RegisterHook
--- resolution simply not being reliable for Blueprint (/Game/...) classes at
--- all — unlike native /Script/ classes, which are globally unique and
--- exactly what short-name resolution is really meant for. The generally
--- correct, more reliable form for hooking a Blueprint function is the FULL
--- asset path (e.g. "/Game/.../WBP_IndividualParameterBindWidget.
--- WBP_IndividualParameterBindWidget_C:BindFromHandle"), which needs the
--- real UClass object's own `GetPathName()` — the exact call that failed
--- with "TrivialObject" when reached via `gaugeWidget:GetClass()`. The fix
--- isn't to give up on the full path, it's to reach the SAME class object a
--- different way: `FindAllOf("WidgetBlueprintGeneratedClass")` returns every
--- compiled Blueprint class as its own proper, fully-wrapped object (the
--- same kind of object this project's other `FindAllOf` calls already work
--- with fine) — a different route than `someInstance:GetClass()`, which
--- apparently hands back a more limited proxy in this Lua binding. Search
--- that list by name (`GetFName():ToString()`, proven reliable) for
--- "WBP_IndividualParameterBindWidget_C", then call `GetPathName()` on THAT
--- object instead. One-shot search, cached either way (found or not) so it
--- only runs once regardless of how many gauges are seen.
-local hasSearchedBindWidgetClass = false
-local bindWidgetClassPath = nil
-local function find_bind_widget_class_path()
-    if hasSearchedBindWidgetClass then return bindWidgetClassPath end
-    hasSearchedBindWidgetClass = true
-    local classes, classesErr = safe_call(function() return FindAllOf("WidgetBlueprintGeneratedClass") end)
-    if not classes then
-        Logger.log("[PalBonds/Indicator] [DIAG-CLASSFIND] FindAllOf(WidgetBlueprintGeneratedClass) failed or returned nothing (caught, non-fatal): " .. tostring(classesErr) .. " -- will fall back to the hardcoded short class name")
-        return nil
-    end
-    for _, cls in ipairs(classes) do
-        local nameOk, name = pcall(function() return cls:GetFName():ToString() end)
-        if nameOk and name == "WBP_IndividualParameterBindWidget_C" then
-            local pathOk, path = pcall(function() return cls:GetPathName() end)
-            if pathOk and path then
-                bindWidgetClassPath = path
-                Logger.log("[PalBonds/Indicator] [DIAG-CLASSFIND] found the real class object via FindAllOf, full path = " .. path)
-                return bindWidgetClassPath
-            else
-                Logger.log("[PalBonds/Indicator] [DIAG-CLASSFIND] found the class object by name but GetPathName() still failed on it (caught, non-fatal): " .. tostring(path))
-            end
-        end
-    end
-    Logger.log("[PalBonds/Indicator] [DIAG-CLASSFIND] scanned " .. #classes .. " WidgetBlueprintGeneratedClass instances, none matched WBP_IndividualParameterBindWidget_C by name")
-    return nil
-end
-
--- Sixty-first pass (2026-09-03): Dragón's test showed heavy, escalating lag
--- with the sixtieth pass's build, and the bar was still stuck at 50%. Two
--- separate problems, both explained by the log:
---
--- (1) THE REAL FIX: every single attempt failed with "Tried to register a
--- hook with Lua function 'RegisterHook' but no UFunction with the specified
--- name was found" for "WBP_PalNPCHPGauge_C:BindFromHandle". A fresh look at
--- `CXXHeaderDump/WBP_IndividualParameterBindWidget.hpp` explains why:
--- `BindFromHandle` is declared on `UWBP_IndividualParameterBindWidget_C`
--- (the parent class), NOT on `WBP_PalNPCHPGauge_C` (the runtime instance's
--- own class, which has no header dump of its own — it's Blueprint-only and
--- only inherits the function). UE4SS's short-name `RegisterHook` path
--- resolution apparently needs the function's DECLARING class, not any
--- subclass that merely inherits it. Fix: try the known, hardcoded declaring
--- class name "WBP_IndividualParameterBindWidget_C:BindFromHandle" FIRST —
--- this doesn't depend on reading anything off the live widget at all, so it
--- can't fail from a "TrivialObject" class-object read either.
---
--- (2) THE LAG: the sixtieth pass's retry-forever fix (removing the
--- premature `hasRegisteredBindHook = true`) was correct in isolation, but
--- with EVERY attempt doomed to keep failing on the wrong class name, this
--- function was calling `RegisterHook` (twice per call) on EVERY tick for
--- EVERY currently-visible gauge, forever, with no cooldown — and a failing
--- `RegisterHook` lookup is not a cheap no-op internally. That's almost
--- certainly the whole cause of the reported lag, worsening as more wild
--- Pals came into view (more gauges = more failing attempts per tick). Fix:
--- a hard cap (`MAX_BIND_HOOK_ATTEMPTS`) on total attempt ROUNDS across the
--- whole session — once exhausted without success, give up permanently and
--- say so clearly in the log, instead of retrying indefinitely.
--- Sixty-fifth pass (2026-09-03): Dragón asked for a real, thorough look at
--- ALL the reference mods, not just the ones already in the same format as
--- this project. Doing that surfaced the actual answer, sitting in this
--- project's own reference material since before pass one: the bundled
--- `VisiblePalCaptureCounter/Scripts/main.lua` (a working, shipped UE4SS Lua
--- mod, not a guess) hooks this EXACT function successfully, with this
--- EXACT literal path:
---   "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle"
--- The format for a BLUEPRINT class hook is `<content-browser package
--- path>.<ClassName>:<FunctionName>` — a `.` between the package and the
--- class, not the `/Script/Module.Class:Function` shape this project's own
--- NATIVE hooks correctly use elsewhere (Trust.lua/Interaction.lua), and
--- not a bare short class name either. Every previous attempt (60th-62nd
--- passes) was missing the real package path entirely, or trying to
--- rediscover it programmatically instead of just using the known-correct
--- literal string a working mod already demonstrates. Its handler
--- (`function (self, handler) local targetHandle = handler:get() ... end`)
--- also confirms `:get()` on the hook's handle argument is exactly right,
--- and that the resulting handle supports `TryGetIndividualParameter()`
--- directly — exactly this project's own plan, now with real proof it
--- works on a hook-captured handle (unlike the stored soft-pointer field).
---
--- Same source also hooks `Unbind` on the same class — worth adding too:
--- gauge widgets are apparently POOLED/reused across different Pals (not
--- one permanent widget per Pal), so an entry in `gaugeHandleByKey`/
--- `trackedBars` keyed only by widget identity could otherwise go stale
--- once a widget gets rebound to a different Pal. Clearing the captured
--- handle on Unbind keeps a reused widget from briefly showing its
--- previous Pal's trust value.
+-- (2026-09-16: the scan-triggered fallback registration, register_bind_hook_once,
+-- was removed with the diagnostic panel scan that was its only caller. The
+-- retrying registration below is the one route; it keeps trying until it works.)
 -- Hundred-and-fifty-fifth pass (2026-09-04): REAL FIX for a genuine race
 -- Dragón caught directly — a wild Pal's gauge (a samurai dog he could
 -- see and even pet, for the whole session) never got a real actor
@@ -492,108 +221,6 @@ local function register_bind_hook_immediate(round)
     if not rescheduleOk then
         Logger.log("[PalBonds/Indicator] [TAGS] COULD NOT schedule a retry round — personality tags and trust bars will not appear this session. Stopped after round " .. round)
     end
-end
-local function register_bind_hook_once(gaugeWidget)
-    if hasRegisteredBindHook then return end
-    if bindHookAttempts >= MAX_BIND_HOOK_ATTEMPTS then return end
-    bindHookAttempts = bindHookAttempts + 1
-    local candidates = {
-
-        -- Sixty-fifth pass: the real, confirmed-working literal path, tried first.
-        "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle",
-    }
-    local fullClassPath = find_bind_widget_class_path()
-    if fullClassPath then candidates[#candidates + 1] = fullClassPath .. ":BindFromHandle" end
-    candidates[#candidates + 1] = "WBP_IndividualParameterBindWidget_C:BindFromHandle"
-    local pathOk, classPath = pcall(function() return gaugeWidget:GetClass():GetPathName() end)
-    local classNameOk, className = pcall(function() return gaugeWidget:GetClass():GetFName():ToString() end)
-    if pathOk and classPath then candidates[#candidates + 1] = classPath .. ":BindFromHandle" end
-    if classNameOk and className then candidates[#candidates + 1] = className .. ":BindFromHandle" end
-    for _, hookPath in ipairs(candidates) do
-        local hookOk, hookErr = pcall(function()
-            RegisterHook(hookPath, function(Context, TargetHandle)
-                local self = hook_get(Context)
-                local handle = hook_get(TargetHandle)
-                if self == nil or handle == nil then return end
-                local key = describe_widget(self)
-                gaugeHandleByKey[key] = handle
-                pendingGauges[key] = self
-            end)
-        end)
-        -- Success is logged once and permanently visible; failures only on the
-        -- first attempt, because this path retries now instead of giving up
-        -- after five tries (two-hundred-and-ninety-seventh pass).
-        if hookOk then
-            Logger.log("[PalBonds/Indicator] [TAGS] bind hook INSTALLED (via gauge scan, attempt " .. tostring(bindHookAttempts) .. ") — personality tags and trust bars can now resolve their Pal: " .. hookPath)
-        elseif bindHookAttempts == 1 then
-            Logger.log("[PalBonds/Indicator] [TAGS] bind hook attempt failed on " .. hookPath .. ": " .. tostring(hookErr) .. " — will keep retrying as gauges appear")
-        end
-        if hookOk then
-            hasRegisteredBindHook = true
-
-            -- Also hook Unbind (same literal-path convention) so a reused
-            -- gauge widget's stale captured handle gets cleared instead of
-            -- briefly showing the wrong Pal's trust value.
-            local unbindPath = hookPath:gsub(":BindFromHandle$", ":Unbind")
-            local unbindOk, unbindErr = pcall(function()
-                RegisterHook(unbindPath, function(Context)
-                    local self = hook_get(Context)
-                    if self == nil then return end
-                    local key = describe_widget(self)
-                    gaugeHandleByKey[key] = nil
-                    pendingGauges[key] = nil
-                end)
-            end)
-            Logger.log("[PalBonds/Indicator] [TAGS] RegisterHook(" .. unbindPath .. ") = " .. (unbindOk and "OK" or ("FAILED (non-fatal, BindFromHandle hook still stands): " .. tostring(unbindErr))))
-            return
-        end
-    end
-    if bindHookAttempts >= MAX_BIND_HOOK_ATTEMPTS then
-        Logger.log("[PalBonds/Indicator] [TAGS] GAVE UP after " .. MAX_BIND_HOOK_ATTEMPTS .. " attempts — every candidate hook path failed every time, so personality tags and trust bars will not appear for the rest of this session. Reaching this at all means something structural changed in the gauge Blueprint; the class path is the first thing to re-check.")
-    end
-end
-
--- Seventy-first pass (2026-09-03): the seventieth pass's "fix" did NOT
--- fix it — Dragón's own console showed the exact same "TrivialObject"
--- error, just moved from a hook-Context object (sixty-second pass) to a
--- FindAllOf-returned instance: `instance:GetClass():GetPathName()` fails
--- identically either way. That's the THIRD distinct technique this
--- project has tried for getting a Blueprint class's real asset path from
--- Lua reflection — FindAllOf("WidgetBlueprintGeneratedClass"),
--- FindAllOf("BlueprintGeneratedClass"), and instance:GetClass() — and all
--- three are now confirmed dead in this UE4SS build, regardless of how the
--- class reference is obtained. Checked the web too (see
--- docs/hook-points.md) for a published literal path the way
--- BindFromHandle's and BP_OtomoPalHolderComponent's were found — nothing
--- surfaced for these two classes.
---
--- WORSE: the dead call was retrying every single 2s scan tick forever,
--- with its failure log NOT behind prism_log's cap — and with TWO live
--- BP_CapturePrism_C instances apparently existing at once (first/third
--- person view-model duplicates, most likely), that was 2 unthrottled,
--- flushed log lines roughly every 2 seconds, forever — real, ongoing spam
--- Dragón caught directly in the console. That regression is on me; it
--- should have been capped from the start.
---
--- Real fix: give up on RegisterHook for these two classes — there is no
--- known literal path, and every way to derive one from Lua reflection is
--- now exhausted. Pivot to the technique that's worked everywhere ELSE in
--- this project when no literal path is available: read fields directly
--- off the live instance FindAllOf already hands us. No path, no
--- RegisterHook, no :GetClass() call at all — just :IsValid(), a full-name
--- identity, and direct field reads, all of which have worked reliably
--- throughout this whole project. Logs a new instance's identity once
--- (existence/creation timing is itself useful — BP_CapturePrismBullet_C
--- in particular should only exist briefly, right around an actual throw)
--- and the bullet's CaptureTarget/isBound whenever they change, not every
--- tick.
-
-
-
-
-
-local function inspect_gauge_widget(gaugeWidget)
-    register_bind_hook_once(gaugeWidget)
 end
 
 -- Fifty-fifth pass (2026-09-03): the fifty-fourth pass's test came back
@@ -888,7 +515,10 @@ local LABEL_HEIGHT = 18
 -- looking at a screenshot.
 local loggedLabelStyleOnce = false
 local loggedLabelGeometryOnce = false
-local function style_personality_label(labelObj, gaugeWidget)
+-- `sourceText` (optional, 2026-09-16): the text widget to copy the style from.
+-- Nameplates leave it nil and copy their own Text_Name; the boss bar passes one
+-- of its own text widgets, since it has no WBP_EnemyGauge.
+local function style_personality_label(labelObj, gaugeWidget, sourceText)
     if labelObj == nil then return end
 
     -- Always neutralise the previous pass's render tricks, even if the font copy
@@ -896,8 +526,10 @@ local function style_personality_label(labelObj, gaugeWidget)
     -- unstyled, which is worse than either.
     local scaleOk = pcall(function() labelObj:SetRenderScale({X = 1.0, Y = 1.0}) end)
     local opacityOk = pcall(function() labelObj:SetRenderOpacity(1.0) end)
-    local nameText = nil
-    pcall(function() nameText = gaugeWidget.WBP_EnemyGauge.Text_Name end)
+    local nameText = sourceText
+    if nameText == nil then
+        pcall(function() nameText = gaugeWidget.WBP_EnemyGauge.Text_Name end)
+    end
     local nameValid = nameText ~= nil and pcall(function() return nameText:IsValid() end) and nameText:IsValid()
     local fontOk, colorOk, shadowOk, justifyOk = false, false, false, false
     if nameValid then
@@ -1660,160 +1292,354 @@ local function update_trust_bars()
         end
     end
 end
-local function check_panel_children(fieldName)
-    if liveCanvasInstance == nil or not liveCanvasInstance:IsValid() then return end
-    local state = panelState[fieldName]
-    if state == nil then
-        state = { lastCount = nil, listedAtCount = nil, seenChildren = {} }
-        panelState[fieldName] = state
+-- ===========================================================================
+-- BOSS HP BAR (2026-09-16)
+-- ===========================================================================
+-- Bosses (alphas, raid, tower and predator bosses; Dragón has bonded every
+-- kind) never showed the trust bar or the personality tag, because the game
+-- does not give them the WBP_PalNPCHPGauge_C nameplate everything above attaches
+-- to. They get WBP_BossEnemyHPGauge_C instead: the big bar at the top of the
+-- screen. From the UE4SS header/object dumps:
+--
+--   WBP_BossEnemyHPGauge_C              one per boss, owned by the gauge canvas
+--     .TargetCharacter                  the boss Pal itself (a plain field)
+--     :SetTargetCharacter(APalCharacter) called when the bar is set up
+--     .WBP_IngameBossHP                 WBP_IngameBossHP_C, the visible bar
+--        .BossGaugeHP                   the HP ProgressBar (in canvas "BossHP")
+--        .Text_BossName / .Text_LvTitle / .Text_LvValue
+--
+-- Dragón's layout call: the friendship bar goes under the HP bar "like always,
+-- ideally with the same length too"; the tag sits under it as on nameplates.
+-- Both are added to the same panel as BossGaugeHP, so they move with that
+-- boss's bar when several bosses stack. Whether the stacked bars leave room
+-- under each other is the open question for the first test run —
+-- [BOSS-GEOM] prints the real layout once so it can be fixed from numbers.
+--
+-- Performance, same rules as 1.1.2: the SetTargetCharacter hook reports each
+-- boss bar, so there is no timed world search. The one exception is a single
+-- FindAllOf right after the hook first installs, for a bar that was already on
+-- screen before then. A handful of boss bars at most are refreshed on the
+-- existing 2-second tick.
+local BOSS_GAUGE_HOOK_PATH = "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_BossEnemyHPGauge.WBP_BossEnemyHPGauge_C:SetTargetCharacter"
+local BOSS_BAR_GAP = 2
+local BOSS_BAR_MIN_HEIGHT = 6
+local BOSS_BAR_MAX_HEIGHT = 10
+local BOSS_LABEL_GAP = 1
+local BOSS_LABEL_HEIGHT = 22
+-- Copy the tag's look from the small "Lv" text rather than the big boss name,
+-- which would make the tag as large as the name. Falls back to the name.
+local BOSS_LABEL_STYLE_FIELDS = { "Text_LvTitle", "Text_BossName" }
+local hasRegisteredBossHook = false
+local pendingBossGauges = {}
+local bossEntries = {}
+local bossGeometryLogged = false
+
+local function is_valid_obj(obj)
+    return obj ~= nil and safe_call(function() return obj:IsValid() end) == true
+end
+
+-- The boss HP bar's slot is ANCHORED, not placed at a fixed size. The first
+-- live run (2026-09-16) read it as pos=(4,18) size=(4,8): with a horizontally
+-- stretched anchor, SetPosition/SetSize-style numbers are really the offsets
+-- Left/Top/Right/Bottom, so "size X = 4" is a 4px right MARGIN, not a width.
+-- Building our bar with SetSize({X = 4}) made it 4px wide — the tiny yellow
+-- mark at the left end of the HP bar in Dragón's screenshot. So the layout is
+-- read as offsets + anchors + alignment and our widgets copy the same anchors,
+-- which gives them exactly the HP bar's length whatever the anchoring is.
+local function boss_hp_layout(gaugeWidget)
+    -- GetPosition/GetSize return the slot's raw offsets (Left,Top) and
+    -- (Right,Bottom) whatever the anchoring; both are proven to work live.
+    local ok, inner, parent, off = pcall(function()
+        local innerW = gaugeWidget.WBP_IngameBossHP
+        local slot = innerW.BossGaugeHP.Slot
+        local pos = slot:GetPosition()
+        local size = slot:GetSize()
+        return innerW, slot.Parent, { left = pos.X or 0, top = pos.Y or 0, right = size.X or 0, bottom = size.Y or 8 }
+    end)
+    if not ok or not is_valid_obj(parent) then return nil end
+    local ancOk, anc = pcall(function()
+        local slot = inner.BossGaugeHP.Slot
+        local a = slot:GetAnchors()
+        return { minX = a.Minimum.X, minY = a.Minimum.Y, maxX = a.Maximum.X, maxY = a.Maximum.Y }
+    end)
+    if not ancOk or type(anc) ~= "table" or anc.minX == nil then anc = nil end
+    local alOk, al = pcall(function()
+        local g = inner.BossGaugeHP.Slot:GetAlignment()
+        return { x = g.X, y = g.Y }
+    end)
+    if not alOk or type(al) ~= "table" then al = { x = 0, y = 0 } end
+    -- Height is the Bottom offset only when the anchor is not stretched
+    -- vertically; otherwise it is a margin and the real height is unknown.
+    local stretchedY = anc ~= nil and anc.minY ~= anc.maxY
+    local h = stretchedY and 8 or off.bottom
+    local topEdge = off.top - ((al.y or 0) * h)
+    return { inner = inner, parent = parent, off = off, anc = anc, al = al,
+             h = h, topEdge = topEdge, stretchedY = stretchedY }
+end
+
+-- Puts a widget under the HP bar: same anchors, same left/right offsets (so
+-- the same length whether the HP bar is stretched or fixed-width), its own
+-- top edge and height. Anchors are set first: changing anchors afterwards
+-- would reinterpret the offsets.
+local function place_under_hp(slot, layout, top, height)
+    local a, o = layout.anc, layout.off
+    if a ~= nil then
+        pcall(function()
+            slot:SetAnchors({ Minimum = { X = a.minX, Y = a.minY }, Maximum = { X = a.maxX, Y = a.minY } })
+        end)
     end
-    local panelOk, panel = pcall(function() return liveCanvasInstance[fieldName] end)
-    if not panelOk or panel == nil then
-        panel_scan_log("[PalBonds/Indicator] [DIAG-PANEL] canvas." .. fieldName .. " is nil/unreadable — cannot enumerate children this way")
+    pcall(function() slot:SetAlignment({ X = layout.al.x or 0, Y = 0 }) end)
+    pcall(function() slot:SetPosition({ X = o.left, Y = top }) end)
+    pcall(function() slot:SetSize({ X = o.right, Y = height }) end)
+end
+
+local function boss_bar_height(layout)
+    local hgt = math.floor((layout.h or 0) * 0.35 + 0.5)
+    if hgt < BOSS_BAR_MIN_HEIGHT then hgt = BOSS_BAR_MIN_HEIGHT end
+    if hgt > BOSS_BAR_MAX_HEIGHT then hgt = BOSS_BAR_MAX_HEIGHT end
+    return hgt
+end
+
+-- One-shot, diagnostics only: where the boss bar's pieces really sit, and what
+-- the HP bar is nested in, so the stacking question is answered with numbers.
+local function log_boss_geometry(entry, layout)
+    if bossGeometryLogged or not Logger.DiagnosticsEnabled() then return end
+    bossGeometryLogged = true
+    local function slotOf(wd)
+        local s = "?"
+        pcall(function()
+            local sl = wd.Slot
+            local pos, size = sl:GetPosition(), sl:GetSize()
+            s = string.format("pos=(%s,%s) size=(%s,%s)", tostring(pos.X), tostring(pos.Y), tostring(size.X), tostring(size.Y))
+        end)
+        return s
+    end
+    local function nameOf(wd)
+        local n = safe_call(function() return wd:GetFullName() end)
+        return n and (tostring(n):match("^(%S+)") .. " " .. (tostring(n):match("([^%.:]+)$") or "")) or "?"
+    end
+    Logger.log("[PalBonds/Indicator] [BOSS-GEOM] BossGaugeHP    " .. slotOf(layout.inner.BossGaugeHP))
+    local a = layout.anc
+    Logger.log(string.format("[PalBonds/Indicator] [BOSS-GEOM] BossGaugeHP anchors=%s alignment=(%s,%s) -> height used=%s topEdge=%s",
+        a and string.format("min(%s,%s) max(%s,%s)", tostring(a.minX), tostring(a.minY), tostring(a.maxX), tostring(a.maxY)) or "UNREADABLE",
+        tostring(layout.al.x), tostring(layout.al.y), tostring(layout.h), tostring(layout.topEdge)))
+    pcall(function() Logger.log("[PalBonds/Indicator] [BOSS-GEOM] Text_BossName  " .. slotOf(layout.inner.Text_BossName)) end)
+    pcall(function() Logger.log("[PalBonds/Indicator] [BOSS-GEOM] Text_LvTitle   " .. slotOf(layout.inner.Text_LvTitle)) end)
+    if entry.bar then Logger.log("[PalBonds/Indicator] [BOSS-GEOM] trust bar      " .. slotOf(entry.bar)) end
+    if entry.label then Logger.log("[PalBonds/Indicator] [BOSS-GEOM] tag            " .. slotOf(entry.label)) end
+    local chain = {}
+    local cur = layout.inner.BossGaugeHP
+    for _ = 1, 8 do
+        local parent = safe_call(function() return cur.Slot.Parent end)
+        if not is_valid_obj(parent) then break end
+        chain[#chain + 1] = nameOf(parent)
+        cur = parent
+    end
+    Logger.log("[PalBonds/Indicator] [BOSS-GEOM] HP bar nesting (inner→outer): " .. table.concat(chain, "  <  "))
+    local clip = safe_call(function() return layout.parent.Clipping end)
+    Logger.log("[PalBonds/Indicator] [BOSS-GEOM] HP bar's panel clipping = " .. tostring(clip) .. " (0 = children may draw outside it)")
+end
+
+local function build_boss_bar(entry, layout)
+    local cls = safe_call(function() return StaticFindObject("/Script/UMG.ProgressBar") end)
+    if not is_valid_obj(cls) then return end
+    local bar = safe_call(function()
+        return StaticConstructObject(cls, layout.parent, 0, 0, 0x0E000000, false, false, nil, nil, nil)
+    end)
+    if not is_valid_obj(bar) then
+        Logger.log("[PalBonds/Indicator] [BOSS] could not construct the trust bar for " .. describe_pal(entry.actor))
         return
     end
-    local countOk, count = pcall(function() return panel:GetChildrenCount() end)
-    if not countOk then
-        panel_scan_log("[PalBonds/Indicator] [DIAG-PANEL] GetChildrenCount() failed on " .. fieldName .. ": " .. tostring(count))
+    pcall(function() bar:SetPercent(0.0) end)
+    pcall(function() bar:SetFillColorAndOpacity(compute_trust_bar_color(0)) end)
+    pcall(function() bar:SetVisibility(0) end)
+    local slot = safe_call(function() return layout.parent:AddChildToCanvas(bar) end)
+    if not is_valid_obj(slot) then
+        Logger.log("[PalBonds/Indicator] [BOSS] AddChildToCanvas failed for the trust bar — the HP bar's panel may not be a canvas")
         return
     end
-
-    -- Hundred-and-ninety-second pass (2026-09-05): this used to log every
-    -- time the native gauge pool's child count changed — useful while this
-    -- project was still figuring out that pool's structure (pass 28-30),
-    -- meaningless now that the structure is fully documented. In a busy
-    -- area this count changes almost every scan tick, so it was pure log
-    -- volume for a question closed long ago. Just track the count now,
-    -- don't log it.
-    if count ~= state.lastCount then
-        state.lastCount = count
+    place_under_hp(slot, layout, layout.topEdge + layout.h + BOSS_BAR_GAP, boss_bar_height(layout))
+    if Logger.DiagnosticsEnabled() then
+        pcall(function()
+            local p, s, a = slot:GetPosition(), slot:GetSize(), slot:GetAnchors()
+            Logger.log(string.format("[PalBonds/Indicator] [BOSS-GEOM] trust bar placed: offsets=(%s,%s,%s,%s) anchors=min(%s,%s) max(%s,%s)",
+                tostring(p.X), tostring(p.Y), tostring(s.X), tostring(s.Y),
+                tostring(a.Minimum.X), tostring(a.Minimum.Y), tostring(a.Maximum.X), tostring(a.Maximum.Y)))
+        end)
     end
+    entry.bar = bar
+    entry.lastRatio = nil
+    Logger.log("[PalBonds/Indicator] [BOSS] trust bar built under the boss HP bar for " .. describe_pal(entry.actor))
+end
 
-    -- Fifty-eighth pass fix: Dragón reported that Pals seen after walking
-    -- away from the spawn area got no bar at all. Root cause — this loop
-    -- used to only run when `count` DIFFERED from the last count it was
-    -- run at (`state.listedAtCount ~= count`). If a Pal leaves range at
-    -- the same moment a new one enters, the total count can land back on
-    -- a value already seen before (e.g. 5 -> 6 -> 5), so this guard would
-    -- skip the loop entirely even though the actual SET of children
-    -- changed — the new Pal's gauge would simply never get processed.
-    -- Fix: always walk every child when count > 0, every tick — install_
-    -- trust_bar/inspect_gauge_widget are already idempotent per-widget
-    -- (barInstalledForGauge/hasInspectedGaugeWidget), so re-calling them
-    -- on already-handled children is a cheap no-op. Only the VERBOSE
-    -- per-child log line and the one-time-per-class property dump are
-    -- still gated (via a `seenChildren` set keyed by full name) so this
-    -- doesn't spam the log every 2s once a bunch of Pals are on screen.
-    if count > 0 then
-        state.listedAtCount = count
-        for i = 0, count - 1 do
-            local childOk, child = pcall(function() return panel:GetChildAt(i) end)
-            if childOk and child ~= nil then
-                local classOk, className = pcall(function() return child:GetClass():GetFName():ToString() end)
-                className = classOk and className or "?"
-                local fullName = describe_widget(child)
-                if not state.seenChildren[fullName] then
-                    state.seenChildren[fullName] = true
+local function build_boss_label(entry, layout)
+    local nameW = safe_call(function() return layout.inner.Text_BossName end)
+    local cls = is_valid_obj(nameW) and safe_call(function() return nameW:GetClass() end)
+    if not is_valid_obj(cls) then
+        Logger.log("[PalBonds/Indicator] [BOSS] could not read the boss name's text class — no tag")
+        return
+    end
+    local label = safe_call(function()
+        return StaticConstructObject(cls, layout.parent, 0, 0, 0x0E000000, false, false, nil, nil, nil)
+    end)
+    if not is_valid_obj(label) then return end
+    local slot = safe_call(function() return layout.parent:AddChildToCanvas(label) end)
+    if not is_valid_obj(slot) then
+        Logger.log("[PalBonds/Indicator] [BOSS] AddChildToCanvas failed for the tag")
+        return
+    end
+    local y = layout.topEdge + layout.h + BOSS_BAR_GAP + boss_bar_height(layout) + BOSS_LABEL_GAP
+    place_under_hp(slot, layout, y, BOSS_LABEL_HEIGHT)
+    pcall(function() label:SetVisibility(0) end)
+    local source = nil
+    for _, field in ipairs(BOSS_LABEL_STYLE_FIELDS) do
+        local t = safe_call(function() return layout.inner[field] end)
+        if is_valid_obj(t) then source = t break end
+    end
+    style_personality_label(label, entry.widget, source)
+    pcall(function() label:SetText_GDKInternal(true, "") end)
+    entry.label = label
+end
 
-                    -- Hundred-and-ninety-second pass: this used to log an
-                    -- identify line for every distinct gauge widget object
-                    -- ever seen this session (fullName includes the
-                    -- object's own address suffix, so a busy session sees
-                    -- hundreds of these as the game's gauge pool churns).
-                    -- The widget structure this was mapping out has been
-                    -- fully documented since the fifty-first pass — kept
-                    -- only the still-useful part below (dumping a
-                    -- genuinely NEW, never-seen class).
+local function install_boss_display(key, pending)
+    local widget = pending.widget
+    local actor = safe_call(function() return widget.TargetCharacter end)
+    if not is_valid_obj(actor) then actor = pending.actor end
+    if not is_valid_obj(actor) then return false end
+    local layout = boss_hp_layout(widget)
+    if layout == nil then
+        Logger.log("[PalBonds/Indicator] [BOSS] boss bar for " .. describe_pal(actor) .. " has no readable BossGaugeHP layout yet — will retry")
+        return false
+    end
+    -- The game shows this bar only for bosses: count it for the x2 bond meter.
+    safe_call(Trust.MarkBossActor, actor)
+    local entry = { widget = widget, actor = actor, palId = safe_call(Personality.GetStableId, actor) }
+    build_boss_label(entry, layout)
+    if Trust.HasBondingState(actor) then build_boss_bar(entry, layout) end
+    bossEntries[key] = entry
+    Logger.log(string.format("[PalBonds/Indicator] [BOSS] boss bar attached for %s (id %s) — tag=%s bar=%s",
+        describe_pal(actor), tostring(entry.palId), tostring(entry.label ~= nil), tostring(entry.bar ~= nil)))
+    log_boss_geometry(entry, layout)
+    return true
+end
 
-                    -- Dump the first NEW, non-structural class we see. A
-                    -- container class we already know about (WrapBox etc.)
-                    -- gets skipped — those are fixed widget-tree fixtures,
-                    -- not per-Pal content. Each real class is only dumped
-                    -- once, even if it shows up under both WrapBox and
-                    -- Canvas_Root.
-                    --
-                    -- Sixty-eighth pass: WBP_PalNPCHPGauge_C specifically
-                    -- is now fully characterized (fifty-first pass) and
-                    -- was re-dumping its whole inheritance chain every
-                    -- single session for no reason — a real, measured
-                    -- contributor to a 507-line/8-second log burst Dragón
-                    -- felt as lag (see inspect_gauge_widget's comment).
-                    -- Skip the known one with a one-line ack; still fully
-                    -- dump anything genuinely new (e.g. a boss/NPC gauge
-                    -- class this project hasn't seen yet) — that case
-                    -- still has real diagnostic value.
-                    if classOk and not KNOWN_CONTAINER_CLASSES[className] and not dumpedClasses[className] then
-                        dumpedClasses[className] = true
-                        if className == "WBP_PalNPCHPGauge_C" then
-                            Logger.log("[PalBonds/Indicator] [DIAG-PANEL] known class WBP_PalNPCHPGauge_C seen (already fully characterized, fifty-first pass) — skipping the full dump")
-                        else
-                            Logger.log("[PalBonds/Indicator] [DIAG-PANEL] new non-container class found: " .. className .. " — dumping its fields")
-                            dump_all_properties(child, className)
-                        end
-                    end
-                end
-
-                -- Fifty-first pass: regardless of the logging above,
-                -- specifically inspect/install a bar on EVERY real gauge
-                -- widget seen, EVERY tick — both functions are internally
-                -- idempotent (per-widget), so this is what actually
-                -- guarantees a Pal that appears after the count has
-                -- already cycled back to a "seen" value still gets its
-                -- bar (the fifty-eighth pass's fix).
-                if classOk and className == "WBP_PalNPCHPGauge_C" then
-                    inspect_gauge_widget(child)
-                    install_trust_bar(child)
-                end
-            else
-                if not state.seenChildren["unreadable:" .. tostring(i)] then
-                    state.seenChildren["unreadable:" .. tostring(i)] = true
-                    Logger.log(string.format("[PalBonds/Indicator] [DIAG-PANEL]   %s child[%d] unreadable: %s", fieldName, i, tostring(child)))
-                end
+local function update_boss_entry(key, entry)
+    if not is_valid_obj(entry.widget) then bossEntries[key] = nil return end
+    local actor = safe_call(function() return entry.widget.TargetCharacter end)
+    if not is_valid_obj(actor) then actor = entry.actor end
+    if not is_valid_obj(actor) then return end
+    -- Compared by address: UE4SS hands out a fresh wrapper per read, so `~=`
+    -- on the objects themselves would read as "changed" every tick.
+    local addr = safe_call(function() return actor:GetAddress() end)
+    if entry.actorAddress == nil then
+        entry.actorAddress = safe_call(function() return entry.actor:GetAddress() end)
+    end
+    if addr ~= nil and addr ~= entry.actorAddress then
+        entry.actorAddress = addr
+        entry.actor = actor
+        entry.palId = safe_call(Personality.GetStableId, actor)
+        entry.labelLastText, entry.lastRatio = nil, nil
+    end
+    if entry.bar == nil and Trust.HasBondingState(actor) then
+        local layout = boss_hp_layout(entry.widget)
+        if layout then build_boss_bar(entry, layout) end
+    end
+    if entry.bar ~= nil then
+        local ratio = get_friendship_ratio(actor)
+        if ratio and ratio ~= entry.lastRatio then
+            entry.lastRatio = ratio
+            pcall(function() entry.bar:SetPercent(ratio) end)
+            pcall(function() entry.bar:SetFillColorAndOpacity(compute_trust_bar_color(ratio)) end)
+        end
+    end
+    if entry.label ~= nil and is_valid_obj(entry.label) then
+        local disposition = entry.palId and Personality.GetDisposition(entry.palId)
+        if disposition == nil and entry.palId ~= nil then
+            local now = os.clock()
+            if (now - (entry.stateTriedAt or -1e9)) >= LABEL_STATE_RETRY_SECONDS then
+                entry.stateTriedAt = now
+                safe_call(function() Personality.GetOrInitState(actor) end)
+                disposition = Personality.GetDisposition(entry.palId)
+            end
+        end
+        local text = personality_display_text(actor, disposition)
+        if text ~= entry.labelLastText then
+            entry.labelLastText = text
+            local ok, err = pcall(function() entry.label:SetText_GDKInternal(true, text) end)
+            if not ok then
+                Logger.log("[PalBonds/Indicator] [BOSS] tag text write FAILED for " .. describe_pal(actor) .. ": " .. tostring(err))
             end
         end
     end
 end
-local function check_all_panels()
-    check_panel_children("WrapBox")
-    check_panel_children("Canvas_Root")
+
+local function update_boss_displays()
+    for key, pending in pairs(pendingBossGauges) do
+        if not is_valid_obj(pending.widget) then
+            pendingBossGauges[key] = nil
+        elseif bossEntries[key] ~= nil or safe_call(install_boss_display, key, pending) then
+            pendingBossGauges[key] = nil
+        end
+    end
+    for key, entry in pairs(bossEntries) do
+        safe_call(update_boss_entry, key, entry)
+    end
 end
 
--- FIFTY-EIGHTH PASS RESULT + FIFTY-NINTH PASS (2026-09-03) — the real,
--- severe bug: Dragón's test came back WORSE than before ("pals ahead had
--- no bar at all", "the few bars I saw were still stuck at 50%"). The log
--- explains why, and it's a bug that's been latent since the forty-sixth
--- pass: this whole
--- function used to start with `if scanLogCount >= MAX_SCAN_LOGS then
--- return end`. That cap was written back when this function did nothing
--- but a lightweight existence-scan diagnostic — reasonable to go quiet
--- after MAX_SCAN_LOGS (25) lines. But `canvasCount > 0` is true on EVERY
--- tick forever once the canvas is found (it's a single, always-present
--- live instance), so the `if gaugeCount > 0 or canvasCount > 0` branch
--- unconditionally increments `scanLogCount` by at least 1 EVERY tick —
--- meaning `scanLogCount` reaches 25 after ~25 ticks of the 2-second scan
--- interval, i.e. about 50 SECONDS into every single session. Once that
--- happens, the early `return` at the top skips the ENTIRE rest of the
--- function forever — including `check_all_panels()` (all bar creation)
--- and `update_trust_bars()` (all live refresh), which by this pass now
--- live inside this same function even though the cap was never designed
--- with them in mind. This exactly matches what Dragón saw: a burst of
--- bars near spawn (before the ~50s mark), then nothing at all afterward,
--- for the rest of the session, no matter how far they walked or how many
--- Pals they pet.
---
--- Fix: the log-volume cap now ONLY throttles the verbose DIAG-SCAN print
--- lines (via a small helper, same shared-counter pattern as
--- panel_scan_log/property_dump_log elsewhere in this file) — it no
--- longer gates the function's actual work. FindAllOf, check_all_panels(),
--- and update_trust_bars() now run every tick unconditionally, for the
--- entire session.
-local function scan_log(msg)
-    if scanLogCount >= MAX_SCAN_LOGS then return end
-    scanLogCount = scanLogCount + 1
-    Logger.log(msg)
-    if scanLogCount == MAX_SCAN_LOGS then
-        Logger.log("[PalBonds/Indicator] [DIAG-SCAN] reached the scan-log cap (" .. MAX_SCAN_LOGS .. ") — going quiet on DIAG-SCAN lines specifically; bar creation/refresh keep running regardless")
+local function queue_boss_gauge(widget, actor)
+    if not is_valid_obj(widget) then return end
+    local key = describe_widget(widget)
+    if bossEntries[key] ~= nil then
+        -- Same bar re-targeted: let the tick pick up the new Pal.
+        return
     end
+    pendingBossGauges[key] = { widget = widget, actor = actor }
+end
+
+-- One search, right after the hook installs, for boss bars already on screen.
+local function sweep_existing_boss_gauges()
+    local list = safe_call(function() return FindAllOf("WBP_BossEnemyHPGauge_C") end)
+    local n = 0
+    if type(list) == "table" then
+        for _, g in ipairs(list) do
+            local name = safe_call(function() return g:GetFullName() end)
+            -- Skip the class default object; only live bars.
+            if name and not tostring(name):find("Default__", 1, true) and is_valid_obj(g) then
+                queue_boss_gauge(g, nil)
+                n = n + 1
+            end
+        end
+    end
+    Logger.log("[PalBonds/Indicator] [BOSS] one-time check for boss bars already on screen: " .. n .. " found")
+end
+
+local BOSS_HOOK_FAST_ROUNDS = 30
+local function register_boss_hook(round)
+    round = round or 1
+    if hasRegisteredBossHook then return end
+    local ok, err = pcall(function()
+        RegisterHook(BOSS_GAUGE_HOOK_PATH, function(Context, TargetCharacter)
+            queue_boss_gauge(hook_get(Context), hook_get(TargetCharacter))
+        end)
+    end)
+    if ok then
+        hasRegisteredBossHook = true
+        Logger.log(string.format("[PalBonds/Indicator] [BOSS] boss bar hook INSTALLED (round %d): %s", round, BOSS_GAUGE_HOOK_PATH))
+        pcall(function()
+            ExecuteInGameThreadWithDelay(500, function() safe_call(sweep_existing_boss_gauges) end)
+        end)
+        return
+    end
+    local fast = round < BOSS_HOOK_FAST_ROUNDS
+    if round == 1 or round == BOSS_HOOK_FAST_ROUNDS or round % 60 == 0 then
+        Logger.log(string.format("[PalBonds/Indicator] [BOSS] boss bar hook not installable yet (round %d): %s — still retrying",
+            round, tostring(err):match("^[^\n]*") or tostring(err)))
+    end
+    pcall(function()
+        ExecuteInGameThreadWithDelay(fast and IMMEDIATE_BIND_HOOK_RETRY_MS or IMMEDIATE_BIND_HOOK_SLOW_RETRY_MS, function()
+            safe_call(function() register_boss_hook(round + 1) end)
+        end)
+    end)
 end
 
 -- probe_screen_projection removed in the two-hundred-and-eighty-ninth pass.
@@ -1906,91 +1732,22 @@ local function scan_for_gauge_widgets()
         end)
     end
 
-    -- Two-hundred-and-eighty-eighth pass (2026-09-09) -- PERFORMANCE.
-    --
-    -- These two are FULL UObject-array walks, and this sweep runs every 2
-    -- seconds for the whole session. Neither result reaches gameplay:
-    -- gaugeInstances is used only to print [DIAG-SCAN] lines, and
-    -- canvasInstances only to capture liveCanvasInstance, whose sole consumer
-    -- is check_panel_children -- which also just logs. In a release build every
-    -- one of those lines is discarded by Logger, so this was two array walks a
-    -- second spent building strings nobody ever reads.
-    --
-    -- The third scan in this sweep, FindAllOf("WBP_PalNPCHPGauge_C") above, is
-    -- load-bearing (it installs the trust bars) and is untouched.
-    local diagnosticsOn = true
-    do
-        local okD, LoggerMod = pcall(require, "Logger")
-        if okD and LoggerMod and LoggerMod.DiagnosticsEnabled then
-            diagnosticsOn = LoggerMod.DiagnosticsEnabled()
-        end
-    end
-    local gaugeInstances = diagnosticsOn and safe_call(function() return FindAllOf("PalUICharacterHPGaugeBase") end) or nil
-    local canvasInstances = diagnosticsOn and safe_call(function() return FindAllOf("PalUINPCHPGaugeCanvasBase") end) or nil
-    local gaugeCount = gaugeInstances and #gaugeInstances or 0
-    local canvasCount = canvasInstances and #canvasInstances or 0
-    if not hasLoggedScanAlive then
-        hasLoggedScanAlive = true
-        scan_log("[PalBonds/Indicator] [DIAG-SCAN] first scan ran (FindAllOf works) — real counts only get logged below once either class actually has a live instance")
-    end
-    if gaugeCount > 0 or canvasCount > 0 then
-        scan_log(string.format(
-            "[PalBonds/Indicator] [DIAG-SCAN] live instances — PalUICharacterHPGaugeBase=%d PalUINPCHPGaugeCanvasBase=%d",
-            gaugeCount, canvasCount
-        ))
-        if gaugeInstances then
-            for i, inst in ipairs(gaugeInstances) do
-                if i > 5 then break end
-                scan_log("[PalBonds/Indicator] [DIAG-SCAN]   gauge instance: " .. describe_widget(inst))
-            end
-        end
-        if canvasInstances then
-            for i, inst in ipairs(canvasInstances) do
-                if i > 5 then break end
-                scan_log("[PalBonds/Indicator] [DIAG-SCAN]   canvas instance: " .. describe_widget(inst))
-            end
-
-            -- Forty-seventh pass: the moment we see the REAL live instance
-            -- (not the Blueprint archetype baked into the asset — that one's
-            -- full name starts with /Game/..., the live one starts with
-            -- /Engine/Transient), grab a handle to it — `liveCanvasInstance`
-            -- is still load-bearing (check_all_panels below needs it).
-            --
-            -- Sixty-eighth pass: the actual field DUMP is not — its
-            -- questions were fully answered back in the forty-seventh
-            -- pass and it was just re-running every session for free,
-            -- contributing real lines to the 507-line/8-second log burst
-            -- Dragón felt as lag (see inspect_gauge_widget's comment for
-            -- the full log evidence). Keep grabbing the handle; drop the
-            -- dump.
-            if not hasDumpedCanvas then
-                for _, inst in ipairs(canvasInstances) do
-                    local nameOk, fullName = pcall(function() return inst:GetFullName() end)
-                    if nameOk and fullName and fullName:find("^WBP_PalNPCHPGaugeCanvas_C /Engine/Transient") then
-                        hasDumpedCanvas = true
-                        liveCanvasInstance = inst
-                        Logger.log("[PalBonds/Indicator] [DIAG-SCAN] found the real live canvas instance (already fully characterized, forty-seventh pass — not re-dumping): " .. fullName)
-                        break
-                    end
-                end
-            end
-        end
-    end
-
-    -- Forty-eighth pass: independent of the one-shot canvas dump above,
-    -- keep checking the WrapBox's live children on every tick once we
-    -- have a handle to the canvas. Fifty-ninth pass: this (and the line
-    -- below) now run unconditionally every tick, no matter how much
-    -- DIAG-SCAN logging has happened — see the big comment above.
-    -- Reads live widget fields and calls GetChildrenCount purely to log the
-    -- result, so it is skipped for the same reason as the scans above.
-    if diagnosticsOn then check_all_panels() end
+    -- 2026-09-16: two diagnostic-only world searches used to run here every
+    -- tick whenever SHOW_DIAGNOSTICS was on (FindAllOf PalUICharacterHPGaugeBase
+    -- and PalUINPCHPGaugeCanvasBase), feeding [DIAG-SCAN]/[DIAG-PANEL] lines
+    -- about a widget structure mapped out in passes 46-51. The profiler caught
+    -- them in run 3 as the dev build's biggest cost: 676 stalls, ~145 ms each,
+    -- about 3.5 s per minute. Removed with everything only they used.
 
     -- Fifty-seventh pass: refresh every trust bar that resolved a real
     -- Pal actor, every tick, so they actually move.
     local tBars = Prof and Prof.start()
     update_trust_bars()
     if Prof then Prof.stop("nameplate sweep: update_trust_bars", tBars) end
+
+    local tBoss = Prof and Prof.start()
+    update_boss_displays()
+    if Prof then Prof.stop("boss bars: install + refresh", tBoss) end
 
     -- Two-hundred-and-thirty-seventh pass (2026-09-07) — REMOVED FROM THE
     -- TICK, and this is a real crash suspect, not just cleanup.
@@ -2088,6 +1845,8 @@ function Indicator.Init()
     -- closes (a Pal already on-screen at session start permanently
     -- missing capture otherwise).
     register_bind_hook_immediate()
+    -- 2026-09-16: the boss bar equivalent — see BOSS HP BAR above.
+    register_boss_hook()
 
     -- Two-hundred-and-sixth pass (2026-09-06) — REMOVED, REAL LAG SOURCE.
     -- Two read-only diagnostic hooks used to live here, on
