@@ -18,8 +18,10 @@ Following stays at 95% for the open spawner-despawn defect. Polish counts the
 README, both store descriptions, licence, screenshots, the Workshop upload, the
 Nexus package and the Nexus publish as done (published on Steam, Nexus, and
 announced in 2 Reddit posts, 2026-09-14; **v1.1.1 published to both stores
-2026-09-15**; **v1.1.2 on GitHub, Nexus and the Steam Workshop 2026-09-15**); only
-the settings screen is left. Recalculate whenever a category moves, and keep
+2026-09-15**; **v1.1.2 on GitHub, Nexus and the Steam Workshop 2026-09-15**;
+**v1.1.3 on all three 2026-09-16**; **v1.1.4 on all three 2026-09-18**, GitHub
+`8846dca`); only the settings screen is left. v1.1.4 (the Play crash fix and
+20% forgiveness) moves no category. Recalculate whenever a category moves, and keep
 the `Progreso:` line of this project's block in `../game proyects.txt` in sync.
 
 **Microstutter note for the table:** the reported stutter WAS the mod's doing
@@ -1236,8 +1238,12 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
   ideas — favourite food, bonding through fighting together, no distance limit
   so you can bond while doing other things. Dragón has not ruled on any of it.
 
-**1.1.4 RELEASE BUILD (2026-09-18) — built, awaiting Dragón's smoke run of the
-exact release files, then Nexus → Workshop → GitHub.**
+**1.1.4 RELEASED (2026-09-18) — Nexus, Steam Workshop (change note live,
+`last_published_version` 1.1.4) and GitHub (`8846dca`).** Dragón smoke-tested
+the exact release files locally AND the Workshop copy before uploading. Still
+open from this release: the Proton player's reply (Dragón posted it), the
+Nexus/Workshop description line about forgiveness (offered, not answered), and
+the disabled-old-mechanisms cleanup (next update).
 - Dragón: "ship it without logs nor spies nor anything that's development
   related — just the fixes and the new things you added, no test codes nor
   functions that didn't work". So, removed from `mod/` itself (source =
