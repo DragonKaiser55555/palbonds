@@ -47,7 +47,11 @@ __NATIVE = obj("PalAIResponsePreset")
 RegisterHook = function() return true end
 RegisterKeyBind = function() return true end
 ExecuteInGameThreadWithDelay = function() return true end
-ExecuteInGameThread = function() return true end
+ExecuteInGameThread = function(fn)
+  __GAME_THREAD_CALLS = (__GAME_THREAD_CALLS or 0) + 1
+  if type(fn) == "function" then fn() end
+  return true
+end
 LoopAsync = function() return true end
 FindFirstOf = function() return nil end
 FindAllOf = function(n)

@@ -163,6 +163,9 @@ crashed session's UE4SS.log was overwritten by his relaunch 20 s later and the
 release writes no mod log. Next: DEBUG_LOGGING + SHOW_DIAGNOSTICS switched on
 in the GAME'S Workshop copy (local only, not published) for a logged repro;
 he must not relaunch before the logs are read.
+**v1.1.3 on GitHub: commit `bd8e0ca` (pushed 2026-09-16). Workshop change note
+live (16 SEP 20:46); Steam shows only "Fixed a crash that 1.1.2 introduced" for
+the first line — the sentence after the period was dropped.**
 **Logged repro (21:01–21:06): NO crash in several tries.** Three quits with a
 follower (PinkCat, PlantSlime, and the boss WeaselDragon/Chillet following):
 each time `[PLAYER-SPY] search (kept player became invalid)` → `[WORLD-RESET]
@@ -1215,6 +1218,414 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 ---
 
 ## Pending, deliberately deferred
+
+**New player reports (Nexus posts, read 2026-09-18):**
+- **Esae0n (18 Sep):** plays through **Proton** (Linux / Steam Deck
+  compatibility layer). Taming works, but the game crashes *every time*
+  immediately after a Pal joins. Possibly the keybind-thread bug fixed in pass
+  333 — a join destroys the wild actor and builds the party one, a small
+  version of the world-change teardown — but only if they used F8 Play. If
+  they used only Pet/Feed, it is something else and Proton is a real suspect.
+  Dragón was given a reply draft asking which interactions they used and for
+  their UE4SS.log. Ask them to confirm once 1.1.4 is out.
+- **Warframe666 (17 Sep):** the alpha **Mammorest** in the starting area
+  sometimes **falls through the floor after being petted**. New, not
+  investigated.
+- Design feedback worth keeping (ralanost, Warframe666, 17 Sep): bonding feels
+  like waiting on cooldowns; no indicator for when Pet/Feed is available again;
+  ideas — favourite food, bonding through fighting together, no distance limit
+  so you can bond while doing other things. Dragón has not ruled on any of it.
+
+**1.1.4 RELEASE BUILD (2026-09-18) — built, awaiting Dragón's smoke run of the
+exact release files, then Nexus → Workshop → GitHub.**
+- Dragón: "ship it without logs nor spies nor anything that's development
+  related — just the fixes and the new things you added, no test codes nor
+  functions that didn't work". So, removed from `mod/` itself (source =
+  shipped): the Profiler (Profiler.lua, main.lua wiring and every
+  `Prof.start/stop`), HookConfig.lua and every `hooks_enabled` gate, and the
+  [WON-OVER-SPY], [LEASH-SPY] and [PLAYER-SPY] blocks (plus
+  `Personality.DescribeFight`/`fight_snapshot`, which only served them).
+  profiletest.js was deleted with the Profiler. `tools/dev-instruments/` keeps
+  HookConfig.lua (it was never committed); the rest is in git at `bd8e0ca`.
+- `release/PalBonds-v1.1.4.zip` (12 files: LICENSE, README.txt, enabled.txt,
+  9 scripts) plus both release trees are byte-identical to `mod/`, with
+  DEBUG_LOGGING false everywhere and no dev instrument, checked by grep.
+  Info.json is 1.1.4. The 1.1.3 zip was deleted, as with previous releases.
+- README.txt: forgiveness is described; "a BONDED Pal that loses all its trust
+  flees for good" (it used to say any Pal); the rule for hits below 50%; and
+  the bug-report log path fixed to `Palworld/Pal/Binaries/Win64/palbonds-live.log`
+  (it wrongly said "the mod's folder").
+- The game's dev copy now holds the EXACT release scripts (logging off) for the
+  smoke run.
+- **Nexus: LIVE** (2026-09-18, 4:01PM page time): version 1.1.4, file
+  "PalBonds V1.1.4", 271 KB. Dragón's own changelog is five one-liners.
+- **Workshop: files prepared** in both copies: the upload folder
+  (`steamapps/workshop/content/1623730/3797816321/`, 9 scripts, Info.json 1.1.4
+  bumped in place with its BOM kept, `.workshop.json` untouched) and the game's
+  NativeMods copy. Both are byte-identical to `release/workshop`, and Profiler.lua
+  is gone from both. The local dev install is DISABLED (`*.MODS-DISABLED`) for
+  Dragón's Workshop smoke test.
+- **Workshop pre-upload test: VALID, confirmed 2026-09-18.** Dragón enabled the
+  Workshop mods and played; the pals stopped attacking at 20%. Afterwards:
+  - Both copies were still byte-identical to 1.1.4, and Steam did NOT revert the
+    upload folder to the published 1.1.3.
+  - The game's NativeMods copy had a NEW timestamp (16:32, the moment he
+    enabled the mods), while the upload folder kept mine (16:25). **So Palworld's
+    mod manager re-copies from the Workshop content folder when mods are
+    enabled.** Editing the upload folder is therefore enough to test before
+    uploading. This refines the 2026-09-14 note that the copy is "written once
+    and never re-synced": it isn't re-synced while the mods stay enabled, but
+    enabling them copies it again.
+  - The UE4SS.log proves the 1.1.4 code ran: 17 hooks, including the ESC-menu
+    quit hooks that only exist in 1.1.4, and no errors.
+- Still to do: the Workshop upload (Dragón, via the Mod Uploader), then GitHub, and fix the
+  README.md known-issues entry. Also ask whether the Nexus/Workshop
+  descriptions should mention forgiveness.
+- **Next update's cleanup, not done now to keep the verified build unchanged:**
+  old disabled mechanisms still sit in the code behind false flags (e.g. the
+  "real-Otomo-composite" and "move-order nudge" paths in Combat). Audit and
+  delete them.
+
+**1.1.4 TEST RUN (2026-09-18, 15:10–15:25): PASSED.** Dragón: "everything
+played nicely, game didn't crash either — pals actually forgive and can attack
+back if hit again". Log:
+- 7 Pals crossed 20% (Chikipi ×3, Samurai dog, FlowerDoll, two DreamDemons;
+  rolled escape/normal/friendly/warlike_anyway/notinterested). 6 were released
+  after about 3.1 s "NO LONGER angry"; the 7th was hit during its calm-down.
+- **The "follows ITSELF" loose end is closed:** in the 20 s after release, no
+  Pal ever targeted the player (`hateTarget=none` on every tick). Their actions
+  went from finishing the pet/feed, to `BP_AIAction_FriendlyLookat_C` (the
+  game's own "looks at you" idle), to `BP_AIAction_WildLife_C` (normal
+  wandering). None was stuck in a follow action.
+- 2 unbonded hits, both handled as specified: one after forgiveness (a Chikipi
+  rolled Curious, reverted to 'friendly' = its original), and one during the
+  calm-down (DreamDemon: "follow stopped: hit by the player during its
+  calm-down", reverted to warlike_anyway with its own preset back). No
+  betrayal, no errors, nothing FAILED.
+- The quit hooks and world reset worked on two consecutive quits.
+- Cheer: logged "call ok"; visual confirmation still pending.
+
+**1.1.4 BUILD STATUS (2026-09-18):** the forgiveness rules below are
+implemented in `mod/` and deployed to the game's dev copy for Dragón's test run.
+All 17 harness suites pass; bosstest R1–R4, U1–U5 and G cover the rules, and
+they fail against 1.1.3.
+- Personality: `FRIENDLY_BRIEF_FOLLOW` and `legacy_friendly_reset` are GONE —
+  the calm-down is the behaviour. `MaybeBecomeFriendlyByBar` saves
+  `state.preForgive` (disposition, rolledTier, presetClassName) before
+  `become_friendly_wild` overwrites rolledTier; `Personality.RevertForgiveness`
+  restores the tag and writes back the rolled tier's donor preset (or the
+  species preset for a Normal roll), re-sensing without a cancel. It consumes
+  preForgive, and the `becameFriendlyByBar` latch is never cleared, which is
+  what makes it one forgiveness per Pal.
+- Trust: `on_unbonded_pal_hit_by_player` — reached from `OnFollowerDamaged` for
+  a PLAYER hit on a Pal that is not following, or is in its calm-down. It ends
+  the calm-down (clearing the `briefFollow` token first, so the release never
+  writes Friendly), empties the bar, and calls RevertForgiveness. It has a 1 s
+  dedupe, because both damage hooks report every hit.
+- `Personality.WON_OVER_SPY` (ships false; TRUE in the game copy only) turns on
+  the post-release watch without the rest of the diagnostics. Use it to see
+  what a Pal does after the "follows ITSELF" release.
+- The HookConfig BISECT/EMOTE_ONLY switches are removed. The hook GROUPS stay,
+  all true.
+- The cheer now goes through `ActionComponent:PlayAction` (logged "call ok"
+  live). **Dragón still has to confirm his character visibly cheers.**
+
+**Dragón's rulings, 2026-09-18 — BONDING AND BETRAYAL (read before touching either):**
+- **"Bonding is a status that starts or should start at 50% friendship."**
+  Nothing before 50% is a bond. Any comment or note saying "the bond starts at
+  the first pet" is WRONG. Claude invented it from a misread report, and the
+  pass-246/251 comments in Trust.lua say it; correct them when that code is
+  next touched.
+- His Gumoss report ("I could hit a partially-bonded Gumoss over and over with
+  no penalty") meant **the Gumoss never attacked him back**. It did not mean it
+  should have been punished.
+- **Below 50%:** hitting a Pal is an ordinary fight. It defends itself from the
+  player normally. No betrayal and no scarred status, because there is no bond
+  yet.
+- **What the code actually does (checked 2026-09-18):** `Trust.OnFollowerDamaged`
+  exits unless `st.isFollowing`, so below 50% the penalty never ran. The rule is
+  broken in exactly one place: **the 20% brief follow**, which sets
+  `isFollowing`. A hit during the calm-down costs half the bar, which at 20–49%
+  empties it, so it is full betrayal and the Pal is scarred. The companion
+  preset also stops the Pal defending itself during those seconds.
+- 1.1.4 = the crash fix plus the POLISHED 20% brief follow, shipped together.
+  Wider self-defence reach is NOT in 1.1.4 (too many variables).
+- The Mammorest falling through the floor is the base game (Pals align to the
+  player's facing axis on uneven terrain). Not ours.
+- The Proton reply goes out after 1.1.4 ships. No Steam-vs-Nexus recommendation:
+  untested, and a second UE4SS install next to the first crashes the game.
+- Dragón: **ask about doubts, don't advance on interpretations.**
+- **The 20% calm-down, his full spec (2026-09-18):**
+  1. A hit during the calm-down: the Pal reacts however its species normally
+     would (some fight, some flee, e.g. Lifmunk). No forced "fight back".
+  2. **A player hit below 50% drops the bar to 0.** Player hits only: Pal-vs-Pal
+     damage never costs trust (his earlier ruling, quoted in Trust.lua). No
+     betrayal and no scarred status, because there is no bond. Costs nothing
+     measurable: the hit detection already runs for betrayal.
+  3. The calm-down happens for EVERY Pal crossing 20%, not only hostile ones.
+  4. After forgiving, the Pal acts completely normally, including getting angry
+     again if hit or if a Pal of its species pulls it in. "We just need to
+     trigger that brief forgiveness."
+  5. It still defends its own kind. Don't interfere with an unbonded Pal beyond
+     the forgiveness moment itself.
+  6. **One forgiveness per Pal.** After that it is the player's carelessness —
+     "we can't let them abuse the poor pals".
+  7. When the bar drops to 0, the Pal goes back to its ORIGINAL rolled
+     personality: tag AND AI preset (confirmed 2026-09-18). A Hostile Pal
+     reads Hostile again, which he agrees is correct because it will attack.
+  8. **Crossing 20% a second time does nothing at all:** no calm-down, no
+     Friendly switch; it keeps its original personality. Bonding at 50% still
+     works. His reason: "most pals will probably not survive too many hits from
+     the player, so if we continue making them forgive or act differently, the
+     pals will end up dying without having a chance to defend themselves with
+     our meddling."
+
+**Dragón's rulings, 2026-09-17 (start of the post-1.1.3 session):**
+- **The world-change crash is BACK, reproducible, and now fixed in `mod/`
+  (pass 328) — awaiting Dragón's live run.** Recipe he confirmed twice:
+  interact with a wild Pal, have NOTHING following you, quit to the title,
+  load a world -> `EXCEPTION_ACCESS_VIOLATION 0x338`. His 16:52-16:57 log has
+  no `[WORLD-RESET]` line at all, which is the whole bug in one line.
+  - **Cause:** the fast loop's world-change check sat BELOW
+    `if next(BondingState) == nil then return end`, so with nothing bonded the
+    loop returned before it ever looked at the player. No reset ran, PlayerRef
+    kept the old world's character, and Indicator/Personality/Interaction had
+    never been reset by anything. The 20% brief follow makes this easy to hit:
+    it puts a Pal on the follower list and then takes it off, so a run ends
+    with the tables empty and plenty still cached.
+  - **Fix:** `world_change_watch()` above that early-out, timed off `os.clock`
+    (1 s while a world is up, 2 s latched at the title, 0.2 s right after a
+    quit is asked for) because the loop itself runs at 100 ms with a follower
+    and 1000 ms idle — a pass count would have meant 10 s in exactly the idle
+    state the crash happens in. It goes straight to `PlayerRef.Get()`: asking
+    Combat's own `lastKnownPlayerActor:IsValid()` first reintroduced the 1.1.2
+    bug inside the fix (caught by harness section D on its first run, not in
+    game). A latch (`worldResetLatched`) makes the reset run exactly once per
+    world change, and both older reset branches now share it instead of being
+    gated on holding followers.
+  - `Indicator.ResetForNewWorld`, `Personality.ResetForNewWorld` and
+    `Interaction.ResetForNewWorld` are new and called from
+    `Combat.ResetForNewWorld` (each in its own `safe_call`). Interaction
+    deliberately keeps `cachedWorkerMenuParameter` (pass 285) and Personality
+    keeps `presetCDOCache`.
+  - **The game's own quit event, found in the object dump:**
+    `WBP_MenuESC_C:ConfirmReturnTitle` and `:OnReturn2Title`, hooked with
+    RegisterHook (retries 30 rounds, 2 s apart, like the nameplate hooks).
+    They drop NOTHING — semantics unknown, and dropping state when a confirm
+    box merely opens would break a bond the player then keeps. They call
+    `Combat.ExpectWorldChange`, which tightens the watch to 0.2 s and puts
+    `PlayerRef` into per-call engine liveness checks for 20 s
+    (`PlayerRef.ExpectWorldChange`).
+  - Hook count is now **17** (was 15); profiletest, harness3's README line and
+    worldchangetest sections D/E cover all of this. The new checks fail on
+    `release/PalBonds/Scripts` (1.1.3) as they should.
+  - If this holds live, it ships as **1.1.4** with both feature switches off.
+- **Second live run (17:45-17:46): STILL CRASHED, and the log settled the
+  question the polling fix could not.** Everything new worked — the quit hooks
+  installed (round 21), both fired at 17:46:48, the earlier world change at
+  17:45:20 reset all six modules — and then the log simply ENDS at the confirm.
+  **No further loop pass is ever serviced once a quit is confirmed**, so
+  detecting the world change afterwards is impossible by construction. (Run 5's
+  "LEASH-SPY stopped, then the crash" was the same signal, read as a symptom
+  instead of a cause.)
+  - **Second fix (same pass):** release everything INSIDE the hook.
+    `Combat.OnQuitConfirmed` (wired to `ConfirmReturnTitle`) tells PlayerRef
+    the world is closing and runs the full reset there and then, on the game
+    thread, while the world is still alive. `OnReturn2Title` still only
+    tightens the watch, so if it is the earlier of the two nothing is dropped
+    at a prompt the player may cancel.
+  - `PlayerRef.SetWorldClosing/IsWorldClosing/ProbeForNewPlayer`: while closing,
+    `Get()` returns nil — which every caller already handles, since that is
+    what the title screen looks like — so the nameplate hook, the personality
+    resolver and the trust recorder cannot refill the tables in the moment
+    between the confirm and the world actually dying.
+    `Combat.IsShuttingDown()` now also returns true while closing, which is
+    what Indicator's sweep and Trust's tick already consult.
+  - How a closing world ends is decided by `ProbeForNewPlayer`: a player at a
+    DIFFERENT address = the new world is up; the SAME player still there after
+    `WORLD_CLOSING_CANCEL_SECONDS` (10 s) = the quit was cancelled, logged as
+    `the quit was CANCELLED`, and the mod resumes in that world (bonds from
+    before the prompt are gone — the deliberate trade).
+  - Harness sections F and G cover the in-hook release and both endings.
+- **Third live run (17:54-17:55): STILL CRASHED — and the log caught the mod IN
+  THE ACT.** The release ran correctly at the confirm (1 bonding record, 8
+  nameplate bars, 21 personality records dropped), and then one more line was
+  written after it:
+  `[PalBonds/Personality] unrecognized AIResponsePreset 'PalAIResponsePreset'`.
+  That value is the engine's own base class name, which is what a read off a
+  half-destroyed object returns — so a HOOK was still doing work during
+  teardown, after the loop had stopped. Releasing what we hold was never going
+  to be enough: the game keeps calling the functions we hooked while it tears
+  the world down, and this UE4SS build cannot unregister a hook.
+  - **Third fix (pass 329): the world-closing gate.** Every hook callback in
+    Indicator, Personality, Trust and Interaction now starts with
+    `if world_is_closing() then return end` (a local helper per file, one
+    function call, no reflection). The mod goes deliberately blind from the
+    confirm until the next world's character exists. The two ESC-menu quit
+    hooks are NOT gated, for obvious reasons.
+  - `PlayerRef.IsWorldClosing` gives up waiting after `CLOSING_MAX_SECONDS`
+    (60 s) and logs `giving up waiting`: if Combat's watch ever stopped being
+    serviced, a permanently closed gate would look exactly like "the mod
+    stopped working", which is worse than one frame of crash risk.
+  - Harness section H: the busiest hook (`PalHate:DamageEvent`) does nothing
+    during teardown, and the gate opens again after the timeout.
+- **Fourth live run (18:06-18:08): STILL CRASHED, and the log is SILENT from
+  the confirm to the crash.** The gate holds — our Lua provably does nothing
+  during teardown — so what remains that is ours is the mere EXISTENCE of the
+  hooks. UE4SS's own log registers 23 hooks (10 of them script hooks inside UI
+  blueprint classes that load on demand and are destroyed with the world) and
+  prints `[FCallbackGarbageCollector] Freed invalid callbacks!` after a world
+  change. **Stop theorising and bisect.**
+  - `Scripts/HookConfig.lua` (pass 330): hook GROUPS, all shipping `true`
+    (`nameplate`, `boss`, `radial`, `workermenu`, `quit`, `senses`,
+    `itemslot`, `otomo`, `damage`). A group that is off never registers, which
+    is the only way to remove a hook in this build. 17 hooks with all on, 14
+    with nameplate+boss off.
+  - **Run A (in progress):** PalBonds disabled (`enabled.txt.MODS-DISABLED`)
+    with UE4SS still loaded and its own built-in mods (BPModLoaderMod,
+    BPML_GenericFunctions, Keybinds) active. Same recipe. If that crashes, the
+    crash is UE4SS's, not ours — and it would explain why three real fixes
+    changed nothing. Never tested before: the earlier vanilla control had no
+    UE4SS at all.
+  - Then: groups off in halves (the five UI script-hook groups first), then
+    narrow to the group.
+- **THE CAUSE, CONFIRMED (pass 333): keybind callbacks do not run on the game
+  thread.** Dragón's final control settled it: *pet only* = clean, *feed only*
+  = clean, *Play (F8)* = crash. Pet and Feed arrive through `RegisterHook`,
+  which fires inside the game's own call stack (game thread). F8 arrives
+  through `RegisterKeyBind`, which UE4SS services on **its own thread** — and
+  from there the mod was starting animations, allocating action objects and
+  queueing montages straight into the engine. Nothing fails at the time; engine
+  state is corrupted quietly and the next world load reads freed memory
+  (0x338). Hence: four correct world-change fixes changing nothing, the two
+  clean v1.1.1 runs being the pet-only and feed-only ones, and "an action that
+  fails to play is safe" (a refused call touches nothing).
+  - UE4SS's own maintainer says the same about their async entry points
+    (narknon, issue #1345, quoted in docs/hook-points.md): use the
+    in-game-thread helpers. The mod did that everywhere EXCEPT its keybinds.
+  - **Fix:** `run_on_game_thread(fn)` in Interaction.lua — `ExecuteInGameThread`
+    first, `ExecuteInGameThreadWithDelay(1, ...)` as a fallback, and a logged
+    direct call only if neither exists. **All three keybinds** (F8 Play, F9
+    tags, F10 passive gain) now hop before doing anything; F9 touches live
+    widgets and F10 shows a toast, so both count as engine work.
+  - Harness: every prelude's `ExecuteInGameThread` now runs its callback and
+    counts it; shiptest asserts each keybind hops exactly once. Those checks
+    fail on the old code.
+  - **CONFIRMED LIVE, 2026-09-17 evening.** Dragón's verification run: bonding,
+    pet, feed, play, capture, several world reloads — no crash. This is 1.1.4.
+  - **Release checklist for the next session (nothing done yet):**
+    1. `mod/` is the fix; `release/PalBonds/Scripts` and
+       `release/workshop/PalBonds/Scripts` are still 1.1.3 — rebuild both.
+    2. Logger `DEBUG_LOGGING = false` in the release copies (the dev copy in
+       the game folder keeps it true).
+    3. `HookConfig.lua` is NEW — it must be in the zip, the Workshop folder and
+       both release trees, with every group `true` and `EMOTE_ONLY = false`.
+    4. Both held-back switches stay false (`FRIENDLY_BRIEF_FOLLOW`,
+       `SELF_DEFENCE_EXTENDED_REACH`).
+    5. Info.json Version 1.1.4, new zip, README/known-issues entry, changelog
+       (one line per change, no promises — see the memory on his public text),
+       then Nexus, then Workshop, then GitHub.
+    6. The old 1.1.3 "crash fixed" known-issue entry in README.md needs
+       correcting: that fix was real but it was not this crash.
+  - Dragón on the player impact: not worried, because Play is already
+    described as experimental on both store pages — but he wants it fixed so it
+    can be used safely.
+- **CORRECTION (pass 332, same evening): the `{}`-struct conclusion below was
+  WRONG, and the log said so.** With every field of FActionDynamicParameter
+  spelled out, UE4SS refused the call — `[push_classproperty] Error` — so the
+  cheer never played. That run was clean for the same reason every clean run
+  was clean: **no action was ever started.** Do not re-adopt the struct theory
+  without a log line showing the emote actually playing.
+  - Re-routing the cheer through `UPalActionComponent::PlayAction(pawn, cls)`
+    (no struct at all) works — `[EMOTE] ... call ok` — and still crashes. That
+    route is kept anyway: it is simpler, local, and has no parameter block.
+  - **What IS established, from nine bisect runs:** reads, aiming and target
+    resolution are safe; an action that PLAYS (on the player or on a Pal)
+    poisons the next world load; an action that FAILS to play does not.
+  - **The one hypothesis that fits everything, including the v1.1.1 runs:** the
+    poison is an action **this mod starts directly**. Dragón's two clean 1.1.1
+    runs were *pet only* and *feed only* — and the radial Pet/Feed path plays
+    NOTHING itself (`grant_wild_interaction` is bookkeeping only; the GAME
+    starts its own action there). Every crashing run today used F8 Play, which
+    is where the mod's own `PlayActionByType` calls live.
+  - **The mod's direct action plays, the complete list:** `do_play`'s
+    `PlayActionByType(pal, PalRandomRest=77)` and its `Happy` follow-up
+    (Interaction.lua ~765 and ~851), the player cheer (~1700), and Capture's
+    join celebration `PlayActionByType(pal, 38)` (Capture.lua ~649).
+  - **Next control (cheapest decisive run):** full mod, **no F8 at all** —
+    radial Pet and Feed only — then quit and load. Clean = the rule holds, and
+    the fix direction is to route Play through the game's own action start (the
+    same substitution trick Pet already uses) instead of calling PlayActionByType.
+  - **Player-facing consequence if it holds:** shipped 1.1.3 can crash for
+    anyone who uses Play (F8) and then loads another world without restarting.
+    Pet/Feed-only players are unaffected. Worth saying plainly in the 1.1.4
+    notes once proven.
+- **The (WRONG) conclusion of pass 331, kept for the record:** `{}` passed as a STRUCT.
+  `play_player_emote` called
+  `pc:ActionComponent_PlayAction_ToServer_ForPlayer(pawn, {}, cls, 0)` —
+  copied verbatim from the Kick Keybind reference mod. That second argument is
+  **`FActionDynamicParameter`, 0x100 bytes**: an actor pointer, a `TArray` of
+  actors, an `FTransform`, two `FGuid`s and an `FPalNetArchive`. An empty Lua
+  table leaves that memory as it was; the game copies the block into the action
+  it creates and frees parts of it later. Nothing fails when the emote plays or
+  when the world closes — it fails when the NEXT world loads into that memory.
+  Hence four correct fixes to the quit path changing nothing.
+  - **Dragón's bisect, one run each** (his own controls did the most work):
+    UE4SS alone = clean; UI hooks off = crash; ALL hooks off = crash; no F8 =
+    clean; F8 with no Pal nearby = clean; brief follow off = crash; trust grant
+    off = crash; Pal animation only = crash; **player emote only, no Pal at
+    all = crash**; same emote with every field spelled out = **CLEAN**
+    (several loads, F8 spammed).
+  - **Fix:** fill every field of the block, unconditionally. The switch used to
+    prove it is gone. `Interaction.PlayPlayerEmote` is exported so the harness
+    can fire the call directly; playstoptest asserts every field, and those
+    checks fail on the old one-liner.
+  - **Rule for this project from now on: an empty table is not an empty
+    struct.** Any UFunction argument that is a struct gets every field spelled
+    out. A grep found no other `{}` argument in the mod.
+  - `Scripts/HookConfig.lua` stays (all groups true) — it turned a blind hunt
+    into nine decisive runs, and it is the tool to reach for the next time
+    something crashes only in game.
+  - **Still to verify:** the full mod with the fix (the Pal-animation bisect run
+    crashed too, and that call passes no struct — so either it shares the same
+    poisoned memory or there is a second, smaller cause). If the full mod is
+    clean, this ships as **1.1.4**.
+  - **Answers for Dragón's questions, for the record:** the crash is inside
+    the game's code but reached THROUGH our hooks (UE4SS frames sit mid-stack);
+    and a "clean up on mod load" cannot help, because the mod loads once per
+    game launch, nothing is persisted to disk, and the damage is done while the
+    old world dies.
+    **Watch for in the next log:** whether a CANCELLED line ever appears when
+    Dragón confirms (it must not), and whether `ConfirmReturnTitle` fires on a
+    cancelled prompt.
+- **Bonded-Pal despawn:** stays a known issue.
+- **Three-boss layout:** Dragón will test it himself with a spawn/cheat mod.
+- **Own trust points (Dragón's idea, under discussion):** stop driving the bar
+  from the game's `FriendshipPoint` and keep PalBonds' own points instead,
+  granting the real trust only as the end-of-bond bonus. This would remove the
+  game's own +10 after a pet from the bar, and would make per-interaction
+  values fully ours to configure.
+- **Settings screen wishlist (Dragón):**
+  - language for toasts and tags (EN, ES, BR, JA, ...);
+  - end-of-bond trust bonus, 0 to 200000 (max trust rank);
+  - personality spawn weights (`PERSONALITY_TIERS`);
+  - value per interaction;
+  - rebindable Play / tags / passive-gain keys.
+  - **Dragón's call:** the goal is an in-game menu, starting with a settings
+    file first. Still open: where a user config survives Workshop updates.
+  - Own points: Dragón is interested; details later.
+- **Today's work: polish the two held-back features** (20% brief follow and
+  the 3000 self-defence reach) with live runs. The Workshop mods are off (no
+  `ActiveModList` in `PalModSettings.ini`). The local dev copy is on again
+  (`dwmapi.dll`, `enabled.txt`) with `mod/` + DEBUG_LOGGING true, and both
+  switches set to **true in the game copy only**; `mod/` still has them false
+  (= shipped 1.1.3). With the switches on, every harness test passes except
+  bosstest G, which asserts the shipped (off) state.
+  - Still to watch from run 5:
+    - the release goes through `Combat.StopFollowing`, which can leave a
+      self-trainer follow action on the wild Pal;
+    - hitting the Pal during its brief follow counts as betrayal;
+    - "no readable sensor, friendly preset not written".
 
 **Real player reports to fold in (Steam Workshop, LuWicki97, read 2026-09-15):**
 - *"been testing this with a friend via invite code. I befriended a digtoise

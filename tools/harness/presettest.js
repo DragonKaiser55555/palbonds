@@ -73,5 +73,17 @@ expect('Discover_Greater= Battle (engages what it notices)', slot('Discover_Grea
 expect('Damaged_Equal   = Ignore (no retaliation pile-on)', slot('Damaged_Equal'), '0');
 expect('Damaged_Player  = Ignore (never its trainer)', slot('Damaged_Player'), '0');
 
+// 2026-09-17: the real Personality.ResetForNewWorld runs here. The
+// world-change test stubs this module, so that one can only prove Combat
+// CALLS it; this proves the real body executes and reports what it dropped.
+// (Seeding a record first is not possible here: GetStableId needs a real
+// handle, which this prelude does not fake.)
+console.log('\n=== WORLD CHANGE (the real reset must run clean) ===');
+run('__SAW_RESET = false', 'arm');
+const resetErr = run('P.ResetForNewWorld()', 'reset');
+expect('it runs without error', resetErr === null ? 'true' : String(resetErr), 'true');
+run('for _, m in ipairs(__LOG) do if m:find("[PalBonds/Personality] [WORLD-RESET]", 1, true) then __SAW_RESET = true end end', 'scan');
+expect('and says what it dropped', str('__SAW_RESET'), 'true');
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);

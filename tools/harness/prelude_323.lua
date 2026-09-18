@@ -100,7 +100,11 @@ ExecuteInGameThreadWithDelay = function(ms, fn)
   __PENDING[#__PENDING + 1] = fn
   return true
 end
-ExecuteInGameThread = function(fn) return true end
+ExecuteInGameThread = function(fn)
+  __GAME_THREAD_CALLS = (__GAME_THREAD_CALLS or 0) + 1
+  if type(fn) == "function" then fn() end
+  return true
+end
 LoopAsync = function() return true end
 FindFirstOf = function(n) if n == "PalPlayerCharacter" then return __PLAYER end return nil end
 FindAllOf = function(n)

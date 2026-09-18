@@ -8,15 +8,25 @@
 //      that cannot install yet retries without searching.
 //   B. Personality: crossing 20% starts Trust's brief follow for EVERY wild Pal
 //      (Curious too, and a Timid Pal of a friendly species); on release it gets
-//      the friendly preset and a re-sense, nothing else. [WON-OVER-SPY] reports it.
+//      the friendly preset and a re-sense, nothing else.
 //   C. Interaction: a pet grants points only once a NEW petting animation is seen.
 //   D. Combat: a self-defence fight may reach 3000 from the player (player fights keep 1800).
 //   E. Trust: every boss (BOSS_/GYM_/RAID_ id, _BOSS/_GYM/_RAID class, or a boss bar seen) gets x2.
 //   B7: human NPCs show Normal and their AI is never touched by the 20% reset.
-//   G. 1.1.3 as shipped: FRIENDLY_BRIEF_FOLLOW and SELF_DEFENCE_EXTENDED_REACH
-//      off = the 1.1.2 behaviour (B and D switch them on for their checks).
 //   F. Trust.StartBriefFollow: real follow, released once calm (min 3 s, max 15 s),
 //      kept if the bar passed 50%.
+//   R. 1.1.4 forgiveness (Personality): crossing 20% remembers what the Pal was;
+//      RevertForgiveness puts back its tag AND AI (rolled donor, or its species
+//      preset for a Normal roll); one forgiveness per Pal, ever; humans keep
+//      their AI untouched.
+//   U. 1.1.4 forgiveness (Trust): a PLAYER hit below 50% (or during the
+//      calm-down) empties the bar and reverts the Pal — no betrayal, no scarred
+//      status; the calm-down ends without Friendly being written; bonded Pals keep
+//      the old rules; Pal-vs-Pal damage costs nothing; both damage hooks reach it
+//      and a hit reported twice counts once.
+//   G. 1.1.4 as shipped: the calm-down is the behaviour (no switch), for calm
+//      and angry Pals alike; no dev instrument ships (spies, HookConfig,
+//      Profiler); the 3000 self-defence reach is off.
 //
 // Usage: node bosstest.js <SCRIPTS>
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
@@ -299,7 +309,6 @@ function briefState(diagnostics, startResult) {
     '__BRIEF = {}',
     'package.loaded["Trust"] = { StartBriefFollow = function(pal, hates, done) __BRIEF.pal = pal; __BRIEF.hates = hates; __BRIEF.done = done; return ' + (startResult ? 'true' : 'false') + ' end }',
     '__SENSOR.AIResponsePreset = nil',
-    'P.FRIENDLY_BRIEF_FOLLOW = true',
   ].join('\n'), 'brief-stub');
   return S;
 }
@@ -309,8 +318,6 @@ console.log('\n=== B1. 20% on an attacking Timid Pal: the brief follow starts, a
   const S = briefState(true, true);
   S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; __ST.presetClassName = "BP_AIResponsePreset_friendly_C"; __HATE_TARGET = __PLAYER; __LOG = {}; __CALLS = {}', 'arm');
   S.must('P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)', 'cross');
-  expect('spy logs it at 20% attacking the player', S.str('__grep("WON%-OVER%-SPY")'),
-    (t) => t.indexOf('at 20%: fighting=true action=BP_AIAction_CombatPal_C hateTarget=BP_Player_Female_C (THE PLAYER)') !== -1);
   expect('the brief follow is started for this Pal', S.str('__BRIEF.pal == __PAL'), (v) => v === 'true');
   expect('no cancel, no rest, no re-sense yet', S.str('#__CALLS'), (v) => v === '0');
   expect('no preset written yet', S.str('__SENSOR.AIResponsePreset == nil'), (v) => v === 'true');
@@ -322,7 +329,6 @@ console.log('\n=== B1. 20% on an attacking Timid Pal: the brief follow starts, a
   expect('released: a plain friendly preset (player slots NOT overridden)', S.str('__preset()'), (v) => v === '5,2,1,2');
   expect('re-sensed without cancelling anything', S.str('__called("RequestSightCheckAsync") and not __called("AllCancelAction")'), (v) => v === 'true');
   expect('rolled tier recorded as friendly', S.str('__ST.rolledTier'), (v) => v === 'friendly');
-  expect('the spy watch starts', S.str('#__PENDING'), (v) => v === '1');
   S.must('__LOG = {}; __CALLS = {}; __BRIEF = {}; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)', 'again');
   expect('a later interaction does nothing again', S.str('tostring(__BRIEF.pal) .. "," .. #__CALLS'), (v) => v === 'nil,0');
 }
@@ -349,13 +355,6 @@ console.log('\n=== B4. Brief follow could not start: friendly preset only ===');
   S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; __LOG = {}; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)', 'cross');
   expect('friendly preset written', S.str('__preset()'), (v) => v === '5,2,1,2');
   expect('logged', S.str('__grep("brief follow not started")'), (t) => t !== '');
-}
-
-console.log('\n=== B5. Diagnostics off: no spy lines ===');
-{
-  const S = briefState(false, true);
-  S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; __HATE_TARGET = __PLAYER; __LOG = {}; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL); __BRIEF.done(true, 3, false)', 'cross');
-  expect('no spy lines, no watch', S.str('__grep("SPY") .. #__PENDING'), (v) => v === '0');
 }
 
 // ---------------------------------------------------------------------------
@@ -594,23 +593,158 @@ function trustState() {
   expect('once it is a real follower: passive friendship again', S.str('__ADDED > 0'), (v) => v === 'true');
 }
 
-console.log('\n=== G. 1.1.3 as shipped: both held-back features switched off ===');
+// ---------------------------------------------------------------------------
+// 1.1.4 — THE FORGIVENESS RULES (Dragón, 2026-09-18). "Bonding is a status
+// that starts or should start at 50% friendship." Below it, a player hit
+// empties the bar and a Pal that had forgiven goes back to what it was — tag
+// and AI. One forgiveness per Pal, ever.
+console.log('\n=== R1. Forgiving remembers what the Pal was; a hit reverts tag AND AI ===');
+{
+  const S = briefState(false, true);
+  S.must('__ST.disposition = "warlike"; __ST.rolledTier = "warlike"; __ST.presetClassName = "BP_AIResponsePreset_escape_C"', 'arm');
+  S.must('P.MaybeBecomeFriendlyByBar("PALID-1", __PAL); __BRIEF.done(true, 3.5, false)', 'forgive');
+  expect('(setup) it is Friendly now', S.str('__ST.disposition .. "," .. __ST.rolledTier'), (v) => v === 'friendly,friendly');
+  expect('what it was is on record', S.str('__ST.preForgive.disposition .. "," .. __ST.preForgive.rolledTier'), (v) => v === 'warlike,warlike');
+  S.must('__LOG = {}; __CALLS = {}; __R = P.RevertForgiveness("PALID-1", __PAL)', 'hit');
+  expect('reverted', S.str('__R'), (v) => v === 'true');
+  expect('the tag reads what it was (Hostile)', S.str('__ST.disposition .. "," .. __ST.rolledTier'), (v) => v === 'warlike,warlike');
+  expect('its own AI is written back: the rolled tier\'s preset', S.str('__grep("original AI is back %(BP_AIResponsePreset_Warlike%)")'), (t) => t !== '');
+  expect('re-sensed without cancelling its reaction to the hit', S.str('__called("RequestSightCheckAsync") and not __called("AllCancelAction")'), (v) => v === 'true');
+  expect('logged as the one forgiveness spent', S.str('__grep("one forgiveness is spent")'), (t) => t !== '');
+}
+
+console.log('\n=== R2. Only once: no second revert, and no second forgiveness ===');
+{
+  const S = briefState(false, true);
+  S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL); __BRIEF.done(true, 3, false)', 'forgive');
+  S.must('P.RevertForgiveness("PALID-1", __PAL)', 'hit1');
+  expect('a second revert does nothing', S.str('P.RevertForgiveness("PALID-1", __PAL)'), (v) => v === 'false');
+  S.must('__BRIEF = {}; __CALLS = {}; __SENSOR.AIResponsePreset = nil; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)', 'cross-again');
+  expect('crossing 20% again: no calm-down', S.str('tostring(__BRIEF.pal)'), (v) => v === 'nil');
+  expect('...no switch to Friendly', S.str('__ST.disposition'), (v) => v === 'escape');
+  expect('...and nothing touched on the Pal', S.str('#__CALLS .. "," .. tostring(__SENSOR.AIResponsePreset == nil)'), (v) => v === '0,true');
+}
+
+console.log('\n=== R3. A Pal that rolled Normal gets its species preset back ===');
+{
+  const S = briefState(false, true);
+  S.must('__ST.disposition = "escape"; __ST.rolledTier = "normal"; __ST.presetClassName = "BP_AIResponsePreset_Escape_to_Battle_C"', 'arm');
+  S.must('P.MaybeBecomeFriendlyByBar("PALID-1", __PAL); __BRIEF.done(true, 3, false); __LOG = {}; P.RevertForgiveness("PALID-1", __PAL)', 'cycle');
+  expect('its species preset, not a donor', S.str('__grep("original AI is back %(BP_AIResponsePreset_Escape_to_Battle%)")'), (t) => t !== '');
+  expect('and the tag it had', S.str('__ST.disposition .. "," .. __ST.rolledTier'), (v) => v === 'escape,normal');
+}
+
+console.log('\n=== R4. Nothing to revert: a Pal that never forgave, and a human ===');
+{
+  const S = briefState(false, true);
+  S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; __CALLS = {}', 'arm');
+  expect('never forgave: nothing happens', S.str('P.RevertForgiveness("PALID-1", __PAL) == false and #__CALLS == 0 and __ST.disposition == "escape"'), (v) => v === 'true');
+}
+{
+  const S = briefState(false, true);
+  S.must('__ST.isHuman = true; __ST.disposition = "normal"; __ST.rolledTier = "normal"; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL); __CALLS = {}; __SENSOR.AIResponsePreset = nil', 'human');
+  S.must('P.RevertForgiveness("PALID-1", __PAL)', 'hit');
+  expect('a human: tag back, AI never touched', S.str('__ST.disposition .. "," .. #__CALLS .. "," .. tostring(__SENSOR.AIResponsePreset == nil)'), (v) => v === 'normal,0,true');
+}
+
+// Trust side: the hit itself. Personality is stubbed by prelude_323, so what
+// is checked for it is that Trust CALLS RevertForgiveness; R1-R4 cover the
+// real Personality function.
+function hitState() {
+  const S = trustState();
+  S.must([
+    'local p = __PAL.CharacterParameterComponent:GetIndividualParameter()',
+    'p.AddFriendShip = function(_, n) __POINT = __POINT + n end',
+    'P = require("Personality"); __REVERTED = 0',
+    'P.GetStableId = function(a) return "ID" end',
+    'P.RevertForgiveness = function(id, pal) __REVERTED = __REVERTED + 1 return true end',
+    'require("Capture").IsAlreadyOwned = function() return false end',
+    'function __count(x) local n = 0 for _, m in ipairs(__ALLLOG) do if m:find(x, 1, true) then n = n + 1 end end return n end',
+  ].join('\n'), 'hit-setup');
+  return S;
+}
+
+console.log('\n=== U1. A player hit below 50%: bar to 0, back to what it was, no betrayal ===');
+{
+  const S = hitState();
+  S.must('T.OnInteractionSucceeded(__PAL)', 'interact');
+  expect('(setup) the Pal has a trust record and 30 points', S.str('T.HasBondingState(__PAL) and __POINT'), (v) => v === '30');
+  S.must('T.OnFollowerDamaged(__PAL, true)', 'hit');
+  expect('the bar drops to 0', S.str('__POINT'), (v) => v === '0');
+  expect('its personality is sent back', S.str('__REVERTED'), (v) => v === '1');
+  expect('logged as an unbonded hit, not a betrayal', S.str('__has("[UNBONDED-HIT]") and not __has("BETRAYAL —")'), (v) => v === 'true');
+  expect('not scarred: it can still be bonded', S.str('tostring(require("Capture").HasPermanentlyFled and require("Capture").HasPermanentlyFled(__PAL))'), (v) => v !== 'true');
+  S.must('T.OnFollowerDamaged(__PAL, true)', 'same-hit');
+  expect('the second hook reporting the same hit is ignored', S.str('__count("[UNBONDED-HIT]") .. "," .. __REVERTED'), (v) => v === '1,1');
+}
+
+console.log('\n=== U2. A hit during the calm-down ends it, and it never turns Friendly ===');
+{
+  const S = hitState();
+  S.must('T.StartBriefFollow(__PAL, __hates, __done)', 'start');
+  S.must('__CLOCK = __CLOCK + 1; T.OnFollowerDamaged(__PAL, true)', 'hit');
+  expect('the calm-down is over', S.str('T.IsBriefFollowing(__PAL) or C.IsFollowing(__PAL)'), (v) => v === 'false');
+  expect('the bar drops to 0 and the personality goes back', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '0,1');
+  S.must('__ANGRY = false; for i = 1, 20 do __CLOCK = __CLOCK + 1; __PUMP(1) end', 'later');
+  expect('the release never runs, so Friendly is never written', S.str('tostring(__DONE)'), (v) => v === 'nil');
+  expect('no betrayal', S.str('__has("BETRAYAL —")'), (v) => v === 'false');
+}
+
+console.log('\n=== U3. At 50% and above nothing changed: a hit on a bonded follower ===');
+{
+  const S = hitState();
+  S.must('T.OnInteractionSucceeded(__PAL); T.StartFollowing(__PAL)', 'bond');
+  S.must('__POINT = 300; T.OnFollowerDamaged(__PAL, true)', 'hit');
+  expect('the bonded rules still apply (half the bar, not an unbonded hit)', S.str('__has("the player hit a bonding Pal") and not __has("[UNBONDED-HIT]")'), (v) => v === 'true');
+  expect('no personality revert for a bonded Pal', S.str('__REVERTED'), (v) => v === '0');
+}
+
+console.log('\n=== U4. Damage that is not the player\'s costs nothing below 50% ===');
+{
+  const S = hitState();
+  S.must('T.OnInteractionSucceeded(__PAL); T.OnFollowerDamaged(__PAL, false)', 'pal-hit');
+  expect('bar untouched, no revert', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '30,0');
+}
+
+console.log('\n=== U5. The real route: a player hit arriving through the game\'s damage hooks ===');
+{
+  const S = hitState();
+  S.must('T.OnInteractionSucceeded(__PAL)', 'interact');
+  S.must('__FIRE("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", nil, __arg(__PLAYER), __arg(__PAL), __arg(10))', 'delegate');
+  expect('the damage delegate reaches the unbonded rule', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '0,1');
+  S.must('__FIRE("/Script/Pal.PalHate:DamageEvent", nil, __arg({ Attacker = __PLAYER, Defender = __PAL, Damage = 10 }))', 'hate');
+  expect('the hate hook reporting the same hit changes nothing', S.str('__count("[UNBONDED-HIT]") .. "," .. __REVERTED'), (v) => v === '1,1');
+}
+{
+  const S = hitState();
+  S.must('T.OnInteractionSucceeded(__PAL)', 'interact');
+  S.must('__FIRE("/Script/Pal.PalHate:DamageEvent", nil, __arg({ Attacker = __PLAYER, Defender = __PAL, Damage = 10 }))', 'hate-only');
+  expect('the hate hook alone reaches it too', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '0,1');
+}
+
+console.log('\n=== G. 1.1.4 as shipped ===');
 {
   const S = spyState(false);
   S.must([
     '__BRIEF = {}',
     'package.loaded["Trust"] = { StartBriefFollow = function(pal) __BRIEF.pal = pal return true end }',
   ].join('\n'), 'stub');
-  expect('brief follow is off by default', S.str('P.FRIENDLY_BRIEF_FOLLOW'), (v) => v === 'false');
-  S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; __ST.presetClassName = "BP_AIResponsePreset_escape_C"; __SENSOR.AIResponsePreset = nil; __CALLS = {}', 'arm');
+  expect('the old 1.1.2 switch is gone: the calm-down IS the behaviour', S.str('tostring(P.FRIENDLY_BRIEF_FOLLOW)'), (v) => v === 'nil');
+  expect('no forgiveness spy ships', S.str('tostring(P.WON_OVER_SPY) .. "," .. tostring(P.DescribeFight)'), (v) => v === 'nil,nil');
+  expect('no crash-hunt switchboard and no profiler ship', S.str('tostring(pcall(require, "HookConfig")) .. "," .. tostring(pcall(require, "Profiler"))'), (v) => v === 'false,false');
+  S.must('__ST.disposition = "escape"; __ST.rolledTier = "escape"; __SENSOR.AIResponsePreset = nil; __CALLS = {}', 'arm');
   S.must('P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)', 'cross');
-  expect('1.1.2 behaviour: no brief follow', S.str('__BRIEF.pal == nil'), (v) => v === 'true');
-  expect('1.1.2 behaviour: friendly preset written and the reset (with cancel) runs', S.str('__preset() .. "," .. tostring(__called("AllCancelAction"))'), (v) => v === '5,2,1,2,true');
+  expect('an angry Pal gets the calm-down', S.str('__BRIEF.pal == __PAL'), (v) => v === 'true');
+  expect('and nothing is cancelled on it (the old reset is gone)', S.str('__called("AllCancelAction")'), (v) => v === 'false');
 }
 {
   const S = spyState(false);
-  S.must('__ST.disposition = "friendly"; __ST.rolledTier = "friendly"; __CALLS = {}; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)', 'curious');
-  expect('1.1.2 behaviour: an already-friendly (Curious) Pal is left alone', S.str('#__CALLS .. "," .. tostring(__ST.becameFriendlyByBar)'), (v) => v === '0,nil');
+  S.must([
+    '__BRIEF = {}',
+    'package.loaded["Trust"] = { StartBriefFollow = function(pal) __BRIEF.pal = pal return true end }',
+    '__ST.disposition = "friendly"; __ST.rolledTier = "friendly"; P.MaybeBecomeFriendlyByBar("PALID-1", __PAL)',
+  ].join('\n'), 'curious');
+  expect('a calm (Curious) Pal gets it too', S.str('__BRIEF.pal == __PAL'), (v) => v === 'true');
 }
 {
   const S = newState('prelude_323.lua');
@@ -621,9 +755,9 @@ console.log('\n=== G. 1.1.3 as shipped: both held-back features switched off ===
     '__SHOOTER = __obj("BP_Carbunclo_C_7"); __SHOOTER.K2_GetActorLocation = function() return __vec(2500, 0, 0) end',
     'function __has(x) for _, m in ipairs(__ALLLOG) do if m:find(x, 1, true) then return true end end return false end',
   ].join('\n'), 'sd');
-  expect('extended self-defence reach is off by default', S.str('C.SELF_DEFENCE_EXTENDED_REACH'), (v) => v === 'false');
+  expect('extended self-defence reach stays off (not in 1.1.4)', S.str('C.SELF_DEFENCE_EXTENDED_REACH'), (v) => v === 'false');
   S.must('__FIRE("/Script/Pal.PalHate:DamageEvent", nil, __arg({ Attacker = __SHOOTER, Defender = __PAL, Damage = 10 })); __CLOCK = __CLOCK + 0.5; C.IssueFollowMoveOrder(__PAL, __vec(0, 0, 0), __PLAYER)', 'shot');
-  expect('1.1.2 behaviour: a shooter 2500 away is out of reach (limit 1800)', S.str('__has("limit 1800")'), (v) => v === 'true');
+  expect('a shooter 2500 away is out of reach (limit 1800)', S.str('__has("limit 1800")'), (v) => v === 'true');
 }
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));

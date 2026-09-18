@@ -21,7 +21,7 @@ npm install fengari
 
 ```bash
 node syntaxcheck.js <SCRIPTS>                      # every file compiles
-node harness3.js    <SCRIPTS> prelude.lua          # main.lua loads; expect 15 hooks (boss bar hook added 2026-09-16)
+node harness3.js    <SCRIPTS> prelude.lua          # main.lua loads; expect 17 hooks (two ESC-menu quit hooks added 2026-09-17)
 node assisttest.js  <SCRIPTS> prelude_323.lua      # combat assist reaches the hook
 node assisttest.js  <SCRIPTS> prelude_323.lua noaddr   # ...and fails OPEN without GetAddress
 node td2test.js     <SCRIPTS> prelude_323.lua      # target discipline + force-march recall
@@ -33,9 +33,8 @@ node selfdefencetest.js <SCRIPTS> prelude_323.lua  # a companion hit outside a p
 node captest.js     <SCRIPTS> prelude_323.lua      # per-Pal install caps recover (rate, not lifetime)
 node reachtest.js   <SCRIPTS> prelude_323.lua      # no fight past the recall distance or during a recall
 node hitcosttest.js <SCRIPTS> prelude_323.lua      # a multi-hit burst must not walk the object array per hit
-node profiletest.js <SCRIPTS>                      # the dev profiler: off = untouched globals, on = same 15 hooks, returns/errors pass through, reports only at depth 0
 node perffixtest.js <SCRIPTS>                      # microstutter fixes: PlayerRef keeps the player, no sensor-index rebuild on a new Pal, hook-fed personality scan, hook-fed nameplates -- and every fallback still searches
-node bosstest.js    <SCRIPTS>                      # boss HP bar gets tag + trust bar from its hook, one search only; [WON-OVER-SPY] 20% reset spies (silent with diagnostics off)
+node bosstest.js    <SCRIPTS>                      # boss HP bar; the 20% calm-down; 1.1.4 forgiveness rules (R: revert tag+AI, one forgiveness; U: a player hit below 50% empties the bar, no betrayal); G: as shipped
 node worldchangetest.js <SCRIPTS>                 # the 1.1.2 world-change crash: PlayerRef lets go of a torn-down player, a follower triggers a 4 s re-check, the fast loop resets (fails on 1.1.2, section C passes on 1.1.1)
 node feedtest.js    <SCRIPTS> prelude_emote.lua    # feed amount by item rarity
 node playstoptest.js <SCRIPTS> prelude_emote.lua   # the player's cheer stops with the Pal's Play animation
@@ -49,7 +48,7 @@ Every suite prints `ALL CHECKS PASSED` or a list of failures and exits non-zero.
 `hoistcheck` flags `tick` in `Combat.lua` (the word appears inside a log string)
 and `grant_wild_interaction` in `Interaction.lua` (forward-declared at line 144
 in a form the checker doesn't recognise). `undefcheck` flags `continueFn` and
-`onFire`, which are function parameters, and `labelFn` in `Profiler.lua` (also a parameter).
+`onFire`, which are function parameters.
 
 ## Why the preludes matter
 

@@ -61,5 +61,17 @@ run('__CANCELLED = {}; __CURRENT = nil', 'idle');
 expect('the player already moved (no action) -> nothing to do, no error', str('I.StopPlayerCheer(__P)'), 'false');
 expect('no player at all -> no error', str('I.StopPlayerCheer(nil)'), 'false');
 
+// 2026-09-17 — the world-change crash. What the bisect proved is that an
+// action STARTED BY THIS MOD poisons the next world load, and that the
+// "fix" which spelled out FActionDynamicParameter only worked because UE4SS
+// refused the call ("[push_classproperty] Error") so the emote never played.
+// The cheer now goes through UPalActionComponent::PlayAction, which takes no
+// struct at all — nothing left uninitialised, and nothing networked.
+console.log('\n=== THE CHEER GOES THROUGH THE ACTION COMPONENT (no struct) ===');
+run('__LAST_EMOTE_TARGET = nil; __LAST_EMOTE_CLASS = nil; __LAST_ACTION_PARAM = nil; I.PlayPlayerEmote(0)', 'press');
+expect('the cheer is played on the player', str('__LAST_EMOTE_TARGET == __PAWN'), 'true');
+expect('with the emote class it resolved', str('__LAST_EMOTE_CLASS ~= nil'), 'true');
+expect('and the networked route with its empty struct is gone', str('tostring(__LAST_ACTION_PARAM)'), 'nil');
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);

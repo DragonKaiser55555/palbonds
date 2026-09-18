@@ -888,9 +888,9 @@ end
 -- Any one of those means "do not call this abandoning the player".
 --
 -- 2026-09-15: also returns WHY (a short reason) and, for a hate target, the
--- target itself, so the [LEASH-SPY] diagnostic in Trust.lua can say what kept a
--- distant follower from being declared abandoned. The first return value is
--- unchanged, so every existing caller behaves exactly as before.
+-- target itself, so a log line can say what kept a distant follower from being
+-- declared abandoned. The first return value is unchanged, so every existing
+-- caller behaves exactly as before.
 function Combat.IsBusyFighting(pal)
     if pal == nil then return false, "no pal" end
     if Combat.IsSuspendedForCombat(pal) then return true, "follow suspended for a fight" end
@@ -2209,6 +2209,45 @@ local lastKnownPlayerActor = nil
 local playerCacheAgePasses = 9999
 local PLAYER_CACHE_MAX_AGE_PASSES = 40
 
+-- ===================================================================
+-- WORLD-CHANGE WATCH (three-hundred-and-twenty-eighth pass, 2026-09-17)
+-- ===================================================================
+-- The crash Dragón reproduced on demand: interact with a wild Pal, have
+-- NOTHING following you, quit to the title, load a world -> 0x338.
+--
+-- Cause: the fast loop's world-change check sat BELOW `next(BondingState) == nil`,
+-- so with nothing bonded the loop returned before it ever looked at the player.
+-- Quitting therefore went unnoticed, PlayerRef kept the old world's character,
+-- and every module kept its own references to Pals that no longer existed. The
+-- brief Friendly follow made this easy to hit, because it puts a Pal on the
+-- follower list and then takes it off again -- so a run could end with the
+-- tables empty and plenty still cached.
+--
+-- The watch below therefore runs ABOVE that early-out, on its own cadence, and
+-- is deliberately cheap:
+--   * once a second, not every pass;
+--   * it reuses the cached player and only asks IsValid() -- PlayerRef does the
+--     engine-level liveness check itself, once a second (see PlayerRef.lua);
+--   * once the player is gone it LATCHES, so waiting at the title screen costs
+--     one lookup every two seconds instead of the ten-a-second object scan the
+--     old code did in that state.
+-- The latch also means the reset runs exactly once per world change, and
+-- ResetForNewWorld is no longer gated on us having followers -- being bonded to
+-- something was never a precondition for holding stale references.
+--
+-- Timed off os.clock rather than counted in passes, because this loop changes
+-- rate: 100ms while there is a follower to service, 1000ms when idle. A
+-- pass count that means one second with a follower would have meant TEN
+-- seconds idle -- which is precisely the state a quit with nothing following
+-- happens in, so the check would have been slowest exactly when it matters.
+local WORLD_WATCH_INTERVAL = 1.0               -- while a world is up
+local WORLD_WATCH_LATCHED_INTERVAL = 2.0       -- while waiting for a new world
+local WORLD_WATCH_QUIT_EXPECTED_INTERVAL = 0.2 -- right after a quit was asked for
+local WORLD_CLOSING_CANCEL_SECONDS = 10.0      -- same player still there = cancelled
+local lastWorldWatchAt = nil
+local worldResetLatched = false
+local quitExpectedUntilClock = nil
+
 -- Re-writes Trainer on this Pal's live follow action. Called from the follow
 -- tick; a no-op for any Pal that never got a follow action installed.
 local function reassert_follow_trainer(pal, key, playerActor)
@@ -2433,8 +2472,14 @@ end
 -- nothing of ours is left queued against a dying world.
 local shuttingDown = false
 local lastSeenPlayerName = nil
+-- 2026-09-17: also true while a confirmed quit is in progress. Indicator's
+-- nameplate sweep and Trust's follower tick already ask this before touching
+-- anything, so the moment between "the player confirmed" and the world actually
+-- dying stops refilling the tables Combat.OnQuitConfirmed just emptied.
 function Combat.IsShuttingDown()
-    return shuttingDown
+    if shuttingDown then return true end
+    local ok, closing = pcall(function() return require("PlayerRef").IsWorldClosing() end)
+    return ok and closing == true
 end
 function Combat.MarkShuttingDown(why)
     if shuttingDown then return end
@@ -2517,6 +2562,113 @@ function Combat.ResetForNewWorld(why)
         local okC, CaptureMod = pcall(require, "Capture")
         if okC and CaptureMod and CaptureMod.ResetForNewWorld then CaptureMod.ResetForNewWorld() end
     end)
+
+    -- Three-hundred-and-twenty-eighth pass (2026-09-17): the three modules that
+    -- were never reset. Combat, Trust and Capture were cleared here from the
+    -- start, but Indicator (nameplate and boss bars, plus the Pal each one
+    -- belongs to), Personality (per-Pal records, sensors, pawns) and Interaction
+    -- (radial-menu and aim caches) kept their references to the old world for
+    -- the life of the process. Each is wrapped on its own so a failure in one
+    -- cannot stop the others.
+    safe_call(function()
+        local okI, IndicatorMod = pcall(require, "Indicator")
+        if okI and IndicatorMod and IndicatorMod.ResetForNewWorld then IndicatorMod.ResetForNewWorld() end
+    end)
+    safe_call(function()
+        local okP, PersonalityMod = pcall(require, "Personality")
+        if okP and PersonalityMod and PersonalityMod.ResetForNewWorld then PersonalityMod.ResetForNewWorld() end
+    end)
+    safe_call(function()
+        local okX, InteractionMod = pcall(require, "Interaction")
+        if okX and InteractionMod and InteractionMod.ResetForNewWorld then InteractionMod.ResetForNewWorld() end
+    end)
+end
+
+-- The world-change watch itself: see the constants above for the cadence and
+-- why this cannot live below the follower early-out. Returns nothing; its whole
+-- job is to notice that the player we know about is gone and let everything go.
+local function world_change_watch()
+
+    -- The world is closing (the player confirmed a quit and everything was
+    -- released then and there). Nothing to detect any more; the only question
+    -- left is how it ends. PlayerRef.ProbeForNewPlayer answers it: a different
+    -- player means the new world is up, the same one still standing after
+    -- WORLD_CLOSING_CANCEL_SECONDS means the quit was cancelled.
+    local okClosing, closing = pcall(function() return require("PlayerRef").IsWorldClosing() end)
+    if okClosing and closing then
+        local okProbe, verdict = pcall(function()
+            return require("PlayerRef").ProbeForNewPlayer(WORLD_CLOSING_CANCEL_SECONDS)
+        end)
+        if okProbe and verdict == "new-world" then
+            worldResetLatched = false
+            quitExpectedUntilClock = nil
+            Logger.log("[PalBonds/Combat] [WORLD-RESET] a new world is up — watching from scratch")
+        elseif okProbe and verdict == "cancelled" then
+            worldResetLatched = false
+            quitExpectedUntilClock = nil
+            Logger.log("[PalBonds/Combat] [WORLD-RESET] the quit was CANCELLED — the world is still here, and the mod starts this world over (any bond from before the quit prompt is gone)")
+        end
+        return
+    end
+
+    -- Straight to PlayerRef.Get() (find_player), deliberately WITHOUT consulting
+    -- this file's own lastKnownPlayerActor first. A destroyed player still
+    -- answers UE4SS's obj:IsValid() truthfully enough to pass -- that is the
+    -- exact bug 1.1.2 shipped -- and the only thing that catches it is the
+    -- engine's own UKismetSystemLibrary::IsValid, which PlayerRef does once a
+    -- second inside Get(). Asking our own cache first would reintroduce the
+    -- crash inside the code meant to prevent it (caught by the harness, not in
+    -- game, on the first run of section D).
+    --
+    -- So the cost of a watch tick is what PlayerRef already pays: one engine
+    -- IsValid on the kept character, a real search only when that fails.
+    local player = find_player()
+    if player ~= nil then
+        lastKnownPlayerActor = player
+        playerCacheAgePasses = 0
+    end
+    if player == nil then
+        if not worldResetLatched then
+            worldResetLatched = true
+            quitExpectedUntilClock = nil
+            Combat.ResetForNewWorld("the player left the world")
+        end
+        return
+    end
+
+    -- A world is up and the player is readable: re-arm for the next change.
+    if worldResetLatched then
+        worldResetLatched = false
+        Logger.log("[PalBonds/Combat] [WORLD-RESET] a player is readable again — a new world is up, watching from scratch")
+    end
+end
+
+-- Called from the hook on the ESC menu's return-to-title. It deliberately
+-- CLEARS NOTHING: if that widget function turns out to fire when the confirm
+-- box opens rather than when it is confirmed, dropping our state there would
+-- silently break a bond the player then decided to keep. All it does is speed
+-- the watch up for a few seconds, so the moment the player really does leave is
+-- caught immediately instead of up to a second later.
+function Combat.ExpectWorldChange(why)
+    quitExpectedUntilClock = os.clock() + 20.0
+    pcall(function() require("PlayerRef").ExpectWorldChange(20.0) end)
+    Logger.log("[PalBonds/Combat] [WORLD-RESET] " .. tostring(why) ..
+        " — watching for the world to go away every pass for the next 20s (nothing dropped yet)")
+end
+
+-- The player CONFIRMED leaving the world. Everything is released HERE, in the
+-- hook, on the game thread, while the world is still alive -- because Dragón's
+-- second crash log proved the loop gets no further passes once a quit is
+-- confirmed, so anything left until "we notice the world went" is never
+-- released at all. PlayerRef is told first: it stops handing out the player, so
+-- the nameplate hook, the personality resolver and the trust recorder cannot
+-- refill the tables during the moment the world is still up.
+function Combat.OnQuitConfirmed(why)
+    if worldResetLatched then return end
+    worldResetLatched = true
+    quitExpectedUntilClock = nil
+    pcall(function() require("PlayerRef").SetWorldClosing(true) end)
+    Combat.ResetForNewWorld(why)
 end
 function Combat.StartShutdownWatch()
     Logger.log("[PalBonds/Combat] [SHUTDOWN] watch active — the player is re-resolved on every pass, so a destroyed player stops all loops immediately")
@@ -2553,6 +2705,81 @@ function Combat.StartShutdownWatch()
     -- using only calls known to work here. See the player-identity check in the
     -- fast loop.
     Logger.log("[PalBonds/Combat] [WORLD-RESET] armed via player-identity polling (this UE4SS build exposes no world-lifecycle callbacks to Lua)")
+
+    -- Pass 328 (2026-09-17): what the engine will not tell us, the GAME does.
+    -- No world-lifecycle callback exists for Lua here, but the ESC menu's own
+    -- return-to-title is an ordinary Blueprint function, so RegisterHook reaches
+    -- it like any other:
+    --
+    --   WBP_MenuESC_C:ConfirmReturnTitle
+    --   WBP_MenuESC_C:OnReturn2Title
+    --
+    -- Which of the two fires, and whether it fires when the confirm box opens or
+    -- when it is confirmed, is unknown -- so neither drops anything (see
+    -- Combat.ExpectWorldChange). Quitting is still DETECTED by the watch; this
+    -- only tells the watch to look every pass instead of once a second, so the
+    -- references are released the instant the world goes rather than up to a
+    -- second later. The widget class is not loaded at mod start, so this retries
+    -- on the same cadence as the nameplate hooks.
+    -- 2026-09-17, after the second crash log: both of these fired in the same
+    -- second when Dragón quit, and the log ended right there -- no further loop
+    -- pass ever ran. So detection alone cannot work, and `release` is what the
+    -- confirm-shaped one does now:
+    --
+    --   ConfirmReturnTitle -> release everything immediately (Combat.OnQuitConfirmed)
+    --   OnReturn2Title     -> only tighten the watch (Combat.ExpectWorldChange)
+    --
+    -- Split on purpose rather than releasing on both. If ConfirmReturnTitle
+    -- turns out to fire when the prompt merely OPENS, releasing there costs a
+    -- cancelled quit its bonds (recoverable, and the watch reports it as
+    -- CANCELLED in the log); releasing on the earlier of the two as well would
+    -- only make that more likely, and losing a bond is a real cost while the
+    -- crash is a certain one.
+    local QUIT_HOOK_PATHS = {
+        { path = "/Game/Pal/Blueprint/UI/UserInterface/ESCMenu/WBP_MenuESC.WBP_MenuESC_C:ConfirmReturnTitle", release = true },
+        { path = "/Game/Pal/Blueprint/UI/UserInterface/ESCMenu/WBP_MenuESC.WBP_MenuESC_C:OnReturn2Title", release = false },
+    }
+    local QUIT_HOOK_MAX_ROUNDS = 30
+    local QUIT_HOOK_RETRY_MS = 2000
+    local quitHooksInstalled = {}
+    local function register_quit_hooks(round)
+        local remaining = 0
+        for _, entry in ipairs(QUIT_HOOK_PATHS) do
+            local path, release = entry.path, entry.release
+            if not quitHooksInstalled[path] then
+                local shortName = path:match("([^:]+)$") or path
+                local ok, err = pcall(function()
+                    RegisterHook(path, function()
+                        if release then
+                            Combat.OnQuitConfirmed("the player confirmed leaving the world (" .. shortName .. ")")
+                        else
+                            Combat.ExpectWorldChange("the player used the ESC menu's " .. shortName)
+                        end
+                    end)
+                end)
+                if ok then
+                    quitHooksInstalled[path] = true
+                    Logger.log("[PalBonds/Combat] [WORLD-RESET] quit hook INSTALLED (round " ..
+                        tostring(round) .. "): " .. shortName)
+                else
+                    remaining = remaining + 1
+                    if round >= QUIT_HOOK_MAX_ROUNDS then
+                        Logger.log("[PalBonds/Combat] [WORLD-RESET] quit hook gave up on " .. shortName ..
+                            " after " .. tostring(round) .. " rounds (" .. tostring(err) ..
+                            ") — polling still catches the world change, just up to a second later")
+                    end
+                end
+            end
+        end
+        if remaining > 0 and round < QUIT_HOOK_MAX_ROUNDS then
+            pcall(function()
+                ExecuteInGameThreadWithDelay(QUIT_HOOK_RETRY_MS, function()
+                    register_quit_hooks(round + 1)
+                end)
+            end)
+        end
+    end
+    register_quit_hooks(1)
 end
 -- ===================================================================
 -- ACTION-CHANGE PROBE (three-hundred-and-thirteenth pass, 2026-09-12)
@@ -2749,6 +2976,27 @@ function Combat.StartTrainerReassertLoop()
             -- at all -- rather than on a table that empties for the duration of
             -- every fight. Caught by the pass-323 harness, which drives this
             -- loop for real rather than calling the recall directly.
+            --
+            -- Pass 328 (2026-09-17): the world-change watch runs ABOVE this
+            -- line. Everything below needs a follower to be worth doing; letting
+            -- go of a world that has closed does not, and putting it below here
+            -- is exactly what cost Dragón a reproducible crash.
+            local nowWatch = os.clock()
+            local watchInterval = WORLD_WATCH_INTERVAL
+            if quitExpectedUntilClock ~= nil then
+                if nowWatch < quitExpectedUntilClock then
+                    watchInterval = WORLD_WATCH_QUIT_EXPECTED_INTERVAL
+                else
+                    quitExpectedUntilClock = nil
+                end
+            elseif worldResetLatched then
+                watchInterval = WORLD_WATCH_LATCHED_INTERVAL
+            end
+            if lastWorldWatchAt == nil or (nowWatch - lastWorldWatchAt) >= watchInterval then
+                lastWorldWatchAt = nowWatch
+                world_change_watch()
+            end
+
             if next(BondingState) == nil then return end
 
             -- Age check FIRST: an actor destroyed by death or a loading screen
@@ -2822,14 +3070,22 @@ function Combat.StartTrainerReassertLoop()
             -- objects normally:
             --   player gone      -> the world is unloading
             --   player different -> a different world is up
+            --
+            -- Pass 328: both branches used to reset only if we happened to hold
+            -- followers or follow actions, and they could reset again on the
+            -- very next pass. They now share the watch's latch, so a world
+            -- change resets everything exactly once, whether or not anything
+            -- was bonded at the time.
             if player == nil then
-                if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
+                if not worldResetLatched then
+                    worldResetLatched = true
                     Combat.ResetForNewWorld("the player left the world")
                 end
                 return
             end
             if not safe_call(function() return player:IsValid() end) then
-                if next(followActionObjects) ~= nil or next(BondingState) ~= nil then
+                if not worldResetLatched then
+                    worldResetLatched = true
                     Combat.ResetForNewWorld("the player actor went invalid")
                 end
                 return

@@ -341,6 +341,34 @@ local function safe_call(fn, ...)
     return nil
 end
 
+-- ===================================================================
+-- WORLD-CLOSING GATE (three-hundred-and-twenty-ninth pass, 2026-09-17)
+-- ===================================================================
+-- Dragon's third crash log caught this file's hook still WORKING after the
+-- world had started closing: the last line written before the crash was a
+-- personality read that came back "PalAIResponsePreset" -- the engine's raw
+-- base name, which is what reading a half-destroyed object looks like.
+--
+-- Letting go of our references at the confirm (pass 328) was necessary but not
+-- sufficient, because the game keeps calling the functions we hooked while it
+-- tears the world down, and UE4SS in this build cannot unregister a hook. So
+-- every hook callback in this file asks this first and returns immediately
+-- while a quit is in progress: the mod goes deliberately blind from the moment
+-- the player confirms until the next world's character exists.
+--
+-- Cost: one function call per hook invocation, no scan, no reflection -- and it
+-- is a plain boolean read the rest of the session.
+local playerRefForGate = nil
+local function world_is_closing()
+    if playerRefForGate == nil then
+        local okReq, M = pcall(require, "PlayerRef")
+        if not okReq or M == nil or M.IsWorldClosing == nil then return false end
+        playerRefForGate = M
+    end
+    local ok, closing = pcall(playerRefForGate.IsWorldClosing)
+    return ok and closing == true
+end
+
 -- Cache the UClass lookups (StaticFindObject) once — these are cheap,
 -- static, unchanging references, no need to re-resolve every call.
 local PalUtilityCDO = nil
@@ -1552,6 +1580,7 @@ local function register_sensor_sense_hook(round)
     round = round or 1
     local ok, err = pcall(function()
         RegisterHook("/Script/Pal.PalAISensorComponent:SelectResponseBySenses", function(Context)
+            if world_is_closing() then return end
             safe_call(function() on_sensor_select_response(Context) end)
         end)
     end)
@@ -1593,128 +1622,6 @@ end
 -- clearly made real progress taming this Pal" idea to every tier, not
 -- only the shy one.
 -- ===================================================================
--- [WON-OVER-SPY] (diagnostics only, 2026-09-16) — does the 20% reset
--- actually stop a Pal that was attacking?
--- ===================================================================
--- A Workshop commenter was attacked by a Timid and a Curious Pal while a
--- Hostile one of the same species was nearby, and got the Timid one to
--- Friendly without it stopping. Dragón's theory: the reset works, but the
--- Pal joins its same-species friend's fight again straight away. These lines
--- record, for the Pal that crosses 20%: what it was doing and who it was
--- angry at before the reset, and then every WATCH_TICK_MS for WATCH_SECONDS
--- what it is doing and who it is angry at, so the log shows whether it
--- stopped, and if it went back, at whom.
---
--- Everything here is gated on Logger.DiagnosticsEnabled(), so a release
--- build does no extra work. Remove once the question is answered.
-local WON_OVER_SPY_WATCH_SECONDS = 20.0
-local WON_OVER_SPY_TICK_MS = 2000
-local wonOverWatches = {}
-local wonOverWatchRunning = false
-
-local function won_over_spy_on()
-    return Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled()
-end
-
-local function short_class(obj)
-    if obj == nil then return "none" end
-    local name = safe_call(function() return obj:GetFullName() end)
-    if name == nil then return "?" end
-    return tostring(name):match("^(%S+)") or tostring(name)
-end
-
--- What the Pal is doing and who it hates, as one line. Reads the same two
--- things Combat.IsBusyFighting reads, but reports both instead of stopping at
--- the first.
-local function fight_snapshot(palActor)
-    if palActor == nil or not safe_call(function() return palActor:IsValid() end) then
-        return "PAL GONE (invalid actor)", nil
-    end
-    local selfClass = short_class(palActor)
-    local actionName, hateName, hateTag = "none", "none", ""
-    local ctrl = safe_call(function() return palActor.Controller end)
-    if ctrl == nil or not safe_call(function() return ctrl:IsValid() end) then
-        return "no controller", nil
-    end
-    local ac = safe_call(function() return ctrl:GetAIActionComponent() end)
-    if ac ~= nil and safe_call(function() return ac:IsValid() end) then
-        local cur = safe_call(function() return ac:GetCurrentAction_BP() end)
-        if cur ~= nil and safe_call(function() return cur:IsValid() end) then
-            actionName = short_class(cur)
-        end
-    end
-    local hate = safe_call(function() return ctrl:GetHateSystem() end)
-    if hate ~= nil and safe_call(function() return hate:IsValid() end) then
-        local target = safe_call(function() return hate:FindMostHateTarget() end)
-        if target ~= nil and safe_call(function() return target:IsValid() end) then
-            hateName = short_class(target)
-            -- The player's class is BP_Player_Female_C / _Male_C, so compare
-            -- with the kept player reference (no search) and fall back to the name.
-            local isPlayer = false
-            local okRef, PlayerRef = pcall(require, "PlayerRef")
-            local player = okRef and PlayerRef and safe_call(PlayerRef.Get) or nil
-            if player ~= nil then
-                local a = safe_call(function() return player:GetAddress() end)
-                local b = safe_call(function() return target:GetAddress() end)
-                isPlayer = a ~= nil and a == b
-            end
-            if isPlayer or hateName:find("^BP_Player_") or hateName:find("PlayerCharacter") then
-                hateTag = " (THE PLAYER)"
-            elseif hateName == selfClass then
-                hateTag = " (SAME SPECIES)"
-            end
-        end
-    end
-    local fighting = actionName:find("Combat") ~= nil or hateName ~= "none"
-    return string.format("fighting=%s action=%s hateTarget=%s%s", tostring(fighting), actionName, hateName, hateTag), selfClass
-end
-
--- Exported for Trust.lua's [LEASH-SPY] (2026-09-16): what a follower is
--- really doing, as opposed to what the mod told it to do.
-function Personality.DescribeFight(palActor)
-    return (fight_snapshot(palActor))
-end
-
-local function won_over_watch_tick()
-    local now = os.clock()
-    local any = false
-    for palId, w in pairs(wonOverWatches) do
-        local snap = fight_snapshot(w.pal)
-        Logger.log(string.format("[PalBonds/Personality] [WON-OVER-SPY] %s +%.0fs after %s: %s",
-            tostring(palId), now - w.startedAt, w.what, snap))
-        if (now - w.startedAt) >= WON_OVER_SPY_WATCH_SECONDS or snap:find("PAL GONE", 1, true) then
-            Logger.log("[PalBonds/Personality] [WON-OVER-SPY] " .. tostring(palId) .. " watch ended")
-            wonOverWatches[palId] = nil
-        else
-            any = true
-        end
-    end
-    if not any then
-        wonOverWatchRunning = false
-        return
-    end
-    local ok = pcall(function()
-        ExecuteInGameThreadWithDelay(WON_OVER_SPY_TICK_MS, function()
-            safe_call(won_over_watch_tick)
-        end)
-    end)
-    if not ok then wonOverWatchRunning = false end
-end
-
-local function won_over_spy_watch(palId, palActor, what)
-    if palActor == nil then return end
-    wonOverWatches[palId] = { pal = palActor, startedAt = os.clock(), what = what }
-    if wonOverWatchRunning then return end
-    wonOverWatchRunning = true
-    local ok = pcall(function()
-        ExecuteInGameThreadWithDelay(WON_OVER_SPY_TICK_MS, function()
-            safe_call(won_over_watch_tick)
-        end)
-    end)
-    if not ok then wonOverWatchRunning = false end
-end
-
--- ===================================================================
 -- FRIENDLY MEANS IT STOPS ATTACKING THE PLAYER (2026-09-16)
 -- ===================================================================
 -- Dragón's rule: "friendly means it shouldnt attack unless to defend itself or
@@ -1743,13 +1650,27 @@ end
 --     Leading hypothesis for why following works: the follow action names the
 --     player as the Pal's trainer. Unproven.
 
--- RELEASE SWITCH (2026-09-16). Dragón: 1.1.3 ships the world-change fix, the
--- boss display, the pet fixes, the boss meter and the human NPC fix; "the rest
--- we will save it for the next update once we polish it further". false = the
--- 20% step behaves exactly as in 1.1.2 (friendly preset + reset, skipped for a
--- Pal already friendly), plus the human-NPC guard. true = the brief follow.
--- A module field rather than a local so the harness can test both ways.
-Personality.FRIENDLY_BRIEF_FOLLOW = false
+-- ===================================================================
+-- THE FORGIVENESS RULES (1.1.4, Dragón, 2026-09-18)
+-- ===================================================================
+-- The brief follow is no longer an experiment behind a switch; it is the
+-- behaviour, with these rules, each of them his:
+--
+--   * Every wild Pal crossing 20% gets it once -- calm or angry.
+--   * After forgiving, the Pal is left entirely alone: it may get angry again
+--     if hit, or if a Pal of its own species pulls it into a fight. "We just
+--     need to trigger that brief forgiveness."
+--   * ONE forgiveness per Pal. Crossing 20% again later does nothing at all:
+--     "most pals will probably not survive too many hits from the player, so
+--     if we continue making them forgive or act differently, the pals will
+--     end up dying without having a chance to defend themselves with our
+--     meddling."
+--   * Below 50% there is NO bond ("bonding is a status that starts or should
+--     start at 50% friendship"). A player hit there empties the bar and the
+--     Pal goes back to the personality it had before it forgave -- tag AND AI
+--     (Trust.lua does the hit; RevertForgiveness below does the personality).
+--
+-- The 1.1.2 path this replaced (friendly preset + cancel, no follow) is gone.
 
 -- Is the player the one this Pal is angriest at?
 local function hates_player(palActor)
@@ -1793,46 +1714,29 @@ local function become_friendly_wild(palId, palActor, state)
     end
 end
 
--- The 1.1.2 behaviour, kept verbatim for Personality.FRIENDLY_BRIEF_FOLLOW = false.
-local function legacy_friendly_reset(palId, palActor, state)
-    local desiredBaseName = TIER_TO_DONOR_PRESET_CLASS["friendly"]
-    local desiredClassName = desiredBaseName .. "_C"
-    if state.presetClassName == desiredClassName then
-        return
-    end
-    local sensor = find_cached_sensor(palId) or find_sensor_component(palActor)
-    if not sensor then
-        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " has no readable AISensorComponent (neither cached nor found via scan) — cannot swap its real AI, tracked disposition still updated")
-        return
-    end
-    local ok, err = apply_forced_preset(sensor, desiredBaseName)
-    if ok then
-        state.enforcementApplied = true
-        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " real AIResponsePreset ALSO swapped to friendly")
-        interrupt_and_resense(palActor, sensor, palId)
-    else
-        Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " — " .. tostring(err) .. " (tracked disposition still updated)")
-    end
-end
-
 function Personality.MaybeBecomeFriendlyByBar(palId, palActor)
     if palId == nil then return end
     local state = PersonalityState[palId]
     if not state then return end
-    if not Personality.FRIENDLY_BRIEF_FOLLOW and state.disposition == "friendly" then return end
+
+    -- One forgiveness per Pal, ever: this latch is never cleared, not even
+    -- when a hit empties the bar again (see the rules above).
     if state.becameFriendlyByBar then return end
     local fromDisposition = state.disposition
     state.becameFriendlyByBar = true
+
+    -- What it was before we made it Friendly, for RevertForgiveness.
+    -- become_friendly_wild overwrites rolledTier, so this is the only copy.
+    state.preForgive = {
+        disposition = fromDisposition,
+        rolledTier = state.rolledTier,
+        presetClassName = state.presetClassName,
+    }
     state.disposition = "friendly"
     Logger.log(string.format(
         "[PalBonds/Personality] [WON-OVER] %s crossed the friendly-trigger fraction of its bonding bar (was '%s', rolled '%s') — now friendly",
         tostring(palId), tostring(fromDisposition), tostring(state.rolledTier)
     ))
-    if won_over_spy_on() then
-        local snap, species = fight_snapshot(palActor)
-        Logger.log(string.format("[PalBonds/Personality] [WON-OVER-SPY] %s (%s) at 20%%: %s",
-            tostring(palId), tostring(species), snap))
-    end
     if not palActor then return end
 
     -- 2026-09-16, run 4: the reset rewrote three human NPCs' AI (a merchant
@@ -1858,29 +1762,80 @@ function Personality.MaybeBecomeFriendlyByBar(palId, palActor)
         return
     end
 
-    if not Personality.FRIENDLY_BRIEF_FOLLOW then
-        legacy_friendly_reset(palId, palActor, state)
-        return
-    end
-
     local okT, Trust = pcall(require, "Trust")
     local started = okT and Trust and Trust.StartBriefFollow and Trust.StartBriefFollow(palActor, hates_player,
         function(calmed, elapsed, stayed)
-            if won_over_spy_on() then
-                Logger.log(string.format("[PalBonds/Personality] [WON-OVER-SPY] %s brief follow ended after %.1fs, calm=%s, stays following=%s: %s",
-                    tostring(palId), elapsed, tostring(calmed), tostring(stayed), (fight_snapshot(palActor))))
-            end
             if not stayed then
                 become_friendly_wild(palId, palActor, state)
-                if won_over_spy_on() then
-                    won_over_spy_watch(palId, palActor, "the brief follow")
-                end
             end
         end)
     if not started then
         Logger.log("[PalBonds/Personality] [WON-OVER] " .. tostring(palId) .. " — brief follow not started (already following, or no bonding state); friendly preset only")
         become_friendly_wild(palId, palActor, state)
     end
+end
+
+-- The player hit this Pal below 50% (Trust.lua has already emptied its bar):
+-- it goes back to the personality it had before it forgave -- the tag AND
+-- the AI. A Hostile Pal reads Hostile and fights, a Timid one reads Timid
+-- and runs: the Pal as it was before we meddled. Dragón agreed the tag
+-- reading Hostile again is right, since it will attack.
+--
+-- Does nothing for a Pal that never forgave (it never changed), and runs at
+-- most once: preForgive is consumed here, and becameFriendlyByBar stays set,
+-- so the Pal cannot forgive a second time either.
+function Personality.RevertForgiveness(palId, palActor)
+    if palId == nil then return false end
+    local state = PersonalityState[palId]
+    if not state or not state.preForgive then return false end
+    local before = state.preForgive
+    state.preForgive = nil
+    state.disposition = before.disposition
+    state.rolledTier = before.rolledTier
+    Logger.log(string.format(
+        "[PalBonds/Personality] [FORGIVENESS] %s was hit by the player below 50%% — back to '%s' (its one forgiveness is spent)",
+        tostring(palId), tostring(before.disposition)))
+
+    -- Humans never had their AI touched (see MaybeBecomeFriendlyByBar).
+    if state.isHuman or palActor == nil then return true end
+    local okReq, Capture = pcall(require, "Capture")
+    local isOwned = true
+    if okReq and Capture and Capture.IsAlreadyOwned then
+        isOwned = safe_call(function() return Capture.IsAlreadyOwned(palActor) end)
+        if isOwned == nil then isOwned = true end
+    end
+    if isOwned ~= false then return true end
+
+    -- The preset it ran before: its rolled tier's donor, or -- for a Pal that
+    -- rolled Normal -- its species' own preset, as read when it was first seen.
+    local baseName = nil
+    if before.rolledTier ~= nil and before.rolledTier ~= "normal" then
+        baseName = TIER_TO_DONOR_PRESET_CLASS[before.rolledTier]
+    end
+    if baseName == nil and type(before.presetClassName) == "string" then
+        baseName = before.presetClassName:match("^(BP_AIResponsePreset_.+)_C$")
+    end
+    if baseName == nil then
+        Logger.log("[PalBonds/Personality] [FORGIVENESS] " .. tostring(palId) .. " — no original preset on record, only the tag was reverted")
+        return true
+    end
+    local sensor = find_cached_sensor(palId) or find_sensor_component(palActor)
+    if not sensor then
+        Logger.log("[PalBonds/Personality] [FORGIVENESS] " .. tostring(palId) .. " — no readable sensor, only the tag was reverted")
+        return true
+    end
+    local ok, err = apply_forced_preset(sensor, baseName)
+    if ok then
+        state.enforcementApplied = true
+
+        -- Re-sense only, no cancel: it was just hit, and whatever it is doing
+        -- about that is its own natural reaction -- ours to leave alone.
+        interrupt_and_resense(palActor, sensor, palId, false)
+        Logger.log("[PalBonds/Personality] [FORGIVENESS] " .. tostring(palId) .. " — its original AI is back (" .. baseName .. ")")
+    else
+        Logger.log("[PalBonds/Personality] [FORGIVENESS] " .. tostring(palId) .. " — restoring its AI FAILED: " .. tostring(err))
+    end
+    return true
 end
 
 -- Hundred-and-fifty-sixth pass (2026-09-04): generic version of the
@@ -2368,10 +2323,6 @@ local function scan_nearby_wild_pals_for_personality()
     personalityScanCount = personalityScanCount + 1
     local now = os.clock()
 
-    -- Profiler sections; Profiler.start() is nil when profiling is off, so each
-    -- stop() is one nil check.
-    local okProf, Prof = pcall(require, "Profiler")
-    if not okProf then Prof = nil end
 
     local worldScan = (not senseHookArmed)
         or (personalityScanCount % PERSONALITY_SAFETY_SCAN_EVERY_N_SCANS == 0)
@@ -2384,27 +2335,20 @@ local function scan_nearby_wild_pals_for_personality()
                 safe_call(function()
                     local validOk, isValid = pcall(function() return palActor ~= nil and palActor:IsValid() end)
                     if not (validOk and isValid) then return end
-                    local tName = Prof and Prof.start()
                     local actorName = safe_call(function() return palActor:GetFullName() end)
-                    if Prof then Prof.stop("personality scan: GetFullName per Pal", tName) end
                     if actorName and playerName and actorName == playerName then
                         return
                     end
-                    local tState = Prof and Prof.start()
                     local palId = Personality.GetOrInitState(palActor)
-                    if Prof then Prof.stop("personality scan: GetOrInitState per Pal", tState) end
                     if palId == nil then return end
                     pawnByPalId[palId] = palActor
                     local st = PersonalityState[palId]
                     if st then st.lastSeenAt = now end
-                    local tEnforce = Prof and Prof.start()
                     try_enforce_personality(palActor, palId)
-                    if Prof then Prof.stop("personality scan: try_enforce_personality per Pal", tEnforce) end
                 end)
             end
         end
     else
-        local tHook = Prof and Prof.start()
         for palId, pawn in pairs(pawnByPalId) do
             safe_call(function()
                 if not safe_call(function() return pawn:IsValid() end) then
@@ -2419,7 +2363,6 @@ local function scan_nearby_wild_pals_for_personality()
                 try_enforce_personality(pawn, id, true)
             end)
         end
-        if Prof then Prof.stop("personality scan: hook-reported Pals (no world search)", tHook) end
     end
 
     if personalityScanCount % PERSONALITY_PRUNE_EVERY_N_SCANS == 0 then
@@ -2505,5 +2448,30 @@ function Personality.Init()
         Logger.log("[PalBonds/Personality] [GLOBAL-CURIOUS] starting global preset override (rewrites shared AIResponsePreset objects directly — affects every wild Pal using them, no per-individual lookup)")
         safe_call(function() apply_global_curious_preset_override(1) end)
     end
+end
+
+-- ===================================================================
+-- WORLD CHANGE (three-hundred-and-twenty-eighth pass, 2026-09-17)
+-- ===================================================================
+-- The per-Pal records and the caches below point at Pals, their pawns and
+-- their AI sensor components -- all of which die with their world, while a Lua
+-- reference keeps them alive. A new world then hands out the same stable IDs
+-- for different Pals, so keeping any of this is wrong twice over: it is a
+-- crash risk AND it would give a new Pal an old Pal's personality.
+--
+-- Deliberately KEPT: presetCDOCache holds class default objects, which belong
+-- to the classes rather than to any world, and the "logged once" tables, which
+-- only stop the log repeating itself.
+function Personality.ResetForNewWorld()
+    local n = 0
+    for _ in pairs(PersonalityState) do n = n + 1 end
+    PersonalityState = {}
+    sensorIndexByOwnerKey = {}
+    cachedSensorByPalId = {}
+    handledSensorKeys = {}
+    handledSensorAddresses = {}
+    pawnByPalId = {}
+    Logger.log("[PalBonds/Personality] [WORLD-RESET] dropped " .. n ..
+        " personality record(s) and every sensor/pawn reference from the old world")
 end
 return Personality

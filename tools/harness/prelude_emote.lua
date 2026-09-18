@@ -19,7 +19,15 @@ end
 __PAWN = obj("BP_Player_Female_C_1")
 __PC = obj("BP_PalPlayerController_C_1")
 __PC.Pawn = __PAWN
+__PLAYER_AC = obj("PalActionComponent_Player")
+__PLAYER_AC.PlayAction = function(self, target, cls)
+  __LAST_EMOTE_TARGET = target
+  __LAST_EMOTE_CLASS = cls
+  note("ActionComponent:PlayAction(target=" .. tostring(target and target.__name) .. ", cls=" .. tostring(cls and cls.__name) .. ")")
+end
+__PAWN.ActionComponent = __PLAYER_AC
 __PC.ActionComponent_PlayAction_ToServer_ForPlayer = function(self, pawn, param, cls, n)
+  __LAST_ACTION_PARAM = param
   note("PlayAction(pawn=" .. tostring(pawn and pawn.__name)
       .. ", param=" .. type(param)
       .. ", cls=" .. tostring(cls and cls.__name)
@@ -29,7 +37,11 @@ end
 RegisterHook = function() return true end
 RegisterKeyBind = function(key, fn) __BINDS[tostring(key)] = fn; return true end
 ExecuteInGameThreadWithDelay = function() return true end
-ExecuteInGameThread = function() return true end
+ExecuteInGameThread = function(fn)
+  __GAME_THREAD_CALLS = (__GAME_THREAD_CALLS or 0) + 1
+  if type(fn) == "function" then fn() end
+  return true
+end
 ExecuteWithDelay = function() return true end
 LoopAsync = function() return true end
 NotifyOnNewObject = function() return true end

@@ -36,8 +36,12 @@ before installing, not after.
   found rather than crafted, are worth the most.
 - **Level and rank aware.** The trust bar scales with the level gap between
   you and the Pal; alphas need twice the usual trust before they'll join.
-- **Consequences.** Hit a bonded Pal and it's over between you. Wander too far
-  and leave one behind, and it gives up on you too.
+- **Forgiveness, once.** The first time a Pal's trust reaches 20% it forgives
+  you: it stops attacking, follows you for a moment, then goes back to its own
+  business as a Friendly Pal.
+- **Consequences.** Hit a bonded Pal and it's over between you. Hit one that
+  isn't bonded yet and its trust drops to zero. Wander too far and leave a
+  bonded Pal behind, and it gives up on you too.
 - **Sphere-less joining** — a real celebration, a join effect, and a
   friendship head start for the Pal that just chose you.
 
@@ -100,14 +104,16 @@ Get close and look directly at the Pal for any of these.
   keep a companion permanently, complete the bond; otherwise bonding again in
   a new area costs nothing but food. The full investigation, including the
   approaches that did *not* work, is in [`CLAUDE.md`](./CLAUDE.md).
-- **Crash when loading a world after quitting one — found and fixed in
-  v1.1.3.** v1.1.2 could crash the game if a Pal was following you, you quit to
-  the main menu, and then loaded a world. v1.1.2's stutter fix kept a stored
-  reference to your character, which survived the old world closing, so the
-  mod never noticed the world change and later touched a Pal from the old
-  world. v1.1.3 checks that the stored character still belongs to a live world
-  and re-checks it every few seconds while a Pal is following you, which is
-  what v1.1.1 did.
+- **Crash when loading another world — found and fixed in v1.1.4.** Loading a
+  world after quitting one could crash the game (`EXCEPTION_ACCESS_VIOLATION`)
+  if you had used Play (F8) in that session. Keypresses reach a UE4SS mod on
+  UE4SS's own thread, not the game's, and Play was starting animations from
+  there, which quietly corrupted the game's state until the next world load.
+  v1.1.4 hands every keybind to the game thread first. Pet and Feed were never
+  affected, because they arrive through the game's own menu. v1.1.3 fixed a
+  real but smaller world-change problem (a stale reference to your character);
+  v1.1.4 also lets go of everything the moment you confirm a quit. The hunt,
+  including the wrong turns, is written up in [`CLAUDE.md`](./CLAUDE.md).
 - **Microstutters — found and fixed in v1.1.2.** A player reported noticeable
   microstutters with the mod active, and measurement confirmed them: the mod
   was searching the game's entire object list on timers and during the radial

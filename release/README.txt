@@ -31,6 +31,10 @@ WHAT IT ADDS
     Once a Pal starts warming to you the tag changes to "Friendly", then
     "Bonding" as it gets closer to joining.
 
+  * Pals forgive you - once. The first time a Pal's trust reaches 20% it lets
+    go of any anger towards you: it follows you for a moment, then goes back
+    to its own business as a Friendly Pal.
+
   * Bonded Pals follow you, stay behind you rather than running ahead, and hold
     still while you are looking at them so you can actually interact with them.
 
@@ -111,7 +115,12 @@ THINGS WORTH KNOWING
     at the same enemy can catch each other in the crossfire. Starting a fight
     with six followers around you is a choice, and it will show.
 
-  * A Pal that loses all its trust flees for good and cannot be bonded again.
+  * Hitting a Pal that is not bonded yet (under half of its trust bar) drops
+    its trust to zero, and it goes back to its old personality. It will not
+    forgive you a second time.
+
+  * A bonded Pal that loses all its trust flees for good and cannot be bonded
+    again.
 
   * The personality tag toggle (F9) lasts for the current session only. It
     comes back on the next time you launch the game.
@@ -132,9 +141,13 @@ TROUBLESHOOTING
       to
           local DEBUG_LOGGING = true
 
-      Play until the problem happens, then attach palbonds-live.log from the
-      mod's folder. Turn it back off afterwards - it writes to disk constantly
-      and the file grows for as long as you play.
+      Play until the problem happens, then attach palbonds-live.log. It is
+      written next to the game's executable:
+
+          Palworld/Pal/Binaries/Win64/palbonds-live.log
+
+      Turn it back off afterwards - it writes to disk constantly and the file
+      grows for as long as you play.
 
 
 CREDITS

@@ -328,6 +328,34 @@ local function safe_call(fn, ...)
     return nil, result
 end
 
+-- ===================================================================
+-- WORLD-CLOSING GATE (three-hundred-and-twenty-ninth pass, 2026-09-17)
+-- ===================================================================
+-- Dragon's third crash log caught this file's hook still WORKING after the
+-- world had started closing: the last line written before the crash was a
+-- personality read that came back "PalAIResponsePreset" -- the engine's raw
+-- base name, which is what reading a half-destroyed object looks like.
+--
+-- Letting go of our references at the confirm (pass 328) was necessary but not
+-- sufficient, because the game keeps calling the functions we hooked while it
+-- tears the world down, and UE4SS in this build cannot unregister a hook. So
+-- every hook callback in this file asks this first and returns immediately
+-- while a quit is in progress: the mod goes deliberately blind from the moment
+-- the player confirms until the next world's character exists.
+--
+-- Cost: one function call per hook invocation, no scan, no reflection -- and it
+-- is a plain boolean read the rest of the session.
+local playerRefForGate = nil
+local function world_is_closing()
+    if playerRefForGate == nil then
+        local okReq, M = pcall(require, "PlayerRef")
+        if not okReq or M == nil or M.IsWorldClosing == nil then return false end
+        playerRefForGate = M
+    end
+    local ok, closing = pcall(playerRefForGate.IsWorldClosing)
+    return ok and closing == true
+end
+
 -- ===========================================================================
 -- SAFER PLAYER LOOKUP (two-hundred-and-ninety-second pass, 2026-09-09)
 -- ===========================================================================
@@ -1194,10 +1222,68 @@ end
 -- chose to walk with you can be betrayed; one that merely got touched once
 -- cannot. That is also the original design, and the bar is visible, so the
 -- player always knows which side of it a Pal is on.
+-- ===================================================================
+-- A PLAYER HIT ON A PAL THAT IS NOT BONDED (1.1.4, Dragón, 2026-09-18)
+-- ===================================================================
+-- "Bonding is a status that starts or should start at 50% friendship." Below
+-- that there is nothing to betray, so no betrayal and no scarred status -- but
+-- the hit is not free either: the bar drops to 0 ("since the wild pal will most
+-- likely become hostile after that, drop it all"), and a Pal that had forgiven
+-- the player at 20% goes back to the personality it had before
+-- (Personality.RevertForgiveness). What it does about being hit is its own
+-- natural reaction; nothing here tells it to fight or flee.
+--
+-- A Pal in its 20% calm-down is unbonded too, even though the calm-down marks
+-- it as following: a hit there ends the calm-down on the spot, without the
+-- Friendly preset ever being written.
+--
+-- Only the PLAYER's hits reach this; Pal-versus-Pal damage never costs trust
+-- (his ruling, pass 211). Both damage hooks report the same hit, hence the
+-- short dedupe.
+local UNBONDED_HIT_DEDUPE_SECONDS = 1.0
+local function on_unbonded_pal_hit_by_player(pal, st, key)
+    local now = os.clock()
+    if st.lastUnbondedHitAt ~= nil and (now - st.lastUnbondedHitAt) < UNBONDED_HIT_DEDUPE_SECONDS then return end
+    st.lastUnbondedHitAt = now
+
+    if briefFollow[key] ~= nil then
+        -- The poll sees its token gone and stops without calling onDone, so
+        -- the Friendly preset is never written for this Pal.
+        briefFollow[key] = nil
+        Trust.StopFollowing(pal, "hit by the player during its calm-down")
+    end
+
+    local param = get_individual_parameter(pal)
+    local point = 0
+    if param ~= nil and safe_call(function() return param:IsValid() end) then
+        point = safe_call(function() return param:GetFriendshipPoint() end) or 0
+        if point > 0 then
+            safe_call(function() param:AddFriendShip(-point, false) end)
+        end
+    end
+    st.lastPoint = 0
+    Logger.log(string.format(
+        "[PalBonds/Trust] [UNBONDED-HIT] the player hit %s below 50%% — trust %d -> 0 (no bond, so no betrayal)",
+        tostring(key), point))
+
+    local okP, Personality = pcall(require, "Personality")
+    if okP and Personality and Personality.RevertForgiveness then
+        local palId = safe_call(Personality.GetStableId, pal)
+        safe_call(Personality.RevertForgiveness, palId, pal)
+    end
+end
+
 function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
     local key = safe_call(function() return pal:GetFullName() end)
     local st = key ~= nil and State[key] or nil
-    if not st or not st.isFollowing then return end
+    if not st then return end
+
+    -- Below 50%, or in the 20% calm-down: no bond yet (see above).
+    if attackerIsPlayer and (not st.isFollowing or briefFollow[key] ~= nil) then
+        on_unbonded_pal_hit_by_player(pal, st, key)
+        return
+    end
+    if not st.isFollowing then return end
     local param = get_individual_parameter(pal)
     if not param or not param:IsValid() then return end
     if attackerIsPlayer then
@@ -1458,34 +1544,6 @@ local function tick_followers()
                             fightingWhy = "follow suspended for a fight"
                         end
 
-                        -- [LEASH-SPY] (2026-09-15, diagnostics only). Dragón ran far
-                        -- from a bonded Pal to test the "abandoned" toast and the
-                        -- bond never broke. Every branch below logs when it FIRES,
-                        -- but nothing says why none fired, so this prints the
-                        -- inputs of the decision every 3s per follower: distance
-                        -- against the leash, whether the Pal counts as fighting
-                        -- (and why), the drift clock, and which player character the
-                        -- distance was measured from. Costs one boolean check per
-                        -- follower per tick when diagnostics are off. Remove once
-                        -- the abandonment question is closed.
-                        if Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled() then
-                            local nowSpy = os.clock()
-                            if (nowSpy - (st.leashSpyAt or -1e9)) >= 3.0 then
-                                st.leashSpyAt = nowSpy
-                                local withName = fightingWith and safe_call(function() return fightingWith:GetFullName() end)
-                                local okP, PersonalityMod = pcall(require, "Personality")
-                                local really = okP and PersonalityMod and PersonalityMod.DescribeFight and safe_call(PersonalityMod.DescribeFight, st.pal) or "?"
-                                Logger.log(string.format(
-                                    "[PalBonds/Trust] [LEASH-SPY] %s dist=%.0f leash=%.0f pastLeash=%s fighting=%s (%s%s) REALLY: %s | driftClock=%s player=%s playerLoc=(%.0f,%.0f,%.0f) palLoc=(%.0f,%.0f,%.0f)",
-                                    tostring(key), dist, MAX_FOLLOW_DISTANCE, tostring(dist > MAX_FOLLOW_DISTANCE),
-                                    tostring(fightingNow), tostring(fightingWhy), withName and (": " .. tostring(withName)) or "", tostring(really),
-                                    driftingSince[key] and string.format("%.1fs of %.0fs", nowSpy - driftingSince[key], DRIFT_GRACE_SECONDS) or "not running",
-                                    tostring(safe_call(find_player_name)),
-                                    playerLoc.X or 0, playerLoc.Y or 0, playerLoc.Z or 0,
-                                    palLoc.X or 0, palLoc.Y or 0, palLoc.Z or 0))
-                            end
-                        end
-
                         local pastLeash = dist > MAX_FOLLOW_DISTANCE
                         if not pastLeash then
                             if driftingSince[key] ~= nil then
@@ -1588,20 +1646,6 @@ local function tick_followers()
                             if Combat.TickRealOtomoFollow then
                                 Combat.TickRealOtomoFollow(st.pal, key)
                             end
-                        end
-                    end
-                else
-                    -- [LEASH-SPY] (2026-09-15, diagnostics only): the leash check
-                    -- above needs the player's position; without it the check is
-                    -- skipped silently, which would look exactly like "the bond
-                    -- never breaks". Say so, at most every 3s per follower.
-                    if not endedThisPass and Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled() then
-                        local nowSpy = os.clock()
-                        if (nowSpy - (st.leashSpyAt or -1e9)) >= 3.0 then
-                            st.leashSpyAt = nowSpy
-                            Logger.log(string.format(
-                                "[PalBonds/Trust] [LEASH-SPY] %s: leash check SKIPPED, no player position this tick (player lookup returned %s)",
-                                tostring(key), player == nil and "nil" or "a player with no readable location"))
                         end
                     end
                 end
@@ -1735,6 +1779,7 @@ function Trust.Init()
         -- leaving another silent nothing.
         local okBetray, errBetray = pcall(function()
             RegisterHook("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", function(Context, Attacker, Defender, ActualDamage)
+                if world_is_closing() then return end
 
                 -- Dragón caught this before it shipped, and he was right:
                 -- "if you're tracking every hit of the player on pals, wouldnt
@@ -1789,6 +1834,7 @@ function Trust.Init()
         Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] RegisterHook(PalDamageReactionComponent:OnProcessedActualDamageDelegate) = " ..
             (okBetray and "OK" or ("FAILED: " .. tostring(errBetray) .. " — betrayal falls back to the hate hook, which misses followers whose Damaged_Player slot is Ignore")))
         RegisterHook("/Script/Pal.PalHate:DamageEvent", function(Context, DamageResult)
+            if world_is_closing() then return end
             local result = hook_get(DamageResult)
             if result == nil then return end
 
@@ -1924,8 +1970,10 @@ function Trust.Init()
                 -- This gate was added at Dragon's own request (pass 216, "only
                 -- activate that IF there are pals following") and it was correct
                 -- then, because back then damage only ever mattered to a
-                -- FOLLOWER. Pass 246 widened betrayal to any Pal with a bond --
-                -- deliberately, because the bond starts at the first pet -- and
+                -- FOLLOWER. Pass 246 widened this gate to any Pal with a trust
+                -- record (CORRECTED 2026-09-18: that pass claimed "the bond starts
+                -- at the first pet"; it does not -- bonding starts at 50%, and
+                -- below that a player hit empties the bar instead) -- and
                 -- this gate was not widened with it. So a Pal you had petted
                 -- four times but that was not yet following you could be hit as
                 -- often as you liked, which is exactly the bug pass 246 was
@@ -1975,9 +2023,11 @@ function Trust.Init()
             -- Two-hundred-and-fifty-first pass: the SECOND follower-only gate,
             -- and the one that would still have blocked Dragon's Gumoss even
             -- after widening the outer one. Same story as that gate: written
-            -- when damage only mattered to a follower, never widened when pass
-            -- 246 made the bond -- and therefore betrayal -- start at the first
-            -- interaction.
+            -- when damage only mattered to a follower. (CORRECTED 2026-09-18:
+            -- pass 246 claimed the bond starts at the first interaction. It
+            -- does not: bonding starts at 50%. Dragón's Gumoss report meant it
+            -- never attacked him back, not that it should be punished. Below
+            -- 50% a player hit now empties the bar -- OnFollowerDamaged.)
             --
             -- Widened to "has a bond", but ONLY the player-betrayal branch below
             -- acts on the wider set. The non-player penalty stays follower-only

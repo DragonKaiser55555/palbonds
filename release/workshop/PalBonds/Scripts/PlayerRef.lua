@@ -51,12 +51,6 @@
     Both log a [PLAYER-LIFE] line when they notice the player gone or changed,
     so a test run shows which one fired.
 
-    [PLAYER-SPY] lines (diagnostics only, 2026-09-15): every search, death and
-    respawn is logged when Logger's DEBUG_LOGGING and SHOW_DIAGNOSTICS are both
-    on, to check whether a stale or missing player explains a bug. They are
-    rare events, so they cost nothing measurable, and nothing at all in a
-    release build. Remove them once the question they were added for is closed.
-
     Always FindAllOf, never FindFirstOf: UE4SS issue #1328 (FindFirstOf
     dereferences before its null check), the crash-on-respawn investigation in
     Trust.lua/Combat.lua.
@@ -81,26 +75,36 @@ local deadBodyAddress = nil
 local lastRespawnSearchAt = -1e9
 local searchCount = 0
 local lastLivenessAt = -1e9
+
+-- Set by PlayerRef.ExpectWorldChange while the player has asked to leave the
+-- world; nil the rest of the time. See the branch in Get() that reads it.
+local fastLivenessUntil = nil
+
+-- ===================================================================
+-- WORLD CLOSING (2026-09-17, after the second reproducible crash)
+-- ===================================================================
+-- Dragón's log settled a question the polling fix could not: when he confirms
+-- "return to title", the mod gets NO MORE PASSES. The quit hook fired, and the
+-- log ends there -- no world-reset line, because the game never serviced
+-- another ExecuteInGameThreadWithDelay callback before the world was gone.
+-- Noticing a world change afterwards is therefore impossible by construction;
+-- everything has to be released at the moment the player confirms, while the
+-- world is still alive.
+--
+-- Releasing early leaves a second hole, though: the game keeps running for a
+-- moment, and the nameplate hook, the personality resolver and the trust
+-- recorder would happily refill those tables before the world actually dies.
+-- This flag closes it at the single point they all depend on -- Get() returns
+-- nil while the world is closing, which every caller already handles, because
+-- that is what it returns at the title screen.
+--
+-- It is cleared by ProbeForNewPlayer (see Combat's watch): a DIFFERENT player
+-- means the new world is up; the SAME one still there after a while means the
+-- player cancelled the quit.
+local worldClosing = false
+local closingPlayerAddress = nil
+local closingSince = nil
 local kismet = nil
-
-local function spy_enabled()
-    local ok, L = pcall(require, "Logger")
-    return ok and L and L.DiagnosticsEnabled and L.DiagnosticsEnabled() and L or nil
-end
-
-local function spy(buildMessage)
-    local L = spy_enabled()
-    if not L then return end
-    local ok, msg = pcall(buildMessage)
-    L.log("[PalBonds/PlayerRef] [PLAYER-SPY] " .. (ok and tostring(msg) or ("(message failed: " .. tostring(msg) .. ")")))
-end
-
-local function describe(obj)
-    if obj == nil then return "nil" end
-    local okName, name = pcall(function() return obj:GetFullName() end)
-    local okAddr, addr = pcall(function() return obj:GetAddress() end)
-    return string.format("%s @%s", okName and tostring(name) or "?", okAddr and tostring(addr) or "?")
-end
 
 local function is_valid(obj)
     local ok, valid = pcall(function() return obj:IsValid() end)
@@ -127,23 +131,16 @@ local function search(now, reason)
     searchCount = searchCount + 1
     cached, cachedName = nil, nil
     local ok, list = pcall(function() return FindAllOf("PalPlayerCharacter") end)
-    local count = (ok and type(list) == "table") and #list or 0
     if ok and type(list) == "table" then
         for _, p in ipairs(list) do
             if p ~= nil and is_valid(p) then
                 cached = p
                 cachedAt = now
-                spy(function()
-                    return string.format("search #%d (%s): %d PalPlayerCharacter(s) in the world, kept %s", searchCount, reason, count, describe(p))
-                end)
                 return p
             end
         end
     end
     lastMissAt = now
-    spy(function()
-        return string.format("search #%d (%s): %d PalPlayerCharacter(s), none valid — no player", searchCount, reason, count)
-    end)
     return nil
 end
 
@@ -189,6 +186,11 @@ end
 function PlayerRef.Get()
     local now = os.clock()
 
+    -- The world is on its way out: hand nobody the player, so nothing the mod
+    -- does can build a fresh reference into a world that is about to die. See
+    -- the worldClosing comment near the top of this file.
+    if worldClosing then return nil end
+
     -- Waiting for a respawn.
     if deadBody ~= nil then
         if (now - lastRespawnSearchAt) >= RESPAWN_RETRY_SECONDS then
@@ -198,9 +200,6 @@ function PlayerRef.Get()
                 local foundAddress = address_of(found)
                 local different = foundAddress ~= nil and deadBodyAddress ~= nil and foundAddress ~= deadBodyAddress
                 if different or not is_dead(found) then
-                    spy(function()
-                        return string.format("respawn found: %s (different character=%s)", describe(found), tostring(different))
-                    end)
                     deadBody, deadBodyAddress = nil, nil
                     lastDeathCheckAt = now
                     return found
@@ -212,7 +211,18 @@ function PlayerRef.Get()
     end
 
     if cached ~= nil then
-        if is_valid(cached) and (now - lastLivenessAt) >= LIVENESS_CHECK_SECONDS then
+
+        -- 2026-09-17: while a quit has been ASKED for (the ESC menu's
+        -- return-to-title, see Combat.ExpectWorldChange), the engine check runs
+        -- on every call instead of once a second. That window is the only time
+        -- the difference matters -- the world is about to go and everything the
+        -- mod holds has to be released before the next one loads -- and it ends
+        -- by itself, so the normal cadence is untouched for the whole session.
+        local livenessEvery = LIVENESS_CHECK_SECONDS
+        if fastLivenessUntil ~= nil then
+            if now < fastLivenessUntil then livenessEvery = 0 else fastLivenessUntil = nil end
+        end
+        if is_valid(cached) and (now - lastLivenessAt) >= livenessEvery then
             lastLivenessAt = now
             if engine_says_alive(cached) == false then
                 return recheck(now, "engine IsValid=false on the kept player")
@@ -227,7 +237,6 @@ function PlayerRef.Get()
                 if is_dead(cached) then
                     deadBody, deadBodyAddress = cached, address_of(cached)
                     lastRespawnSearchAt = now
-                    spy(function() return "player death detected on " .. describe(cached) .. " — keeping the body until the respawn is found" end)
                 end
             end
             return cached
@@ -254,7 +263,6 @@ end
 
 -- Forget everything; the next Get() searches immediately. Called on a world change.
 function PlayerRef.Invalidate()
-    spy(function() return "invalidated (world change) — was " .. describe(cached) end)
     cached, cachedName = nil, nil
     cachedAt = -1e9
     lastMissAt = -1e9
@@ -262,6 +270,88 @@ function PlayerRef.Invalidate()
     deadBody, deadBodyAddress = nil, nil
     lastRespawnSearchAt = -1e9
     lastLivenessAt = -1e9
+    fastLivenessUntil = nil
+end
+
+-- The player asked to leave the world (the ESC menu's return-to-title). For the
+-- next `seconds`, check with the engine on every Get() rather than once a
+-- second, so the moment the world actually goes is caught immediately.
+function PlayerRef.ExpectWorldChange(seconds)
+    fastLivenessUntil = os.clock() + (seconds or 20.0)
+end
+
+-- The player CONFIRMED leaving. Nobody gets a player reference from here until
+-- a new world is up (or the quit turns out to have been cancelled).
+function PlayerRef.SetWorldClosing(on)
+    if on then
+        closingPlayerAddress = cached ~= nil and address_of(cached) or nil
+        closingSince = os.clock()
+        worldClosing = true
+    else
+        worldClosing = false
+        closingPlayerAddress = nil
+        closingSince = nil
+    end
+end
+-- Read by every hook in the mod (the world-closing gate), so it stays a
+-- boolean read plus one os.clock.
+--
+-- The time limit is a safety net, not a mechanism: while this is true the mod
+-- is deliberately blind, and the only thing that clears it is Combat's watch
+-- noticing how the quit ended. If that watch ever stopped being serviced --
+-- one broken reschedule during a teardown would do it -- the mod would stay
+-- blind for the rest of the session and look exactly like "the mod stopped
+-- working". After CLOSING_MAX_SECONDS it gives up waiting and lets everything
+-- resume; being wrong that way costs a crash risk for one frame, being wrong
+-- the other way costs the whole session.
+local CLOSING_MAX_SECONDS = 60.0
+function PlayerRef.IsWorldClosing()
+    if not worldClosing then return false end
+    if closingSince ~= nil and (os.clock() - closingSince) >= CLOSING_MAX_SECONDS then
+        PlayerRef.SetWorldClosing(false)
+        local ok, L = pcall(require, "Logger")
+        if ok and L then
+            L.log(string.format(
+                "[PalBonds/PlayerRef] [PLAYER-LIFE] the world has been 'closing' for %.0fs with no new world and no cancel — giving up waiting and working normally again",
+                CLOSING_MAX_SECONDS))
+        end
+        return false
+    end
+    return true
+end
+
+-- Called while the world is closing, and ONLY then: a real search that ignores
+-- the flag, so the mod can tell the two possible endings apart.
+--   * a player at a different address -> the new world is up
+--   * the same player still there after cancelSeconds -> the quit was cancelled
+-- Returns "new-world", "cancelled" or nil (still closing, keep waiting).
+function PlayerRef.ProbeForNewPlayer(cancelSeconds)
+    if not worldClosing then return nil end
+    local now = os.clock()
+    local ok, list = pcall(function() return FindAllOf("PalPlayerCharacter") end)
+    local found = nil
+    if ok and type(list) == "table" then
+        for _, p in ipairs(list) do
+            if p ~= nil and is_valid(p) then found = p break end
+        end
+    end
+    if found == nil then return nil end
+    local foundAddress = address_of(found)
+    if closingPlayerAddress == nil or foundAddress == nil or foundAddress ~= closingPlayerAddress then
+        PlayerRef.SetWorldClosing(false)
+        cached, cachedName = found, nil
+        cachedAt = now
+        lastLivenessAt = now
+        return "new-world"
+    end
+    if closingSince ~= nil and (now - closingSince) >= (cancelSeconds or 10.0) then
+        PlayerRef.SetWorldClosing(false)
+        cached, cachedName = found, nil
+        cachedAt = now
+        lastLivenessAt = now
+        return "cancelled"
+    end
+    return nil
 end
 
 -- How many world searches have run this session (tests and profiling).

@@ -43,5 +43,17 @@ expect('Play (F8) is still bound', str('__BINDS["F8"] ~= nil'), 'true');
 expect('the personality-tag toggle (F9) is still bound', str('__BINDS["F9"] ~= nil'), 'true');
 expect('the passive-gain toggle (F10) is still bound', str('__BINDS["F10"] ~= nil'), 'true');
 
+// 2026-09-17 — the world-change crash, found by bisect: a keybind callback
+// does NOT run on the game thread, and starting an animation from there
+// corrupted engine state so the NEXT world load died. Pet and Feed were
+// always safe because they arrive through RegisterHook, inside the game's own
+// call stack. Every keybind must hop to the game thread before doing anything.
+run('__GAME_THREAD_CALLS = 0; __BINDS["F8"]()', 'f8');
+expect('F8 hops to the game thread', str('__GAME_THREAD_CALLS'), '1');
+run('__GAME_THREAD_CALLS = 0; __BINDS["F9"]()', 'f9');
+expect('F9 hops to the game thread', str('__GAME_THREAD_CALLS'), '1');
+run('__GAME_THREAD_CALLS = 0; __BINDS["F10"]()', 'f10');
+expect('F10 hops to the game thread', str('__GAME_THREAD_CALLS'), '1');
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);

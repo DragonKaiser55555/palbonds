@@ -182,6 +182,34 @@ local function safe_call(fn, ...)
     end
     return nil, result
 end
+
+-- ===================================================================
+-- WORLD-CLOSING GATE (three-hundred-and-twenty-ninth pass, 2026-09-17)
+-- ===================================================================
+-- Dragon's third crash log caught this file's hook still WORKING after the
+-- world had started closing: the last line written before the crash was a
+-- personality read that came back "PalAIResponsePreset" -- the engine's raw
+-- base name, which is what reading a half-destroyed object looks like.
+--
+-- Letting go of our references at the confirm (pass 328) was necessary but not
+-- sufficient, because the game keeps calling the functions we hooked while it
+-- tears the world down, and UE4SS in this build cannot unregister a hook. So
+-- every hook callback in this file asks this first and returns immediately
+-- while a quit is in progress: the mod goes deliberately blind from the moment
+-- the player confirms until the next world's character exists.
+--
+-- Cost: one function call per hook invocation, no scan, no reflection -- and it
+-- is a plain boolean read the rest of the session.
+local playerRefForGate = nil
+local function world_is_closing()
+    if playerRefForGate == nil then
+        local okReq, M = pcall(require, "PlayerRef")
+        if not okReq or M == nil or M.IsWorldClosing == nil then return false end
+        playerRefForGate = M
+    end
+    local ok, closing = pcall(playerRefForGate.IsWorldClosing)
+    return ok and closing == true
+end
 local function vec_sub(a, b)
     return { X = a.X - b.X, Y = a.Y - b.Y, Z = a.Z - b.Z }
 end
@@ -586,6 +614,12 @@ local function stop_player_cheer(player)
     end) == true
 end
 Interaction.StopPlayerCheer = stop_player_cheer
+-- Exported for the harness: the emote call is where the world-change crash
+-- lived (see the parameter block in play_player_emote), so a test has to be
+-- able to fire it directly rather than through aiming at a Pal.
+function Interaction.PlayPlayerEmote(n)
+    return play_player_emote(n)
+end
 
 local function do_play()
     Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting Play", PLAY_KEY))
@@ -594,6 +628,7 @@ local function do_play()
         Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
         return
     end
+
     local playerActionComp = player.ActionComponent
     if playerActionComp and playerActionComp:IsValid() then
         local playerIdle = safe_call(function() return playerActionComp:ActionIsEmpty() end)
@@ -1456,11 +1491,6 @@ end
 Interaction.GrantPetWhenItHappens = grant_pet_when_it_happens
 
 local function closeRadialMenuActionWindow()
-    -- Profiling (2026-09-15): closing the radial menu stalled 108ms on average
-    -- (up to 140ms) in run D with no world search involved, so time the two
-    -- things it can do. Profiler.start() is nil when profiling is off.
-    local okProf, Prof = pcall(require, "Profiler")
-    if not okProf then Prof = nil end
     if radialMenuRedirectedThisWindow and lastDecidedInstruction then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] window closing with a substituted wild Pal and a decided instruction=" .. tostring(lastDecidedInstruction) .. " — firing the real action now")
         if lastDecidedInstruction == "care" then
@@ -1469,15 +1499,11 @@ local function closeRadialMenuActionWindow()
             -- playing on this Pal because of the substitution — calling
             -- do_pet() here would try to play a SECOND animation and, far
             -- worse, would be swallowed by its own anti-spam gate.
-            local tPet = Prof and Prof.start()
             -- 2026-09-16: granted only once the pet is seen happening.
             local petTarget = lastRedirectedWildPalActor
             safe_call(function() grant_pet_when_it_happens(petTarget) end)
-            if Prof then Prof.stop("radial close: pet grant (grant_wild_interaction)", tPet) end
         elseif lastDecidedInstruction == "feed" then
-            local tFeed = Prof and Prof.start()
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
-            if Prof then Prof.stop("radial close: feed dispatch (do_real_wild_feed_via_worker_menu)", tFeed) end
             if not realFeedOk then
 
                 -- Two-hundred-and-eighty-sixth pass (2026-09-09) -- REMOVED, and
@@ -1574,14 +1600,26 @@ play_player_emote = function(n)
         Logger.log("[PalBonds/Interaction] [EMOTE] the player controller has no valid Pawn")
         return false
     end
-    local ok, err = pcall(function()
-        pc:ActionComponent_PlayAction_ToServer_ForPlayer(pawn, {}, cls, 0)
-    end)
-    -- Failure-only: the cheer has worked on every Play press since it shipped.
-    if not ok then
-        Logger.log("[PalBonds/Interaction] [EMOTE] playing BP_Action_Emote_" .. n ..
-            "_C FAILED: " .. tostring(err))
+    -- Through the player's own ActionComponent: no parameter block, nothing
+    -- networked, the same shape of call this mod already makes on Pals.
+    --
+    -- History, so nobody chases it again (2026-09-17): this used to be
+    -- pc:ActionComponent_PlayAction_ToServer_ForPlayer(pawn, {}, cls, 0), from the
+    -- Kick Keybind reference mod, and the empty `{}` for its
+    -- FActionDynamicParameter was briefly blamed for the world-change crash.
+    -- It was not: filling the block in made UE4SS refuse the call, so the emote
+    -- simply never played. The real cause was that F8 ran this OFF the game
+    -- thread -- see run_on_game_thread near Interaction.Init.
+    local playerActionComp = safe_call(function() return pawn.ActionComponent end)
+    if playerActionComp == nil or not safe_call(function() return playerActionComp:IsValid() end) then
+        Logger.log("[PalBonds/Interaction] [EMOTE] the player has no readable ActionComponent — skipping the cheer")
+        return false
     end
+    local ok, err = pcall(function()
+        playerActionComp:PlayAction(pawn, cls)
+    end)
+    Logger.log("[PalBonds/Interaction] [EMOTE] BP_Action_Emote_" .. n ..
+        "_C via ActionComponent:PlayAction — " .. (ok and "call ok" or ("FAILED: " .. tostring(err))))
     return ok
 end
 
@@ -1635,14 +1673,53 @@ function Interaction.FeedGrantAmount(itemId, worldContext)
     return FEED_FRIENDSHIP_BASE + FEED_RARITY_BONUS[tier], "rarity " .. tostring(rarity)
 end
 
+-- ===================================================================
+-- KEYBINDS RUN OFF THE GAME THREAD (pass 333, 2026-09-17) — THE CRASH
+-- ===================================================================
+-- Dragón's bisect ended here, and the answer was never in the quit path at all:
+--
+--   pet only  -> clean      feed only -> clean      Play (F8) -> crash
+--
+-- Pet and Feed reach the mod through RegisterHook, which fires INSIDE the
+-- game's own call stack — the game thread. F8 reaches it through
+-- RegisterKeyBind, which UE4SS services on its OWN thread. From there the mod
+-- was starting animations, allocating action objects and queueing montages
+-- straight into the engine, off-thread. Nothing fails at the time; the engine
+-- state is quietly corrupted and the next world load reads freed memory —
+-- EXCEPTION_ACCESS_VIOLATION 0x338, in game code, under UE4SS. Which is
+-- exactly why four correct fixes to the world-change handling changed nothing,
+-- and why the two clean v1.1.1 runs were the pet-only and feed-only ones.
+--
+-- UE4SS's own maintainer (narknon, issue #1345, already quoted in
+-- docs/hook-points.md) says the same thing about their async entry points:
+-- use the in-game-thread helpers. This mod does that everywhere EXCEPT its
+-- keybinds, which is the one place it touched the engine directly.
+--
+-- So every keybind body now hops onto the game thread first. The cost is one
+-- scheduled callback per press.
+local function run_on_game_thread(fn)
+    local direct = pcall(function() ExecuteInGameThread(function() safe_call(fn) end) end)
+    if direct then return true end
+    local delayed = pcall(function() ExecuteInGameThreadWithDelay(1, function() safe_call(fn) end) end)
+    if delayed then return true end
+
+    -- Neither helper exists: better to do the work late than not at all, but
+    -- say so, because this is the state the crash lived in.
+    Logger.log("[PalBonds/Interaction] [KEYBIND] could not reach the game thread — running directly, which is what used to corrupt the next world load")
+    safe_call(fn)
+    return false
+end
+
 function Interaction.Init()
     Logger.log(string.format("[PalBonds/Interaction] %s = Play — random Pal idle animation + trust grant, same range/gating as Pet/Feed", PLAY_KEY))
     RegisterKeyBind(Key[PLAY_KEY], function()
-        safe_call(do_play)
+        run_on_game_thread(do_play)
     end)
 
     RegisterKeyBind(Key.F9, function()
-        safe_call(function()
+        -- Same game-thread hop as Play (pass 333): this one touches live
+        -- nameplate widgets and shows a toast, both engine work.
+        run_on_game_thread(function()
             local okI, IndicatorMod = pcall(require, "Indicator")
             if not (okI and IndicatorMod and IndicatorMod.TogglePersonalityLabels) then
                 Logger.log("[PalBonds/Interaction] [TAG-TOGGLE] Indicator.TogglePersonalityLabels is unavailable — nothing toggled")
@@ -1665,7 +1742,9 @@ function Interaction.Init()
     -- bare function keys; nothing has been bound to it since the radial menu
     -- took over, so it is free.
     RegisterKeyBind(Key.F10, function()
-        safe_call(function()
+        -- Same game-thread hop as Play (pass 333): this one touches live
+        -- nameplate widgets and shows a toast, both engine work.
+        run_on_game_thread(function()
             local okT, TrustMod = pcall(require, "Trust")
             if not (okT and TrustMod and TrustMod.TogglePassiveFriendshipGain) then
                 Logger.log("[PalBonds/Interaction] [PASSIVE-TOGGLE] Trust.TogglePassiveFriendshipGain is unavailable — nothing toggled")
@@ -2040,6 +2119,7 @@ function Interaction.Init()
     local loggedHookFailureOnce = {}
     local function make_hook_handler(onFire)
         return function(Context, A, B, C)
+            if world_is_closing() then return end
             local self_ = hook_get(Context)
             if onFire then
 
@@ -2327,6 +2407,7 @@ function Interaction.Init()
     -- either way.
     local okOtomoGetter = pcall(function()
         RegisterHook("/Script/Pal.PalOtomoHolderComponentBase:TryGetSpawnedOtomo", function(Context) end, function(Context, ReturnValue)
+            if world_is_closing() then return end
 
             -- Two-hundred-and-sixth pass (2026-09-06) — IDLE PATH MADE FREE.
             -- This hook is LOAD-BEARING and must stay: the substitution
@@ -2812,6 +2893,7 @@ function Interaction.Init()
         local path = WORKER_MENU_OVERLAY_CLASS .. ":OnSetup"
         local ok = pcall(function()
             RegisterHook(path, function(Context)
+                if world_is_closing() then return end
                 local self_ = hook_get(Context)
                 if not self_ then return end
                 local parameter = safe_call(function() return self_.Parameter end)
@@ -2843,6 +2925,7 @@ function Interaction.Init()
     worker_onsetup_retry_runner()
     local okPushWidget = pcall(function()
         RegisterHook("/Script/Pal.PalHUDInGame:PushWidgetStackableUI", function(Context, WidgetClassParam, ParameterParam)
+            if world_is_closing() then return end
             try_fix_worker_menu_parameter("PalHUDInGame:PushWidgetStackableUI", Context, WidgetClassParam, ParameterParam)
         end)
     end)
@@ -2851,6 +2934,7 @@ function Interaction.Init()
     end
     local okServicePush = pcall(function()
         RegisterHook("/Script/Pal.PalHUDService:Push", function(Context, WidgetClassParam, ParameterParam)
+            if world_is_closing() then return end
             try_fix_worker_menu_parameter("PalHUDService:Push", Context, WidgetClassParam, ParameterParam)
         end)
     end)
@@ -2888,5 +2972,31 @@ function Interaction.OnWildPalPetted(palActor)
     else
         Logger.log("[PalBonds/Personality] could not resolve a stable ID for this Pal (handle/ID lookup failed) — see Personality.lua")
     end
+end
+
+-- ===================================================================
+-- WORLD CHANGE (three-hundred-and-twenty-eighth pass, 2026-09-17)
+-- ===================================================================
+-- The radial-menu and aim caches all remember a Pal, a menu widget or a scan
+-- result from the world that just closed, and a Lua reference keeps a UObject
+-- alive past its world. Dropped here so the next world starts clean.
+--
+-- Deliberately KEPT: cachedWorkerMenuParameter, which is outered to the
+-- GameInstance precisely so it SURVIVES a world change (pass 285 -- outering it
+-- to the player character was the original 0x338 crash).
+function Interaction.ResetForNewWorld()
+    palScanCache = nil
+    palScanCacheAge = 0
+    pendingWildFeedTarget = nil
+    lastAimedInteractTarget = nil
+    lastRedirectedWildPalName = nil
+    lastRedirectedWildPalActor = nil
+    lastDecidedInstruction = nil
+    cachedRedirectWildPal = nil
+    lastRedirectComputeClock = nil
+    lastOpenMenuWidget = nil
+    paidPetActionByPal = {}
+    capsuleReported = {}
+    Logger.log("[PalBonds/Interaction] [WORLD-RESET] dropped the radial-menu, aim and pet-check references from the old world")
 end
 return Interaction

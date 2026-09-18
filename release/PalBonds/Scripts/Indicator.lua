@@ -8,6 +8,34 @@ local function safe_call(fn, ...)
     if ok then return result end
     return nil, result
 end
+
+-- ===================================================================
+-- WORLD-CLOSING GATE (three-hundred-and-twenty-ninth pass, 2026-09-17)
+-- ===================================================================
+-- Dragon's third crash log caught this file's hook still WORKING after the
+-- world had started closing: the last line written before the crash was a
+-- personality read that came back "PalAIResponsePreset" -- the engine's raw
+-- base name, which is what reading a half-destroyed object looks like.
+--
+-- Letting go of our references at the confirm (pass 328) was necessary but not
+-- sufficient, because the game keeps calling the functions we hooked while it
+-- tears the world down, and UE4SS in this build cannot unregister a hook. So
+-- every hook callback in this file asks this first and returns immediately
+-- while a quit is in progress: the mod goes deliberately blind from the moment
+-- the player confirms until the next world's character exists.
+--
+-- Cost: one function call per hook invocation, no scan, no reflection -- and it
+-- is a plain boolean read the rest of the session.
+local playerRefForGate = nil
+local function world_is_closing()
+    if playerRefForGate == nil then
+        local okReq, M = pcall(require, "PlayerRef")
+        if not okReq or M == nil or M.IsWorldClosing == nil then return false end
+        playerRefForGate = M
+    end
+    local ok, closing = pcall(playerRefForGate.IsWorldClosing)
+    return ok and closing == true
+end
 local function hook_get(param)
     if param == nil then return nil end
     local ok, value = pcall(function() return param:get() end)
@@ -146,6 +174,7 @@ local function register_bind_hook_immediate(round)
     local hookPath = "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle"
     local hookOk, hookErr = pcall(function()
         RegisterHook(hookPath, function(Context, TargetHandle)
+            if world_is_closing() then return end
             local self = hook_get(Context)
             local handle = hook_get(TargetHandle)
             if self == nil or handle == nil then return end
@@ -160,6 +189,7 @@ local function register_bind_hook_immediate(round)
         local unbindPath = hookPath:gsub(":BindFromHandle$", ":Unbind")
         local unbindOk, unbindErr = pcall(function()
             RegisterHook(unbindPath, function(Context)
+                if world_is_closing() then return end
                 local self = hook_get(Context)
                 if self == nil then return end
                 local key = describe_widget(self)
@@ -1619,6 +1649,7 @@ local function register_boss_hook(round)
     if hasRegisteredBossHook then return end
     local ok, err = pcall(function()
         RegisterHook(BOSS_GAUGE_HOOK_PATH, function(Context, TargetCharacter)
+            if world_is_closing() then return end
             queue_boss_gauge(hook_get(Context), hook_get(TargetCharacter))
         end)
     end)
@@ -1694,11 +1725,7 @@ local function scan_for_gauge_widgets()
     -- reported, which needs no search. The world sweep below it now runs only
     -- until that hook is registered, for NAMEPLATE_SWEEPS_AFTER_HOOK ticks after,
     -- and then every NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS ticks as a safety net.
-    -- Profiler sections are nil when profiling is off.
-    local okProf, Prof = pcall(require, "Profiler")
-    if not okProf then Prof = nil end
 
-    local tPending = Prof and Prof.start()
     for key, g in pairs(pendingGauges) do
         if not safe_call(function() return g:IsValid() end) then
             pendingGauges[key] = nil
@@ -1707,7 +1734,6 @@ local function scan_for_gauge_widgets()
             if barInstalledForGauge[key] then pendingGauges[key] = nil end
         end
     end
-    if Prof then Prof.stop("nameplate tick: install_trust_bar on hook-reported gauges", tPending) end
 
     local runWorldSweep
     if not hasRegisteredBindHook then
@@ -1722,13 +1748,11 @@ local function scan_for_gauge_widgets()
         safe_call(function()
             local gauges = FindAllOf("WBP_PalNPCHPGauge_C")
             if gauges == nil then return end
-            local tInstall = Prof and Prof.start()
             for _, g in ipairs(gauges) do
                 if g ~= nil and safe_call(function() return g:IsValid() end) then
                     safe_call(function() install_trust_bar(g) end)
                 end
             end
-            if Prof then Prof.stop("nameplate sweep: install_trust_bar over all gauges", tInstall) end
         end)
     end
 
@@ -1741,13 +1765,9 @@ local function scan_for_gauge_widgets()
 
     -- Fifty-seventh pass: refresh every trust bar that resolved a real
     -- Pal actor, every tick, so they actually move.
-    local tBars = Prof and Prof.start()
     update_trust_bars()
-    if Prof then Prof.stop("nameplate sweep: update_trust_bars", tBars) end
 
-    local tBoss = Prof and Prof.start()
     update_boss_displays()
-    if Prof then Prof.stop("boss bars: install + refresh", tBoss) end
 
     -- Two-hundred-and-thirty-seventh pass (2026-09-07) — REMOVED FROM THE
     -- TICK, and this is a real crash suspect, not just cleanup.
@@ -1879,5 +1899,35 @@ function Indicator.Init()
     -- the BindFromHandle hook above, both untouched.
 
     scheduleScan()
+end
+
+-- ===================================================================
+-- WORLD CHANGE (three-hundred-and-twenty-eighth pass, 2026-09-17)
+-- ===================================================================
+-- Every table below holds either a nameplate widget from the world that just
+-- closed or the Pal actor that widget belonged to, and a Lua reference keeps a
+-- UObject alive. Nothing cleared them until now, so they survived a quit and
+-- the engine walked them again in the next world -- the 0x338 crash shape this
+-- project has now paid for three times (see Combat.ResetForNewWorld).
+--
+-- Only references are dropped; no game call is made. The gauge widgets
+-- themselves live under the GameInstance and are the game's to manage. The tags
+-- and bars we build hang off nameplates that die with their world, so the
+-- correct response to a world change is simply to forget all of them and let
+-- the hook install fresh ones in the new world.
+function Indicator.ResetForNewWorld()
+    local bars, bosses = 0, 0
+    for _ in pairs(trackedBars) do bars = bars + 1 end
+    for _ in pairs(bossEntries) do bosses = bosses + 1 end
+    pendingGauges = {}
+    gaugeHandleByKey = {}
+    barInstalledForGauge = {}
+    trackedBars = {}
+    pendingBossGauges = {}
+    bossEntries = {}
+    nameplateSweepsSinceHook = 0
+    Logger.log(string.format(
+        "[PalBonds/Indicator] [WORLD-RESET] dropped %d tracked nameplate bar(s) and %d boss bar(s) from the old world",
+        bars, bosses))
 end
 return Indicator

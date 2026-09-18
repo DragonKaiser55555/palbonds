@@ -11,13 +11,6 @@
     pass-by-pass research history is in docs/hook-points.md.
 ]]
 
--- Profiler FIRST: when its PROFILING switch is on it wraps the UE4SS globals
--- (RegisterHook, timers, FindAllOf, ...) with timing, and that has to happen
--- before any module below can register or schedule anything. Off in every
--- shipped build, where this call returns immediately.
-local Profiler    = require("Profiler")
-Profiler.InstallGlobalWrappers()
-
 local Logger      = require("Logger")
 local Personality = require("Personality")
 local Interaction = require("Interaction")
