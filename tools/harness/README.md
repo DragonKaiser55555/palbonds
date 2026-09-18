@@ -37,6 +37,8 @@ node perffixtest.js <SCRIPTS>                      # microstutter fixes: PlayerR
 node bosstest.js    <SCRIPTS>                      # boss HP bar; the 20% calm-down; 1.1.4 forgiveness rules (R: revert tag+AI, one forgiveness; U: a player hit below 50% empties the bar, no betrayal); G: as shipped
 node worldchangetest.js <SCRIPTS>                 # the 1.1.2 world-change crash: PlayerRef lets go of a torn-down player, a follower triggers a 4 s re-check, the fast loop resets (fails on 1.1.2, section C passes on 1.1.1)
 node feedtest.js    <SCRIPTS> prelude_emote.lua    # feed amount by item rarity
+node pointstest.js  <SCRIPTS>                      # own trust points: grants, bar, 50% follow, passive, join, hit rules, drift, world reset -- and the game's friendship is only ever written by the join bonus
+node settingstest.js <SCRIPTS>                     # the player's settings file: written defaults, validation, shared-folder location + fallback, never rewritten, sandboxed, and the modules use the values
 node playstoptest.js <SCRIPTS> prelude_emote.lua   # the player's cheer stops with the Pal's Play animation
 python hoistcheck.py <SCRIPTS>                     # calls before their definition
 python undefcheck.py <SCRIPTS>                     # calls to functions never defined

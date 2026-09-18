@@ -22,7 +22,7 @@ KNOWN = {
     'print', 'pairs', 'ipairs', 'type', 'tostring', 'tonumber', 'pcall',
     'xpcall', 'require', 'select', 'error', 'assert', 'setmetatable',
     'getmetatable', 'rawget', 'rawset', 'rawequal', 'next', 'unpack',
-    'collectgarbage', 'load', 'loadstring', 'dofile',
+    'collectgarbage', 'load', 'loadstring', 'loadfile', 'dofile',
     # UE4SS globals
     'RegisterHook', 'RegisterKeyBind', 'FindFirstOf', 'FindAllOf',
     'StaticFindObject', 'StaticConstructObject', 'ExecuteInGameThread',

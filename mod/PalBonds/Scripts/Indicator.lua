@@ -375,41 +375,16 @@ local function resolve_pal_actor_from_gauge(gaugeWidget)
     return nil, "no hooked handle for this gauge yet (bound before the hook was registered), and the stored bindedHandle field doesn't resolve in this build — see DIAG-HANDLE log"
 end
 
--- Reuses this project's own already-proven route to the friendship value
--- (Interaction.lua's get_individual_parameter: actor.CharacterParameterComponent
--- :GetIndividualParameter()), just starting from an actor resolved via the
--- gauge's bindedHandle instead of a targeted/interacted-with Pal.
+-- The bar's fill comes from PalBonds' own trust points (Trust.GetBarRatio,
+-- 2026-09-18). It used to read the game's FriendshipPoint through the Pal's
+-- CharacterParameterComponent, three reflection calls per bar per refresh; it is
+-- now one name lookup and a table read. A Pal with no bonding record reads 0
+-- without any level lookup, as before.
 local function get_friendship_ratio(actor)
-    local paramOk, param = pcall(function()
-        local comp = actor.CharacterParameterComponent
-        if comp ~= nil and comp:IsValid() then
-            return comp:GetIndividualParameter()
-        end
-        return nil
-    end)
-    if not (paramOk and param ~= nil and param:IsValid()) then
-        return nil, "no readable CharacterParameterComponent/IndividualParameter"
+    local ok, ratio = pcall(function() return Trust.GetBarRatio(actor) end)
+    if not ok or type(ratio) ~= "number" then
+        return nil, "Trust.GetBarRatio failed: " .. tostring(ratio)
     end
-    local pointOk, point = pcall(function() return param:GetFriendshipPoint() end)
-    if not (pointOk and point ~= nil) then
-        return nil, "GetFriendshipPoint() failed"
-    end
-
-    -- Hundred-and-eighty-ninth pass (2026-09-05): Trust.GetBondingThreshold
-    -- now returns nil on purpose for a Pal with no real interaction on
-    -- record — Dragón's explicit ask, "dont use a fallback, just dont
-    -- compute it at all." A nil here means literally nothing to show
-    -- yet, so this returns 0 directly WITHOUT dividing by any default —
-    -- no per-Pal level lookup, no fallback constant, nothing computed
-    -- for the vast majority of Pals that are never actually interacted
-    -- with.
-    local capOk, cap = pcall(function() return Trust.GetBondingThreshold(actor) end)
-    if not (capOk and cap ~= nil and cap > 0) then
-        return 0, nil
-    end
-    local ratio = point / cap
-    if ratio > 1 then ratio = 1 end
-    if ratio < 0 then ratio = 0 end
     return ratio, nil
 end
 
@@ -630,7 +605,7 @@ function Indicator.TogglePersonalityLabels()
     end
     Logger.log("[PalBonds/Indicator] [TAG-TOGGLE] personality tags are now " ..
         (personalityLabelsVisible and "VISIBLE" or "HIDDEN") ..
-        " (F9; session-only, resets to visible on the next launch)")
+        " (" .. tostring(require("Settings").Get("KeyTags")) .. "; session-only, resets to visible on the next launch)")
 
     -- Two-hundred-and-eighty-seventh pass: returned so the key handler can put
     -- the new state on screen. Both toggles are invisible otherwise -- with the

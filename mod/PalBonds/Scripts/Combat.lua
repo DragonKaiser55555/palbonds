@@ -4112,6 +4112,63 @@ function Combat.StartFollowing(pal)
         Personality.ApplyCompanionPreset(palId, pal, ENABLE_COMBAT_ASSIST)
     end)
 end
+-- Every per-follower table, dropped by key. Shared by StopFollowing and
+-- ForgetDespawnedFollower so the two can never drift apart.
+local function forget_follower_tables(key)
+    release_leash(key)
+    BondingState[key] = nil
+    FollowerActors[key] = nil
+    OtomoCompositeCache[key] = nil 
+    loggedFollowTickOnce[key] = nil
+
+    -- Two-hundred-and-thirty-first pass: drop the follow-action reference and
+    -- its re-assert counter. This matters most on CAPTURE, which is the
+    -- normal way following ends: the Pal becomes a real Otomo with its own
+    -- controller and its own follow behaviour, and a hand-pushed action of
+    -- ours still holding a re-asserted Trainer would be competing with it.
+    -- It also stops these two tables growing by one dead entry per Pal for
+    -- the whole session.
+    followActionObjects[key] = nil
+    followActionAttempts[key] = nil
+    followActionCapLogged[key] = nil
+    trainerReassertCounter[key] = nil
+    trainerClearedCount[key] = nil
+    stuckZeroStreak[key] = nil
+    stuckWarned[key] = nil
+    followSlotIndex[key] = nil
+    aimFrozen[key] = nil
+    recallActive[key] = nil
+
+    -- The fight bookkeeping has to go too (2026-09-12). Without this a Pal
+    -- that joined the party mid-fight stayed in followSuspendedForCombat,
+    -- and the combat-window close then tried to "rebuild follow" on what was
+    -- by then a real party Otomo (run 33, 17:08:47). The rebuild found no
+    -- bonding state and did nothing, but a stale key here is also what
+    -- Trust's abandonment check reads, so it must not outlive the bond.
+    followSuspendedForCombat[key] = nil
+    combatActionObjects[key] = nil
+    combatActionAttempts[key] = nil
+    combatActionAttemptsSince[key] = nil
+    followActionAttemptsSince[key] = nil
+    selfDefenceEnemy[key] = nil
+    selfDefenceLastHitAt[key] = nil
+    followProtectedSince[key] = nil
+    followSuppressedLogged[key] = nil
+    passiveDespiteHateLogged[key] = nil
+    offTargetLogged[key] = nil
+    lastSeenAction[key] = nil
+end
+
+-- A follower that DESPAWNED (2026-09-18, Dragón: "if a pal despawn lets show
+-- the abandoned toast"). The actor is gone, so nothing may be called on it --
+-- StopFollowing would try to cancel actions on its controller. Only our own
+-- references are dropped, by the key Trust already holds.
+function Combat.ForgetDespawnedFollower(key)
+    if key == nil then return end
+    forget_follower_tables(key)
+    Logger.log("[PalBonds/Combat] " .. tostring(key) .. " despawned while following — its follower references are released")
+end
+
 function Combat.StopFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
@@ -4306,48 +4363,7 @@ function Combat.StopFollowing(pal)
                 end
             end
         end)
-        release_leash(key)
-        BondingState[key] = nil
-        FollowerActors[key] = nil
-        OtomoCompositeCache[key] = nil 
-        loggedFollowTickOnce[key] = nil
-
-        -- Two-hundred-and-thirty-first pass: drop the follow-action reference and
-        -- its re-assert counter. This matters most on CAPTURE, which is the
-        -- normal way following ends: the Pal becomes a real Otomo with its own
-        -- controller and its own follow behaviour, and a hand-pushed action of
-        -- ours still holding a re-asserted Trainer would be competing with it.
-        -- It also stops these two tables growing by one dead entry per Pal for
-        -- the whole session.
-        followActionObjects[key] = nil
-        followActionAttempts[key] = nil
-        followActionCapLogged[key] = nil
-        trainerReassertCounter[key] = nil
-        trainerClearedCount[key] = nil
-        stuckZeroStreak[key] = nil
-        stuckWarned[key] = nil
-        followSlotIndex[key] = nil
-        aimFrozen[key] = nil
-        recallActive[key] = nil
-
-        -- The fight bookkeeping has to go too (2026-09-12). Without this a Pal
-        -- that joined the party mid-fight stayed in followSuspendedForCombat,
-        -- and the combat-window close then tried to "rebuild follow" on what was
-        -- by then a real party Otomo (run 33, 17:08:47). The rebuild found no
-        -- bonding state and did nothing, but a stale key here is also what
-        -- Trust's abandonment check reads, so it must not outlive the bond.
-        followSuspendedForCombat[key] = nil
-        combatActionObjects[key] = nil
-        combatActionAttempts[key] = nil
-        combatActionAttemptsSince[key] = nil
-        followActionAttemptsSince[key] = nil
-        selfDefenceEnemy[key] = nil
-        selfDefenceLastHitAt[key] = nil
-        followProtectedSince[key] = nil
-        followSuppressedLogged[key] = nil
-        passiveDespiteHateLogged[key] = nil
-        offTargetLogged[key] = nil
-        lastSeenAction[key] = nil
+        forget_follower_tables(key)
     end
 
     -- Two-hundred-and-fifty-fourth pass: Dragon reported a betrayed Pal "continued

@@ -37,7 +37,7 @@ local Logger = {}
 -- With it on, every log line is flushed to disk as it is written and the file
 -- grows for the whole session. That is the behaviour the release build exists to
 -- remove.
-local DEBUG_LOGGING = false
+local DEBUG_LOGGING = true
 
 -- Only used when DEBUG_LOGGING is on. Relative, because the absolute path this
 -- used to hardcode pointed at one specific machine's Steam install: mods

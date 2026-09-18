@@ -56,13 +56,17 @@ Personality.DISPOSITIONS = DISPOSITIONS
 -- Hundred-and-sixty-second pass (2026-09-04): Dragón's rebalance —
 -- friendly 20->30, warlike_anyway and warlike_without_player both
 -- 10->5 each (still sums to 100).
+-- 2026-09-18: the weights come from the player's settings file (Settings.lua,
+-- defaults 35/30/10/10/5/5/5). Tier names are the internal ones; the tags the
+-- player sees are Normal/Curious/Timid/Aloof/Grumpy/Hostile/Feral, in order.
+local SettingsP = require("Settings")
 local PERSONALITY_TIERS = {
-    { tier = "normal", weight = 35 },
-    { tier = "friendly", weight = 30 },
-    { tier = "escape", weight = 10 },
-    { tier = "notinterested", weight = 10 },
-    { tier = "warlike", weight = 5 },
-    { tier = "warlike_anyway", weight = 5 },
+    { tier = "normal", weight = SettingsP.Get("ChanceNormal") },
+    { tier = "friendly", weight = SettingsP.Get("ChanceCurious") },
+    { tier = "escape", weight = SettingsP.Get("ChanceTimid") },
+    { tier = "notinterested", weight = SettingsP.Get("ChanceAloof") },
+    { tier = "warlike", weight = SettingsP.Get("ChanceGrumpy") },
+    { tier = "warlike_anyway", weight = SettingsP.Get("ChanceHostile") },
 
     -- Two-hundred-and-sixteenth pass (2026-09-06): "warlike_without_player"
     -- swapped out for "kill_all" at Dragón's request. His report: that tier
@@ -80,7 +84,7 @@ local PERSONALITY_TIERS = {
     -- warlike_without_player stays defined in the tables below so ForceTier
     -- can still reach it and so existing saved/labelled state stays readable —
     -- it just is not rolled any more.
-    { tier = "kill_all", weight = 5 },
+    { tier = "kill_all", weight = SettingsP.Get("ChanceFeral") },
 }
 
 -- Hundred-and-twenty-eighth pass (2026-09-03): Dragón hit a real, fair

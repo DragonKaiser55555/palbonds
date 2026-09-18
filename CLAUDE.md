@@ -1242,8 +1242,30 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 `last_published_version` 1.1.4) and GitHub (`8846dca`).** Dragón smoke-tested
 the exact release files locally AND the Workshop copy before uploading. Still
 open from this release: the Proton player's reply (Dragón posted it), the
-Nexus/Workshop description line about forgiveness (offered, not answered), and
-the disabled-old-mechanisms cleanup (next update).
+Nexus/Workshop description line about forgiveness — **Dragón: not needed**, "too
+small of an addition and one that should've been there from earlier, since
+that's what 'friendly' would make you think" — and the disabled-old-mechanisms
+cleanup (next update).
+- **Mod-compatibility questions (CS-Eden on Steam asked about "Random Sized Pals",
+  2026-09-18):** Dragón does not test other mods. Answer from what we know
+  overlaps. Aiming uses `GetScaledCapsuleRadius/HalfHeight`, so resized Pals are
+  accounted for; the only foreseeable issue is the known small interaction
+  area on very large Pals. Say "should work, untested, tell us", and never
+  claim compatibility outright.
+  - **Random Sized Pals (makkhan, Workshop 3789632682) — code read 2026-09-18,
+    compatible.** It has one hook,
+    `PalCharacterParameterComponent:OnInitializedCharacter`, and two frames
+    later (game thread, `ExecuteInGameThreadAfterFrames`) it changes the
+    MESH's `DefaultScale3D`/`RelativeScale3D` plus
+    `static.MeshCapsuleHalfHeight/Radius`, keyed per individual ID. It skips
+    bosses, and has no keybinds and no AI or trust changes. It does NOT resize
+    the root collision capsule our aim reads, so an enlarged Pal keeps its normal
+    interaction area inside a bigger model: aim at the middle of the body.
+    PalBonds never hooks spawning (personalities roll when a Pal is first
+    noticed) and writes the sensor's preset, which is a different component.
+    Dragón subscribed only to let Claude read it; it is not enabled.
+  - Side note for our own code: this UE4SS build has
+    `ExecuteInGameThreadAfterFrames`.
 - Dragón: "ship it without logs nor spies nor anything that's development
   related — just the fixes and the new things you added, no test codes nor
   functions that didn't work". So, removed from `mod/` itself (source =
@@ -1269,8 +1291,12 @@ the disabled-old-mechanisms cleanup (next update).
   (`steamapps/workshop/content/1623730/3797816321/`, 9 scripts, Info.json 1.1.4
   bumped in place with its BOM kept, `.workshop.json` untouched) and the game's
   NativeMods copy. Both are byte-identical to `release/workshop`, and Profiler.lua
-  is gone from both. The local dev install is DISABLED (`*.MODS-DISABLED`) for
-  Dragón's Workshop smoke test.
+  is gone from both. The local dev install was disabled for Dragón's Workshop
+  smoke test and is **ENABLED again (2026-09-18, after the release)**: Dragón
+  unticked the Workshop mods (no `ActiveModList`), and `dwmapi.dll` and
+  `enabled.txt` are back. Development mode (Dragón, 2026-09-18): DEBUG_LOGGING is
+  **true** in both `mod/` and the game copy, otherwise identical to 1.1.4. Set it
+  back to false before the next release. Next work: the own-points rework.
 - **Workshop pre-upload test: VALID, confirmed 2026-09-18.** Dragón enabled the
   Workshop mods and played; the pals stopped attacking at 20%. Afterwards:
   - Both copies were still byte-identical to 1.1.4, and Steam did NOT revert the
@@ -1619,7 +1645,169 @@ they fail against 1.1.3.
   - rebindable Play / tags / passive-gain keys.
   - **Dragón's call:** the goal is an in-game menu, starting with a settings
     file first. Still open: where a user config survives Workshop updates.
+    - **Candidate answer (from Random Sized Pals, 2026-09-18):** do NOT ship
+      the config file. The mod writes a default `config.lua` beside `main.lua`
+      on first run (write to `.tmp`, then rename) and `dofile`s it after that. A
+      Workshop update replaces only shipped files, so an unshipped config
+      survives. That is their claim and it is unverified here. Test it against
+      the Workshop re-copy behaviour we found for 1.1.4 (the game re-copies the
+      content folder when mods are enabled) before relying on it.
   - Own points: Dragón is interested; details later.
+  - **DarnMenu 1.8.11 studied (2026-09-18).** Dragón put a copy in
+    `32-PalBonds/DarnMenu 1.8.11 .../` to learn from, not as a dependency.
+    Its licence: "free to use and modify".
+    - **An in-game settings screen IS possible from pure Lua, with no pak and
+      no Unreal editor.** This corrects what I said earlier. It uses
+      `NotifyOnNewObject` on `WBP_MenuESC_C`, then after 50 ms (never inside
+      the construction callback: AV writing 0x80) it constructs the game's own
+      `WBP_MenuESC_Button_S_C` with `StaticConstructObject` under "Link
+      Discord". Clicks come through a `RegisterHook` on that button class. The
+      page is built from UMG CanvasPanel/ScrollBox/SizeBox.
+    - Cost: ui.lua is 200 KB plus main.lua 176 KB, and full of crash lessons.
+      Widget churn inside an open menu is their crash family, and a pre-build
+      of about 100 widgets per ESC open caused 7 incidents before it was
+      switched off.
+    - **Config location: `Mods/shared/<name>_user.lua`, outside the mod
+      folder,** because mod updates replace the folder. `Mods/shared` already
+      exists in the Workshop UE4SS install (it is UE4SS's own library folder,
+      with UEHelpers). Unverified: whether it survives a Workshop UE4SS
+      update/re-copy. Test with a marker file in both `shared/` and our mod
+      folder, across a Workshop enable.
+    - Optional integration route: a mod writes
+      `shared/DarnMenu_schema_<Name>.lua` and adds itself to
+      `shared/DarnMenu_schema_index.lua`. With DarnMenu installed a page appears
+      under ESC → Mod Options; without it nothing happens. Values apply at the
+      next launch, or live via file polling.
+    - Lessons that match ours: RegisterKeyBind runs off the game thread, so hop
+      before touching UObjects (they crashed on it too; our 1.1.4 fix); gate
+      work during map loads; write atomically (tmp → .bak → rename); "don't take
+      the player's keys". `ExecuteWithDelay` (async) leaks a registry slot per
+      fire, according to their reading of the UE4SS source. PalBonds uses only
+      the game-thread `ExecuteInGameThreadWithDelay` plus the dead `LoopAsync`
+      fallbacks.
+- **1.1.5 PLAN (Dragón, 2026-09-18): ship TOMORROW (09-19), not today, with the
+  own-points rework plus the settings file ("either if we finish the settings
+  file or not"). Two uploads a few hours apart made no sense, and the 1.1.4
+  bugs it fixes are mild.**
+- **SETTINGS FILE v1 — IMPLEMENTED 2026-09-18, awaiting a live run.**
+  Dragón's scope: everything on the wishlist except language, as plain numbers
+  ("percentages would destroy the purpose to have multipliers per level").
+  - `Scripts/Settings.lua`, required first by Interaction, Trust, Capture,
+    Personality and Indicator. It writes `PalBonds_settings.lua` on first
+    launch into UE4SS's `Mods/shared/` (falling back to our mod folder if
+    that isn't writable) via tmp + rename, and reads it once at launch.
+    Changes apply on the next launch.
+  - Keys: Pet, Play, FeedBase, FeedBonusCommon..Legendary, KinshipPeachLesser,
+    KinshipPeach, PassivePerTick, JoinBonus (0–200000), ChanceNormal..Feral
+    (weights 0–1000; if all are 0 the defaults apply), KeyPlay/KeyTags/
+    KeyPassiveGain (validated against UE4SS's `Key` table, case-insensitive).
+  - Rules: the file is loaded with an EMPTY environment (it can only return
+    values). A bad value uses its default and is reported on the UE4SS
+    console (`[PalBonds] [SETTINGS]`, via print, so it shows in a release
+    build). An unparseable file is left untouched and all defaults apply.
+    An existing file is NEVER rewritten; settings added later use their
+    defaults. Unknown names are reported as typos.
+  - Tests: `tools/harness/settingstest.js` (in-memory file system; A–G).
+    pointstest's join check now reads the setting. `undefcheck.py` knows
+    `loadfile`. 20 suites pass, 17 hooks.
+  - Still to verify: that the file survives a Workshop update / re-copy in
+    `shared/`. Plan: tomorrow's Workshop pre-upload test doubles as that check.
+    README.txt/README.md/store text need a settings section at release.
+  - **Language (asked 2026-09-18):** about 22 short strings (7 toasts, 4
+    toggle toasts, 11 tags/labels). The code is small; the open parts are
+    writing and checking the translations (Dragón has Steam description
+    translations in ~10 languages to align terms with), whether non-English
+    characters survive UE4SS's Lua-to-game text conversion (needs one live
+    toast test), whether longer words fit the tag under the health bar, and
+    whether to follow the game's language automatically.
+- **OWN POINTS REWORK — Dragón's rulings (2026-09-18), next work:**
+  - The bar runs on PalBonds' own points, not the game's `FriendshipPoint`.
+    Every existing number carries over: base bar 500 × level tier
+    (×4/×2/×1.5/×1/×0.75/×0.5/×0.25) × 2 for bosses; 20% Friendly/forgive, 50%
+    bonded, 100% joins; Pet 50, Play 50, Feed 50 + rarity 10..50, lesser
+    Peach 250, Peach 500; passive +2 per 1.5 s while following (stays as is,
+    and becomes a setting later); a player hit below 50% drops to 0; a bonded
+    hit costs half the bar, and reaching 0 is betrayal; drift past 30 m for
+    3 s means all trust is lost.
+  - **Removed:** the −150 when something other than the player hits a
+    follower. "Since we now make the pals fight together this shouldn't exist
+    anymore."
+  - **Join bonus: only the flat +50,000** of the game's real trust. The old
+    raise-to-21,000 (`CAPTURE_BONUS_TARGET_POINT` in Trust.lua) goes; Dragón
+    didn't know it still existed. The +50,000 becomes a setting later.
+  - Play's backup branch (`INTERACTION_FRIENDSHIP_GAIN` 25, which skips the
+    fled check) moves onto the one grant path at 50. That's a bug fix.
+  - The README wording "hit a bonded Pal and it's over" overstates the rule
+    (the first hit costs half the bar). Fix the wording.
+  - Check what happens to the bars after a save and reload before building on
+    it.
+  - **IMPLEMENTED 2026-09-18, awaiting Dragón's live run.** In `mod/` and the
+    game copy (DEBUG_LOGGING true); not released.
+    - Trust.lua: `st.points` in `State`, plus `Trust.GetPoints`,
+      `Trust.AddPoints` (refuses owned Pals, clamps at 0) and
+      `Trust.GetBarRatio`. OnInteractionSucceeded, the brief-follow end check,
+      unbonded hit (→0), bonded hit (−half bar, then betrayal →0), drift (→0)
+      and passive (+2) all use it.
+    - Removed: `CAPTURE_BONUS_TARGET_POINT` (the rank-3 raise),
+      `CAPTURE_AT_FRIENDSHIP_POINT`, `DAMAGE_FRIENDSHIP_PENALTY` (the −150 was
+      already unreachable from both hooks since pass 211; its dead branch is
+      gone), `Trust.GetBondingThreshold`, `Trust.ComputeBondingThresholdFor`
+      (old F9), `lastPoint`/`lastRank`.
+    - Interaction.lua: Pet/Play (`grant_wild_interaction`) and Feed (the
+      RequestUseToCharacter post-hook) grant through `Trust.AddPoints`. Play's
+      backup branch uses the same path at 50 (`INTERACTION_FRIENDSHIP_GAIN`
+      removed). Log tags: `[BALANCE-TEST] ... trust a -> b` and
+      `[FEED-FRIENDSHIP] wild Feed +n, trust a -> b`.
+    - Indicator.lua: `get_friendship_ratio` is now `Trust.GetBarRatio`, one
+      name lookup instead of three reflection calls per bar refresh.
+    - The game's friendship is now written ONLY by Capture.OnTrustMaxed's flat
+      +50,000.
+    - **Bug fixed along the way (was in 1.1.4):** `local briefFollow` was
+      declared below `Trust.ResetForNewWorld`, so the reset wrote a stray
+      global and never cleared the real calm-down table on a world change. It
+      is now declared next to `State`.
+    - Tests: the new `tools/harness/pointstest.js` (P1–P9 plus a source scan;
+      it fails on 1.1.4, including the stray global). bosstest was moved onto
+      `Trust.GetPoints`/`GetBarRatio`. All 19 suites pass.
+    - Still to do at release: README.md/README.txt wording (the bonded hit
+      costs half the bar first); DEBUG_LOGGING back to false.
+  - **Despawned Pals are forgotten (Dragón, 2026-09-18):** "the pals are still
+    wild so on world reload or even by teleporting away they should despawn
+    and that's fine, those don't need to be recorded unless still inside the
+    radius of the player area - so let them despawn normally, no need to save
+    their data." That answers the 09-16 open question "keep or wipe an invalid
+    Pal's trust": wipe it. Implemented: `forget_despawned_pals()` at the top of
+    every Trust tick drops any NON-following record whose actor is invalid
+    (along with its level cache, drift clock and brief-follow entry), logged
+    `[DESPAWN]`. Tested in pointstest P10.
+    - **Followers, Dragón 2026-09-18: "if a pal despawn lets show the
+      abandoned toast".** Implemented. A bonded follower whose actor goes
+      invalid gets its record dropped, `Combat.ForgetDespawnedFollower(key)`
+      (every per-follower table dropped by key, with nothing called on the
+      dead actor; `forget_follower_tables` is now shared with StopFollowing),
+      and `Capture.NotifyBondLostByName(st.displayName, "abandoned")`. The
+      name is cached through `Capture.ResolveDisplayName` in
+      `Trust.StartFollowing`. A Pal on its 20% calm-down is not bonded, so it
+      is forgotten quietly. pointstest P10. This closes the 09-16 "despawn
+      mid-countdown, skipped silently forever" bug.
+    - Live run 2 (2026-09-18) confirmed: F10, a follower hit by an enemy costs
+      nothing, `[DESPAWN]` for non-followers after teleporting, and a follower
+      left behind by a teleport breaking through the normal drift path first.
+  - **Betrayed Pal un-betrayed by a later hit (found in live run 1, present
+    since 1.1.4), FIXED 2026-09-18:** after a betrayal (forced tier
+    `warlike_anyway`), the player hitting the Pal again reached the below-50%
+    rule, and RevertForgiveness put it back to its rolled personality. A
+    naturally peaceful Pal would stop being angry after being betrayed.
+    `OnFollowerDamaged` now returns early for `Capture.HasPermanentlyFled`.
+    pointstest P11.
+  - **Human NPCs can be petted but not fed. It has always been this way, and
+    it is the game's own limit.** The wild feed calls
+    `OnSelectedOrderWorkerRadialMenu`, which Pal.hpp declares on
+    `APalMonsterCharacter` (Pals). Humans are `APalNPC`, its parent, so the
+    call fails and the mod correctly grants nothing ("the wild feed did not go
+    through"). Pet works because it goes through a different route.
+    **Dragón's call: keep it as is.** "It's already plenty rare to interact
+    with humans like that, just petting them is enough for now."
 - **Today's work: polish the two held-back features** (20% brief follow and
   the 3000 self-defence reach) with live runs. The Workshop mods are off (no
   `ActiveModList` in `PalModSettings.ini`). The local dev copy is on again

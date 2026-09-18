@@ -22,3 +22,6 @@ tools/harness/package-lock.json
 # PresentMon frame-time captures from performance test runs (large, machine-
 # specific, not part of the product).
 perf-captures/
+
+# Other mods kept locally as reference only (not ours to redistribute)
+DarnMenu*/

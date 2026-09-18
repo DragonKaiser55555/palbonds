@@ -114,14 +114,11 @@ const BOSS_STUBS = [
   '  end',
   '  return c',
   'end',
+  // __FP is the Pal's trust in points out of a 100-point bar; the bar reads it
+  // through Trust.GetBarRatio (own trust points, 2026-09-18).
   '__FP = 0',
   'function __bossPal(name)',
-  '  local p = __obj(name)',
-  '  local param = __obj("IndividualParameter")',
-  '  param.GetFriendshipPoint = function() return __FP end',
-  '  p.CharacterParameterComponent = __obj("ParamComp")',
-  '  p.CharacterParameterComponent.GetIndividualParameter = function() return param end',
-  '  return p',
+  '  return __obj(name)',
   'end',
   'function __bossBar(name, pal)',
   '  local panel = __canvas("CanvasPanel BossHP")',
@@ -172,7 +169,7 @@ function bossState(hookLoadsAfterRounds) {
   S.must([
     'T = require("Trust")',
     'T.HasBondingState = function() return __BONDING end',
-    'T.GetBondingThreshold = function() return 100 end',
+    'T.GetBarRatio = function() if not __BONDING then return 0 end local r = __FP / 100; if r > 1 then r = 1 end; return r end',
     'C = require("Capture")',
     'C.IsAlreadyOwned = function() return false end',
     'C.HasPermanentlyFled = function() return false end',
@@ -366,14 +363,13 @@ function petState() {
     'function __PUMP(n) for _ = 1, n do local q = __PENDING; __PENDING = {}; for _, fn in ipairs(q) do pcall(fn) end end end',
     'package.loaded["Capture"] = nil',
     'package.preload["Capture"] = function() return { ShowToast = function() end, IsAlreadyOwned = function() return false end, HasPermanentlyFled = function() return false end } end',
-    '__POINTS = 0',
-    'local param = { IsValid = function() return true end, GetFriendshipPoint = function() return __POINTS end, AddFriendShip = function(_, n) __POINTS = __POINTS + n end }',
+    'T = require("Trust")',
+    'function __PTS() return T.GetPoints(__WILD) end',
     '__CURRENT = nil',
     'local ac = { IsValid = function() return true end, GetCurrentAction_BP = function() return __CURRENT end }',
     'local ctrl = { IsValid = function() return true end, GetAIActionComponent = function() return ac end }',
     '__WILD = { IsValid = function() return __WILD_VALID end, GetFullName = function() return "BP_SheepBall_C /x.BP_SheepBall_C_9" end, Controller = ctrl }',
     '__WILD_VALID = true',
-    '__WILD.CharacterParameterComponent = { IsValid = function() return true end, GetIndividualParameter = function() return param end }',
     '__ATTACK = { IsValid = function() return true end, GetFullName = function() return "BP_AIAction_CombatPal_C /x.BP_AIAction_CombatPal_C_5" end }',
     '__PETTING = { IsValid = function() return true end, GetFullName = function() return "BP_AIActionPairCall_Petting_C /x.BP_AIActionPairCall_Petting_C_3" end }',
     'I = require("Interaction")',
@@ -388,11 +384,11 @@ console.log('\n=== C1. A pet that happens is granted once it is seen ===');
 {
   const S = petState();
   S.must('__CURRENT = nil; I.GrantPetWhenItHappens(__WILD)', 'start');
-  expect('nothing granted before the pet starts', S.str('__POINTS'), (v) => v === '0');
+  expect('nothing granted before the pet starts', S.str('__PTS()'), (v) => v === '0');
   S.must('__CLOCK = __CLOCK + 0.25; __PUMP(1); __CURRENT = __PETTING; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'pet');
-  expect('granted once the Pal is being petted', S.str('__POINTS .. "," .. __NOTIFIED'), (v) => v === '50,1');
+  expect('granted once the Pal is being petted', S.str('__PTS() .. "," .. __NOTIFIED'), (v) => v === '50,1');
   S.must('__CLOCK = __CLOCK + 5; __PUMP(20)', 'later');
-  expect('granted exactly once', S.str('__POINTS .. "," .. __NOTIFIED'), (v) => v === '50,1');
+  expect('granted exactly once', S.str('__PTS() .. "," .. __NOTIFIED'), (v) => v === '50,1');
 }
 
 console.log('\n=== C2. A pet that bounces off an attack gives nothing (Dragón, 2026-09-16) ===');
@@ -400,7 +396,7 @@ console.log('\n=== C2. A pet that bounces off an attack gives nothing (Dragón, 
   const S = petState();
   S.must('__CURRENT = __ATTACK; I.GrantPetWhenItHappens(__WILD)', 'start');
   S.must('for i = 1, 20 do __CLOCK = __CLOCK + 0.25; __PUMP(1) end', 'wait');
-  expect('no points after 5s of attacking', S.str('__POINTS .. "," .. __NOTIFIED'), (v) => v === '0,0');
+  expect('no points after 5s of attacking', S.str('__PTS() .. "," .. __NOTIFIED'), (v) => v === '0,0');
   expect('logged as a failed pet, naming what it was doing', S.str('__grep("PET%-CHECK")'),
     (t) => t.indexOf('never happened') !== -1 && t.indexOf('BP_AIAction_CombatPal_C') !== -1);
   expect('and it stopped checking', S.str('#__PENDING'), (v) => v === '0');
@@ -410,7 +406,7 @@ console.log('\n=== C3. The Pal disappears before the pet ===');
 {
   const S = petState();
   S.must('__CURRENT = __ATTACK; I.GrantPetWhenItHappens(__WILD); __WILD_VALID = false; __PUMP(1)', 'gone');
-  expect('nothing granted, checking stopped', S.str('__POINTS .. "," .. #__PENDING'), (v) => v === '0,0');
+  expect('nothing granted, checking stopped', S.str('__PTS() .. "," .. #__PENDING'), (v) => v === '0,0');
 }
 
 console.log('\n=== C4. A second pet chosen while the first is still playing is not paid twice (run 3, Lyleen) ===');
@@ -419,19 +415,19 @@ console.log('\n=== C4. A second pet chosen while the first is still playing is n
   S.must('__PET1 = { IsValid = function() return true end, GetAddress = function() return 0x501 end, GetFullName = function() return "BP_AIActionPairCall_Petting_C /x.P_1" end }', 'p1');
   S.must('__PET2 = { IsValid = function() return true end, GetAddress = function() return 0x502 end, GetFullName = function() return "BP_AIActionPairCall_Petting_C /x.P_2" end }', 'p2');
   S.must('__CURRENT = nil; I.GrantPetWhenItHappens(__WILD); __CURRENT = __PET1; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'first');
-  expect('first pet paid', S.str('__POINTS'), (v) => v === '50');
+  expect('first pet paid', S.str('__PTS()'), (v) => v === '50');
   S.must('I.GrantPetWhenItHappens(__WILD)', 'second-chosen');
-  expect('second pet chosen during the first animation: not paid at once', S.str('__POINTS'), (v) => v === '50');
+  expect('second pet chosen during the first animation: not paid at once', S.str('__PTS()'), (v) => v === '50');
   S.must('for i = 1, 20 do __CLOCK = __CLOCK + 0.25; __PUMP(1) end', 'wait');
-  expect('the old animation playing on never pays the second pet', S.str('__POINTS'), (v) => v === '50');
+  expect('the old animation playing on never pays the second pet', S.str('__PTS()'), (v) => v === '50');
   expect('logged as the previous pet', S.str('__grep("PET%-CHECK")'), (t) => t.indexOf('still the PREVIOUS pet') !== -1);
   S.must('I.GrantPetWhenItHappens(__WILD); __CURRENT = __PET2; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'third');
-  expect('a NEW pet animation is paid', S.str('__POINTS'), (v) => v === '100');
+  expect('a NEW pet animation is paid', S.str('__PTS()'), (v) => v === '100');
   S.must('__PET1.GetAddress = function() return nil end; __PET2.GetAddress = function() return nil end', 'noaddr');
   S.must('__CURRENT = __PET1; I.GrantPetWhenItHappens(__WILD); for i = 1, 3 do __CLOCK = __CLOCK + 0.25; __PUMP(1) end', 'noaddr-same');
-  expect('no addresses: a pet already playing is not paid', S.str('__POINTS'), (v) => v === '100');
+  expect('no addresses: a pet already playing is not paid', S.str('__PTS()'), (v) => v === '100');
   S.must('__CURRENT = nil; __CLOCK = __CLOCK + 0.25; __PUMP(1); __CURRENT = __PET2; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'noaddr-gap');
-  expect('no addresses: paid after a gap then a pet', S.str('__POINTS'), (v) => v === '150');
+  expect('no addresses: paid after a gap then a pet', S.str('__PTS()'), (v) => v === '150');
 }
 
 console.log('\n=== D. Self-defence may reach 3000 from the player (Dragón, 2026-09-16) ===');
@@ -533,9 +529,12 @@ function trustState() {
   const S = newState('prelude_323.lua');
   S.must([
     'T = require("Trust"); C = require("Combat"); C.Init(); T.Init()',
-    '__POINT = 30',
-    'local param = __obj("Param"); param.GetFriendshipPoint = function() return __POINT end',
+    'local param = __obj("Param")',
     '__PAL.CharacterParameterComponent = __obj("Comp"); __PAL.CharacterParameterComponent.GetIndividualParameter = function() return param end',
+    'require("Capture").IsAlreadyOwned = function() return false end',
+    'function __PTS() return T.GetPoints(__PAL) end',
+    'function __SETPTS(x) T.AddPoints(__PAL, x - T.GetPoints(__PAL), "test") end',
+    '__SETPTS(30)',
 
     '__ANGRY = true',
     'function __hates() return __ANGRY end',
@@ -568,7 +567,7 @@ function trustState() {
 {
   const S = trustState();
   S.must('T.StartBriefFollow(__PAL, __hates, __done)', 'start');
-  S.must('__POINT = 300; __ANGRY = false; for i = 1, 8 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'past50');
+  S.must('__SETPTS(300); __ANGRY = false; for i = 1, 8 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'past50');
   expect('bar past 50% by the end: keeps following', S.str('C.IsFollowing(__PAL)'), (v) => v === 'true');
   expect('onDone(stayed=true), and no longer a brief follow', S.str('__DONE .. "," .. tostring(T.IsBriefFollowing(__PAL))'), (v) => v === 'true,true,false');
 }
@@ -581,16 +580,11 @@ function trustState() {
 {
   // Run 5: no passive trust while a Pal is only on its brief follow.
   const S = trustState();
-  S.must([
-    '__ADDED = 0',
-    'local p = __PAL.CharacterParameterComponent:GetIndividualParameter()',
-    'p.AddFriendShip = function(_, n) __ADDED = __ADDED + n end',
-  ].join('\n'), 'passive-stub');
   S.must('T.StartBriefFollow(__PAL, __hates, __done); for i = 1, 20 do __CLOCK = __CLOCK + 0.1; __PUMP(1) end', 'brief');
-  expect('during the brief follow: no passive friendship', S.str('__ADDED'), (v) => v === '0');
-  S.must('__ANGRY = false; __POINT = 300; for i = 1, 20 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'kept');
-  S.must('__ADDED = 0; for i = 1, 40 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'real');
-  expect('once it is a real follower: passive friendship again', S.str('__ADDED > 0'), (v) => v === 'true');
+  expect('during the brief follow: no passive friendship', S.str('__PTS()'), (v) => v === '30');
+  S.must('__ANGRY = false; __SETPTS(300); for i = 1, 20 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'kept');
+  S.must('__P0 = __PTS(); for i = 1, 40 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'real');
+  expect('once it is a real follower: passive friendship again', S.str('__PTS() > __P0'), (v) => v === 'true');
 }
 
 // ---------------------------------------------------------------------------
@@ -653,8 +647,6 @@ console.log('\n=== R4. Nothing to revert: a Pal that never forgave, and a human 
 function hitState() {
   const S = trustState();
   S.must([
-    'local p = __PAL.CharacterParameterComponent:GetIndividualParameter()',
-    'p.AddFriendShip = function(_, n) __POINT = __POINT + n end',
     'P = require("Personality"); __REVERTED = 0',
     'P.GetStableId = function(a) return "ID" end',
     'P.RevertForgiveness = function(id, pal) __REVERTED = __REVERTED + 1 return true end',
@@ -668,9 +660,9 @@ console.log('\n=== U1. A player hit below 50%: bar to 0, back to what it was, no
 {
   const S = hitState();
   S.must('T.OnInteractionSucceeded(__PAL)', 'interact');
-  expect('(setup) the Pal has a trust record and 30 points', S.str('T.HasBondingState(__PAL) and __POINT'), (v) => v === '30');
+  expect('(setup) the Pal has a trust record and 30 points', S.str('T.HasBondingState(__PAL) and __PTS()'), (v) => v === '30');
   S.must('T.OnFollowerDamaged(__PAL, true)', 'hit');
-  expect('the bar drops to 0', S.str('__POINT'), (v) => v === '0');
+  expect('the bar drops to 0', S.str('__PTS()'), (v) => v === '0');
   expect('its personality is sent back', S.str('__REVERTED'), (v) => v === '1');
   expect('logged as an unbonded hit, not a betrayal', S.str('__has("[UNBONDED-HIT]") and not __has("BETRAYAL —")'), (v) => v === 'true');
   expect('not scarred: it can still be bonded', S.str('tostring(require("Capture").HasPermanentlyFled and require("Capture").HasPermanentlyFled(__PAL))'), (v) => v !== 'true');
@@ -684,7 +676,7 @@ console.log('\n=== U2. A hit during the calm-down ends it, and it never turns Fr
   S.must('T.StartBriefFollow(__PAL, __hates, __done)', 'start');
   S.must('__CLOCK = __CLOCK + 1; T.OnFollowerDamaged(__PAL, true)', 'hit');
   expect('the calm-down is over', S.str('T.IsBriefFollowing(__PAL) or C.IsFollowing(__PAL)'), (v) => v === 'false');
-  expect('the bar drops to 0 and the personality goes back', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '0,1');
+  expect('the bar drops to 0 and the personality goes back', S.str('__PTS() .. "," .. __REVERTED'), (v) => v === '0,1');
   S.must('__ANGRY = false; for i = 1, 20 do __CLOCK = __CLOCK + 1; __PUMP(1) end', 'later');
   expect('the release never runs, so Friendly is never written', S.str('tostring(__DONE)'), (v) => v === 'nil');
   expect('no betrayal', S.str('__has("BETRAYAL —")'), (v) => v === 'false');
@@ -694,7 +686,7 @@ console.log('\n=== U3. At 50% and above nothing changed: a hit on a bonded follo
 {
   const S = hitState();
   S.must('T.OnInteractionSucceeded(__PAL); T.StartFollowing(__PAL)', 'bond');
-  S.must('__POINT = 300; T.OnFollowerDamaged(__PAL, true)', 'hit');
+  S.must('__SETPTS(300); T.OnFollowerDamaged(__PAL, true)', 'hit');
   expect('the bonded rules still apply (half the bar, not an unbonded hit)', S.str('__has("the player hit a bonding Pal") and not __has("[UNBONDED-HIT]")'), (v) => v === 'true');
   expect('no personality revert for a bonded Pal', S.str('__REVERTED'), (v) => v === '0');
 }
@@ -703,7 +695,7 @@ console.log('\n=== U4. Damage that is not the player\'s costs nothing below 50% 
 {
   const S = hitState();
   S.must('T.OnInteractionSucceeded(__PAL); T.OnFollowerDamaged(__PAL, false)', 'pal-hit');
-  expect('bar untouched, no revert', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '30,0');
+  expect('bar untouched, no revert', S.str('__PTS() .. "," .. __REVERTED'), (v) => v === '30,0');
 }
 
 console.log('\n=== U5. The real route: a player hit arriving through the game\'s damage hooks ===');
@@ -711,7 +703,7 @@ console.log('\n=== U5. The real route: a player hit arriving through the game\'s
   const S = hitState();
   S.must('T.OnInteractionSucceeded(__PAL)', 'interact');
   S.must('__FIRE("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", nil, __arg(__PLAYER), __arg(__PAL), __arg(10))', 'delegate');
-  expect('the damage delegate reaches the unbonded rule', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '0,1');
+  expect('the damage delegate reaches the unbonded rule', S.str('__PTS() .. "," .. __REVERTED'), (v) => v === '0,1');
   S.must('__FIRE("/Script/Pal.PalHate:DamageEvent", nil, __arg({ Attacker = __PLAYER, Defender = __PAL, Damage = 10 }))', 'hate');
   expect('the hate hook reporting the same hit changes nothing', S.str('__count("[UNBONDED-HIT]") .. "," .. __REVERTED'), (v) => v === '1,1');
 }
@@ -719,7 +711,7 @@ console.log('\n=== U5. The real route: a player hit arriving through the game\'s
   const S = hitState();
   S.must('T.OnInteractionSucceeded(__PAL)', 'interact');
   S.must('__FIRE("/Script/Pal.PalHate:DamageEvent", nil, __arg({ Attacker = __PLAYER, Defender = __PAL, Damage = 10 }))', 'hate-only');
-  expect('the hate hook alone reaches it too', S.str('__POINT .. "," .. __REVERTED'), (v) => v === '0,1');
+  expect('the hate hook alone reaches it too', S.str('__PTS() .. "," .. __REVERTED'), (v) => v === '0,1');
 }
 
 console.log('\n=== G. 1.1.4 as shipped ===');

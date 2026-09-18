@@ -684,7 +684,8 @@ end
 -- For scale, against the real DT_FriendshipRankTable decoded earlier
 -- (1->6000, 2->13000, 3->21000, 4->30000, 5->40000, 6->55000): a Pal starting
 -- from zero lands at rank 5, just short of 6.
-local JOIN_FRIENDSHIP_POINT_GRANT = 50000
+-- 2026-09-18: from the player's settings file (JoinBonus, 0 to 200000, default 50000).
+local JOIN_FRIENDSHIP_POINT_GRANT = require("Settings").Get("JoinBonus")
 function Capture.OnTrustMaxed(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
@@ -774,7 +775,7 @@ end
 -- tone used for joining, so these use tone 1. Sent BEFORE anything else in this
 -- function, while the actor is certainly still readable — the same discipline
 -- that the capture path needed after resolving names too late twice.
-local function notify_bond_lost(pal, reason)
+local function notify_bond_lost(pal, reason, knownName)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
@@ -786,7 +787,7 @@ local function notify_bond_lost(pal, reason)
         if widgetClass == nil then return end
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
-        local palName = resolve_pal_display_name(pal, player)
+        local palName = knownName or resolve_pal_display_name(pal, player)
         local who = palName or "A Pal"
         local message
         if reason == "betrayed" then
@@ -856,6 +857,21 @@ function Capture.NotifyTrustShaken(pal)
         Logger.log("[PalBonds/Capture] [NOTIFY] trust-shaken message: " .. message)
     end)
 end
+-- The Pal's display name, read while it is certainly alive. Trust caches it when
+-- a Pal starts following, so a toast can still name a follower that later
+-- despawns and can no longer be read.
+function Capture.ResolveDisplayName(pal)
+    local player = safe_call(function() return require("PlayerRef").Get() end)
+    return safe_call(function() return resolve_pal_display_name(pal, player) end)
+end
+
+-- The bond-lost toast for a Pal whose actor is gone (a follower that despawned).
+-- Nothing else OnTrustLost does applies: there is no actor left to flag, re-tier
+-- or re-sense.
+function Capture.NotifyBondLostByName(name, reason)
+    notify_bond_lost(nil, reason, name)
+end
+
 function Capture.OnTrustLost(pal, reason)
     notify_bond_lost(pal, reason)
 
