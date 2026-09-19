@@ -87,6 +87,8 @@ function newState() {
     'Cap.NotifyTrustShaken = function() end',
     'Cap.OnTrustMaxed = function() __MAXED = __MAXED + 1 end',
     'Cap.OnTrustLost = function(_, kind) __LOST = kind end',
+    '__FOLLOW_TOASTS = {}; Cap.NotifyStartedFollowing = function(n, f) __FOLLOW_TOASTS[#__FOLLOW_TOASTS + 1] = tostring(n) .. ":" .. tostring(f) end',
+    'Cap.ResolveDisplayName = function() return "Lamball" end; Cap.IsFemale = function() return true end',
     'function __PTS(p) return T.GetPoints(p or __PAL) end',
     'function __has(x) for _, m in ipairs(__ALLLOG) do if m:find(x, 1, true) then return true end end return false end',
   ].join('\n'), 'setup');
@@ -126,6 +128,9 @@ console.log('\n=== P3. 50% starts the follow ===');
   S.must('T.AddPoints(__PAL, 50, "x"); T.OnInteractionSucceeded(__PAL)', '50');
   expect('50%: following', S.str('C.IsFollowing(__PAL)'), (v) => v === 'true');
   expect('logged with our own numbers', S.str('__has("trust 250 / 500")'), (v) => v === 'true');
+  expect('the player is told, once, with the name and gender', S.str('table.concat(__FOLLOW_TOASTS, ",")'), (v) => v === 'Lamball:true');
+  S.must('T.AddPoints(__PAL, 50, "x"); T.OnInteractionSucceeded(__PAL)', 'more');
+  expect('...and not again on the next interaction', S.str('#__FOLLOW_TOASTS'), (v) => v === '1');
   expect('the game\'s friendship was never touched', S.str('__GAME_TOUCH'), (v) => v === '0');
 }
 
@@ -150,6 +155,8 @@ console.log('\n=== P5. 100% joins, with no second bonus ===');
   S.must('__PUMP(1)', 'delay');
   expect('then hands over to Capture.OnTrustMaxed once', S.str('__MAXED'), (v) => v === '1');
   expect('no rank-3 raise before it', S.str('__has("capture bonus applied")'), (v) => v === 'false');
+  expect('no "starts following" message when the same interaction reaches 100% (only the join shows)', S.str('#__FOLLOW_TOASTS'), (v) => v === '0');
+  expect('...but the name is still kept, as for any follower', S.str('tostring(__has("interaction #1"))'), (v) => v === 'true');
   expect('the game\'s friendship was never touched', S.str('__GAME_TOUCH'), (v) => v === '0');
 }
 
@@ -223,6 +230,18 @@ console.log('\n=== P10. A Pal that despawns is forgotten; a follower gets the ab
   S.must('__TOASTS = {}; Cap.NotifyBondLostByName = function(n, r) __TOASTS[#__TOASTS + 1] = tostring(n) end', 'toast-spy');
   S.must('T.StartBriefFollow(__PAL, function() return true end); __PAL.IsValid = function() return false end; __PUMP(1)', 'brief-despawn');
   expect('a Pal on its 20% calm-down is not bonded: forgotten quietly', S.str('tostring(T.HasBondingState(__PAL)) .. "," .. #__TOASTS .. "," .. tostring(T.IsBriefFollowing(__PAL))'), (v) => v === 'false,0,false');
+}
+
+console.log('\n=== P12. Crossing 50% during the 20% calm-down: told, and the name is kept ===');
+{
+  const S = newState();
+  S.must('T.AddPoints(__PAL, 100, "x"); T.StartBriefFollow(__PAL, function() return false end)', 'brief');
+  expect('no following message for the calm-down itself', S.str('#__FOLLOW_TOASTS'), (v) => v === '0');
+  S.must('T.AddPoints(__PAL, 200, "x"); for i = 1, 8 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'past50');
+  expect('it keeps following, and the player is told', S.str('tostring(C.IsFollowing(__PAL)) .. "," .. table.concat(__FOLLOW_TOASTS, ",")'), (v) => v === 'true,Lamball:true');
+  S.must('__TOASTS2 = {}; Cap.NotifyBondLostByName = function(n, r, f) __TOASTS2[#__TOASTS2 + 1] = tostring(n) .. ":" .. r .. ":" .. tostring(f) end', 'spy');
+  S.must('__PAL.IsValid = function() return false end; __PUMP(1)', 'despawn');
+  expect('a later despawn names it (this path used to lose the name)', S.str('table.concat(__TOASTS2, ",")'), (v) => v === 'Lamball:abandoned:true');
 }
 
 console.log('\n=== P11. Hitting a Pal that already fled for good changes nothing ===');

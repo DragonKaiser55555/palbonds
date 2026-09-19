@@ -51,12 +51,16 @@ local SCHEMA = {
     { key = "PassivePerTick", default = 2, min = 0, max = 100000, text = "Added every 1.5 seconds while a Pal follows you. 0 turns passive gain off." },
     { key = "JoinBonus", default = 50000, min = 0, max = 200000,
       text = "The game's own friendship a Pal receives when it joins you. For scale: rank 5 is 40000,\n" ..
-             "rank 6 is 55000." },
+             "rank 6 is 55000, and 200000 is the game's highest friendship rank, so it is also the most\n" ..
+             "this accepts. A higher number is ignored and the default is used." },
 
     { section = "PERSONALITY CHANCES",
-      note = "How often each personality is rolled for a wild Pal. These are weights: each one's\n" ..
-             "chance is its number divided by the total of all seven (the defaults add up to 100).\n" ..
-             "0 means never. If every one is 0, the defaults are used." },
+      note = "How often each personality is rolled for a wild Pal. These are weights, not percentages:\n" ..
+             "each one's chance is its number divided by the total of all seven, so they do not need to\n" ..
+             "add up to 100 (the defaults just happen to). Example: Curious 100, Aloof 100 and the other\n" ..
+             "five at their defaults (60 together) make a total of 260, so Curious and Aloof each get\n" ..
+             "100/260, about 38%. 0 means never; each can go up to 1000. If every one is 0, the defaults\n" ..
+             "are used." },
     { key = "ChanceNormal",  default = 35, min = 0, max = 1000, text = "Normal: behaves the way its species normally does." },
     { key = "ChanceCurious", default = 30, min = 0, max = 1000, text = "Curious: stops and looks at you." },
     { key = "ChanceTimid",   default = 10, min = 0, max = 1000, text = "Timid: runs away when you get close." },
@@ -64,6 +68,11 @@ local SCHEMA = {
     { key = "ChanceGrumpy",  default = 5,  min = 0, max = 1000, text = "Grumpy: postures, and joins in if its own kind starts a fight." },
     { key = "ChanceHostile", default = 5,  min = 0, max = 1000, text = "Hostile: attacks you on sight." },
     { key = "ChanceFeral",   default = 5,  min = 0, max = 1000, text = "Feral: attacks anything on sight." },
+
+    { section = "LANGUAGE",
+      note = "\"auto\" follows the language you picked in Palworld's options. To force one, use:\n" ..
+             "en, es, fr, de, it, pl, pt, ru, tr, vi, th, id, ja, ko, zh-hans, zh-hant" },
+    { key = "Language", default = "auto", kind = "language", text = "Language of PalBonds' tags and messages." },
 
     { section = "KEYS",
       note = "Key names as UE4SS spells them: F1 to F12, A to Z, ONE to NINE, NUM_ZERO to NUM_NINE,\n" ..
@@ -93,7 +102,17 @@ local function key_exists(name)
     return ok and v ~= nil
 end
 
+-- Kept here rather than read from Locale, so Settings never depends on it.
+local LANGUAGE_NAMES = { auto = true, en = true, es = true, fr = true, de = true, it = true, pl = true, pt = true,
+    ru = true, tr = true, vi = true, th = true, id = true, ja = true, ko = true, ["zh-hans"] = true, ["zh-hant"] = true }
+
 local function valid_value(entry, v)
+    if entry.kind == "language" then
+        if type(v) ~= "string" then return nil, "must be a language name in quotes, like \"auto\" or \"es\"" end
+        local lower = v:lower()
+        if not LANGUAGE_NAMES[lower] then return nil, "\"" .. v .. "\" is not one of the languages listed above it" end
+        return lower
+    end
     if entry.kind == "key" then
         if type(v) ~= "string" then return nil, "must be a key name in quotes, like \"F8\"" end
         local upper = v:upper()
@@ -166,7 +185,7 @@ function Settings.DefaultFileText()
             out[#out + 1] = ""
         else
             for line in (entry.text .. "\n"):gmatch("(.-)\n") do out[#out + 1] = "    -- " .. line end
-            local shown = entry.kind == "key" and string.format("%q", entry.default) or tostring(entry.default)
+            local shown = type(entry.default) == "string" and string.format("%q", entry.default) or tostring(entry.default)
             out[#out + 1] = "    " .. entry.key .. " = " .. shown .. ","
         end
     end

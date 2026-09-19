@@ -1,0 +1,35 @@
+The translation file is overall extremely well done and correctly follows almost all guidelines (placeholders, lack of `|` characters, and avoiding literal "wild" translations for *feral*). However, there is **one inappropriate word choice in Turkish** and a **formality mismatch across all Russian messages**.
+
+**Critical Corrections Required**
+
+**Turkish (`tr`)**
+
+* **`tr / tag_feral`**: Change **`Azgın`** $\rightarrow$ **`Vahşileşmiş`** or **`Gözü dönmüş`**
+* *Reason*: In modern everyday Turkish, *azgın* carries a strong sexual connotation ("in heat" / "horny"). *Vahşileşmiş* (feral/gone wild) or *Gözü dönmüş* (frenzied/uncontrollable) captures pure chaos without unwanted double meanings.
+
+
+
+**Russian (`ru`)**
+
+* **All Message IDs**: Change formal **вы / вам / вами / вас** $\rightarrow$ informal **ты / тебе / тобой / тебя / твои**
+* *Reason*: The project rule explicitly requests an informal tone ("you"), but the Russian localization was written in polite/formal address (*Вы*).
+
+
+
+| ID | Russian (Masculine / Neutral) | Russian (Feminine) |
+| --- | --- | --- |
+| `joined` | `{name} решил пойти с тобой. Он полностью тебе доверяет.` | `{name} решила пойти с тобой. Она полностью тебе доверяет.` |
+| `joined_unnamed` | `Дикий Pal решил пойти с тобой.` | (same) |
+| `betrayed` | `{name} больше тебе не доверяет. Он больше никогда к тебе не привяжется.` | `{name} больше тебе не доверяет. Она больше никогда к тебе не привяжется.` |
+| `fell` | `{name} пал в бою рядом с тобой.` | `{name} пала в бою рядом с тобой.` |
+| `abandoned` | `{name} остался позади и перестал тебя ждать.` | `{name} осталась позади и перестала тебя ждать.` |
+| `shaken` | `{name} отшатнулся от тебя. Его доверие пошатнулось.` | `{name} отшатнулась от тебя. Её доверие пошатнулось.` |
+| `passive_on` | `Пассивное получение дружбы: ВКЛ - твои Pals со временем сближаются с тобой.` | (same) |
+
+---
+
+**Minor Language Polish (Optional)**
+
+* **Spanish (`es / joined`)**: `{name} decidió irse contigo.` is understandable, but **`{name} decidió acompañarte. Confía plenamente en ti.`** (*decided to join/accompany you*) sounds slightly more natural in standard Spanish UI text.
+* **Polish (`pl / a_pal`)**: Currently set to `Pal`. If you want it to feel like an indefinite noun phrase ("a Pal"), you can optionally use **`Jakiś Pal`**, though leaving it as **`Pal`** is also completely fine for clean UI popups.
+* **Korean (`ko`)**: The particle choices `이(가)` and `은(는)` correctly follow standard Korean localization conventions for dynamic name variables.

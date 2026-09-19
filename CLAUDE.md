@@ -1685,6 +1685,17 @@ they fail against 1.1.3.
       fire, according to their reading of the UE4SS source. PalBonds uses only
       the game-thread `ExecuteInGameThreadWithDelay` plus the dead `LoopAsync`
       fallbacks.
+- **1.1.5 CONTENT COMPLETE AND LIVE-TESTED (2026-09-18, end of day).**
+  Dragón: "we will consider this the new most recent stable version". Pushed
+  to GitHub. Tomorrow (09-19) is release packaging only, the usual steps:
+  DEBUG_LOGGING back to false; README.txt, README.md and store text (the
+  settings section drafted 2026-09-18 in chat: where the file is, how to edit
+  it, "an in-game settings screen is planned for a future update"; the
+  languages line; keys changeable); changelog; Info.json 1.1.5; zip; Nexus;
+  Workshop pre-upload test, which also checks that PalBonds_settings.lua lands
+  in and survives `Mods/NativeMods/UE4SS/Mods/shared/`; GitHub release notes.
+  Dragón re-edits his 16 Workshop descriptions with the translated tag names
+  (from docs/translations-review.md) and fixes "Tímid".
 - **1.1.5 PLAN (Dragón, 2026-09-18): ship TOMORROW (09-19), not today, with the
   own-points rework plus the settings file ("either if we finish the settings
   file or not"). Two uploads a few hours apart made no sense, and the 1.1.4
@@ -1720,6 +1731,185 @@ they fail against 1.1.3.
     characters survive UE4SS's Lua-to-game text conversion (needs one live
     toast test), whether longer words fit the tag under the health bar, and
     whether to follow the game's language automatically.
+    - **Dragón's Workshop description exists in 16 languages besides
+      English** (2026-09-16/17): Simplified and Traditional Chinese, Japanese,
+      Korean, Thai, Indonesian, German, Spanish (Spain), Spanish (Latin
+      America), French, Italian, Polish, Portuguese (Brazil), Russian,
+      Turkish, Vietnamese. To read one, add Steam's language parameter to the
+      Workshop URL (`...?id=3797816321&l=spanish`; others: schinese,
+      tchinese, japanese, koreana, thai, indonesian, german, latam, french,
+      italian, polish, brazilian, russian, turkish, vietnamese) and read
+      `.workshopItemDescription` in the browser. Verified with `spanish` on
+      2026-09-18. Use these to keep the mod's terms matching the description.
+    - Language work is AFTER 1.1.5.
+  - Committed + pushed 2026-09-18 (`0a13eb9`, Dragón's go-ahead): the points
+    rework, despawn changes and settings, with DEBUG_LOGGING still on in
+    `mod/`. The DarnMenu reference folder is git-ignored (not ours to
+    redistribute).
+  - Settings live run 1: the file was created in `ue4ss/Mods/shared/` on
+    first launch (console line OK). Fixed afterwards: the line printed twice
+    in dev mode (Logger also prints) and showed `Scripts/../../shared`;
+    `tidy_path` now cleans it. For run 2 the game's file has test values:
+    Pet = 200, KeyPlay = "F7", and a deliberate typo `Petting = 5`. Delete
+    the file after the run to restore the defaults.
+  - **Settings live run 2: PASSED (2026-09-18).** UE4SS.log showed a clean
+    "loaded .../ue4ss/Mods/shared/PalBonds_settings.lua" line and `"Petting" is
+    not a PalBonds setting (typo?) — ignored`, each once. The first pet gave
+    trust 200; F7 played and F8 did nothing (Dragón confirmed in game; the log
+    shows "F7 pressed — starting Play"). The test file was deleted afterwards,
+    so the next launch recreates the defaults.
+  - **Language, Dragón's call (2026-09-18):** follow the game's language
+    automatically IF WE CAN, otherwise default to English. Lead:
+    `UKismetInternationalizationLibrary::GetCurrentLanguage()` /
+    `GetCurrentCulture()` (Engine.hpp 13925, no parameters, returns an
+    FString). Unknown: whether Palworld's in-game language option (it has its
+    own `EPalLanguageType`, and its text lives in per-language DataTables
+    rather than .locres) changes the engine culture, or whether that reports
+    the Steam/OS language. Needs one read-only probe run: log both, then
+    switch the in-game language and relaunch. After 1.1.5.
+  - **LANG PROBE ARMED in the GAME COPY ONLY (2026-09-18, Dragón asked for the
+    test now):** `Scripts/LangProbe.lua`, plus a `pcall(require, "LangProbe")`
+    line at the end of the game copy's main.lua. F6 logs `[LANG-PROBE] engine
+    language = ... | engine culture = ...` and shows 3 toasts in Latin with
+    accents, Cyrillic, Vietnamese, Thai, Chinese, Japanese and Korean. `mod/`
+    and git are untouched. **DELETE both after the run**; the game copy must
+    match `mod/` again before the 1.1.5 Workshop test.
+    - **Probe run 1 (2026-09-18): every script renders correctly in the
+      game's toast**, in English and in Spanish: accented Latin, Polish,
+      Turkish, Cyrillic, Vietnamese, Thai (including combining marks),
+      Chinese (simplified and traditional), Japanese and Korean. So UE4SS's
+      Lua → FText conversion is UTF-8-safe. One quirk: `|` displays as a
+      quote-like mark, so avoid it in player text.
+    - **Engine reading FOLLOWS the in-game language: auto-detection is
+      possible.** English session: `language = en | culture = en` (Dragón
+      confirmed the pasted console was from the English launch). Spanish
+      session (probe run 2, 20:51): `language = es-MX | culture = es-MX`. Read
+      with `StaticFindObject("/Script/Engine.Default__KismetInternationalizationLibrary")
+      :GetCurrentLanguage()`, returning an FString (`:ToString()`), called on
+      the game thread without trouble. Map culture to translation: exact code
+      first (es-MX = Latin America, pt-BR, zh-Hans/zh-Hant), then the part
+      before "-", else English (Dragón's fallback). Still to confirm: what
+      code the Spain-Spanish and Chinese options report.
+    - The probe was REMOVED from the game copy after run 2; the game copy
+      matches `mod/` again.
+  - **TRANSLATIONS — IMPLEMENTED 2026-09-18 for 1.1.5 (Dragón: "why not do
+    the translations now so we can ship them tomorrow too"), awaiting a live
+    run.**
+    - Dragón's rulings: translate the TAGS too. He will re-edit his 16
+      Workshop descriptions once 1.1.5 is uploaded; they currently name the
+      tags in English on purpose, and "Tímid" is his typo to fix then. Use
+      ONE neutral Spanish set for Spain and Latin America, like his
+      descriptions.
+    - `Scripts/Locale.lua`: 23 strings (12 tags, 6 messages, "A Pal", 4
+      F9/F10 toasts) × 16 sets (en, es, fr, de, it, pl, pt, ru, tr, vi, th,
+      id, ja, ko, zh-hans, zh-hant). Wording follows his Workshop
+      translations where they already name things (tags = "etiquetas de
+      personalidad"/"性格タグ"/…, passive friendship gain, trust, giving up
+      on you). Feral avoids each language's word for "wild" (Feroz, Rasend,
+      Szalony, Azgın…), since every tagged Pal is wild. Scarred is an
+      emotional word (Resentido, Verbittert, Kırgın, 心寒…).
+    - `Locale.T(key, {name=})` and `Locale.FromCulture(code)`. "auto" reads
+      the engine's GetCurrentLanguage at most every 10 s (only from game-thread
+      callers: tag refresh and toasts); an unknown code or a failed call
+      means English. Settings got `Language` ("auto" or a listed code, in its
+      own LANGUAGE section; existing files default to auto).
+    - Wired: Indicator's tag maps now hold keys, Capture's
+      joined/betrayed/fell/abandoned/shaken toasts, and Interaction's F9/F10
+      toasts. Tags refresh on their own, so a language change shows up
+      mid-game.
+    - Tests: `tools/harness/localetest.js` (A–E); settingstest gained
+      Language checks. 22 suites pass, 17 hooks.
+    - To verify live: the wording reads naturally (Dragón can judge
+      Spanish), and long tags fit under the health bar (German Misstrauisch
+      and Distanziert, Russian Отстранённый/Настороженный, Indonesian
+      Ditinggalkan).
+    - **Live run 1 (Dragón):** Spanish appears correctly. Palworld CANNOT
+      change language mid-game, only between launches, so the "tags switch
+      within 10 s" idea is moot (a comment was corrected). He saw a female Pal
+      tagged "Curioso".
+    - **GENDER (2026-09-18, his catch):** in es, pt, fr, it, pl and ru an
+      entry is now `{ m = , f = }` (75 of them: tags, plus the joined,
+      betrayed, fell, abandoned and shaken messages where a word or pronoun
+      changes). `Locale.T(key, { female = })` picks the form; unknown or
+      None gender uses the masculine (the neutral form in those languages).
+      The gender comes from `UPalIndividualCharacterParameter:GetGenderType()`
+      (EPalGenderType: 0 None, 1 Male, 2 Female). Personality reads it ONCE
+      into its record (`state.female`, `Personality.IsFemale(palId)`) for the
+      tags; Capture reads it at message time (`Capture.IsFemale(pal)`), the
+      join resolves it before the capture like the name, and Trust caches it
+      with the name for a follower that later despawns. localetest D2.
+      Live run 2 (Dragón): female and male forms show correctly.
+    - **Review file for Dragón (2026-09-18):** he wants every text checked by
+      other AIs and translators. `docs/translations-review.md` is GENERATED
+      from Locale.lua by `tools/translations/` (see its README): context,
+      rules for reviewers, and one table per language. Corrections come back
+      by ID, then regenerate. Pending: his reviewers' feedback, which may
+      change strings before or after 1.1.5.
+    - **REVIEW APPLIED (2026-09-18).** Dragón had ChatGPT and Gemini review
+      the file (`docs/reveiw-chatgpt.txt`, `docs/review-gemini.txt`, his
+      files; the first name is his typo). Weighed against my own pass and
+      against his descriptions, 26 replacements in Locale.lua:
+      - tr Feral Azgın → Gözü dönmüş (sexual meaning; not Vahşileşmiş,
+        which contains "wild"; not Yırtıcı, which may clash with the
+        Predator Pals);
+      - pl Feral → Wściekły/Wściekła; id Scarred → Sakit hati; ja Curious
+        → 好奇心旺盛; ko Curious → 호기심 많음;
+      - fr Scarred → Trahi/Trahie (not "Blessé", which reads as injured
+        under a health bar); fr and it shaken keep the flinch (now
+        gendered in fr);
+      - id abandoned → "berhenti menunggumu" (ChatGPT's "menyerah padamu"
+        could mean "surrendered to you"); tr "Terk edilmiş"; fr "en
+        arrière";
+      - es shaken → "Su confianza en ti flaquea" (Dragón's pick over his
+        own "se derrumba", which describes the betrayal rather than the
+        warning); es joined stays "decidió irse contigo" (he felt
+        "acompañarte" reads like following);
+      - Russian → informal ты everywhere. Dragón left it to me: he wanted
+        the mod to read casually, even though his Russian description uses
+        вы.
+      Rejected: German "Ein wilder Pal"/"Er" (his German description uses
+      neuter "das Pal", so the current text matches it), and renaming the
+      F10 system in de/pl/ru/ja/ko (those are his descriptions' own terms).
+      22 suites pass; deployed; the review file was regenerated.
+      `dump_locale.js` now resolves its fengari path.
+    - Live language checks (Dragón): every language looked right; the
+      longer Russian tags still fit the Pal card.
+    - **50% "following" toast (Dragón's idea, 2026-09-18):** "{name} seems
+      to like you and starts following you." It is his phrase plus a
+      clause saying what the Pal now does. 24th string, all 16 sets
+      (gendered in pl, ru, it). `Capture.NotifyStartedFollowing(name,
+      female)`, positive tone. Both routes into following go through
+      `on_became_bonded` in Trust.lua: StartFollowing, AND crossing 50%
+      during the 20% calm-down. That second route previously never cached
+      the name, so a later despawn toast would have said "A Pal"; fixed.
+      pointstest P3/P12.
+    - Order after every interaction: 50% check, then 20% (only for Pals not
+      following), then 100%. So a single interaction that crosses 50% skips
+      the calm-down (following already calms), and one that reaches 100%
+      starts the follow and then joins after the usual 5 s. **Dragón's call
+      (2026-09-18): when the same interaction reaches 100%, NO "starts
+      following" message, only the join message**
+      (`Trust.StartFollowing(pal, st, ratio, quiet)`). The follow itself
+      still starts, unchanged. pointstest P5.
+    - Settings text, from Dragón's questions: JoinBonus now says 200000 is
+      the game's highest rank and the maximum accepted (above that: ignored,
+      default used, reported). The chances are explained as weights with a
+      worked example (Curious 100 + Aloof 100 + the other five at defaults
+      = 260 in total, each about 38%). His old settings file (it lacked
+      Language) was deleted; the next launch writes the current one.
+    - My own second-pass suggestions (2026-09-18, superseded by the applied review above; weigh them
+      together with his reviewers'): id tag_scarred Terluka → Sakit Hati
+      (physical, a real error); tr tag_abandoned → "Terk edilmiş", tag_hostile
+      → Saldırgan, tag_friendly → Dost canlısı, fell "düştü" → "yenik düştü";
+      pl tag_feral → Wściekły/Wściekła, tag_scarred → Zraniony/Zraniona; fr
+      abandoned "laissé derrière" → "laissé en arrière"; es shaken 2nd
+      sentence → "Su confianza en ti flaquea." Flagged for natives: tr "Bağlı",
+      ko 당신, ja noun/adjective mix in tags.
+    - **Palworld's own languages (`EPalLanguageType`, Pal_enums.hpp:2822):
+      JP, EN, ZH_HANS, ZH_HANT, FR, IT, DE, ES, KO, PT_BR, RU, TH, VI, ID, TR,
+      PL, ES_MX.** That is exactly Dragón's 16 Workshop translations plus
+      English. Where the game stores the current choice is not found yet
+      (no ini holds it; `EditorPlayTextLanguageType` is editor-only).
 - **OWN POINTS REWORK — Dragón's rulings (2026-09-18), next work:**
   - The bar runs on PalBonds' own points, not the game's `FriendshipPoint`.
     Every existing number carries over: base bar 500 × level tier

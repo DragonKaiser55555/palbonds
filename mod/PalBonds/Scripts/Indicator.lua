@@ -1,4 +1,5 @@
 local Logger = require("Logger")
+local Locale = require("Locale")
 local Trust = require("Trust") 
 local UEHelpers = require("UEHelpers") 
 local Personality = require("Personality") 
@@ -432,19 +433,22 @@ end
 --
 -- No name for 100%, per Dragón: by then the Pal is already being captured.
 local USE_PLAYER_FACING_PERSONALITY_NAMES = true
+-- 2026-09-18: translation keys (Locale.lua), not the words themselves; the
+-- tag is shown in the game's language. English: Normal, Curious, Timid,
+-- Aloof, Grumpy, Hostile, Feral, Bonding.
 local PERSONALITY_DISPLAY_NAMES = {
-    normal = "Normal",
-    unknown = "Normal",
-    friendly = "Curious",
-    escape = "Timid",
-    notinterested = "Aloof",
-    warlike = "Grumpy",
-    warlike_anyway = "Hostile",
-    kill_all = "Feral",
+    normal = "tag_normal",
+    unknown = "tag_normal",
+    friendly = "tag_curious",
+    escape = "tag_timid",
+    notinterested = "tag_aloof",
+    warlike = "tag_grumpy",
+    warlike_anyway = "tag_hostile",
+    kill_all = "tag_feral",
 
     -- Reached only if the ratio lookup fails; the thresholds below normally
     -- catch this state first.
-    companion_combat = "Bonding",
+    companion_combat = "tag_bonding",
 }
 local BOND_LABEL_FRIENDLY_RATIO = 0.2
 local BOND_LABEL_BONDING_RATIO = 0.5
@@ -636,16 +640,18 @@ end
 -- The two causes are genuinely different things the player did, so they get
 -- different words. Betrayal was an act; abandonment was a neglect.
 local BROKEN_BOND_LABELS = {
-    betrayed = "Scarred",
-    abandoned = "Abandoned",
+    betrayed = "tag_scarred",
+    abandoned = "tag_abandoned",
 }
 
 -- Used only if a bond ended without its cause being recorded — older saves, or
 -- any future path that forgets to pass a reason. Deliberately not one of the two
 -- real words: a Pal should never be labelled "Scarred" unless the player
 -- actually hurt it.
-local BROKEN_BOND_FALLBACK = "Wary"
-local function personality_display_text(actor, disposition)
+local BROKEN_BOND_FALLBACK = "tag_wary"
+local function personality_display_text(actor, disposition, palId)
+    -- Picks the feminine word for a female Pal where the language has one.
+    local g = { female = palId ~= nil and Personality.IsFemale and Personality.IsFemale(palId) or false }
     if not personalityLabelsVisible then return "" end
 
     -- 2026-09-14, Dragón's instruction: "owned pals should not show tags at
@@ -670,7 +676,7 @@ local function personality_display_text(actor, disposition)
     if okCap and CaptureMod and CaptureMod.HasPermanentlyFled then
         if safe_call(function() return CaptureMod.HasPermanentlyFled(actor) end) then
             local why = CaptureMod.GetFledReason and safe_call(function() return CaptureMod.GetFledReason(actor) end)
-            return BROKEN_BOND_LABELS[why] or BROKEN_BOND_FALLBACK
+            return Locale.T(BROKEN_BOND_LABELS[why] or BROKEN_BOND_FALLBACK, g)
         end
     end
     if not USE_PLAYER_FACING_PERSONALITY_NAMES then
@@ -681,15 +687,17 @@ local function personality_display_text(actor, disposition)
     -- won over, what it started as stops being the useful thing to show.
     local ratio = get_friendship_ratio(actor)
     if ratio ~= nil then
-        if ratio >= BOND_LABEL_BONDING_RATIO then return "Bonding" end
-        if ratio >= BOND_LABEL_FRIENDLY_RATIO then return "Friendly" end
+        if ratio >= BOND_LABEL_BONDING_RATIO then return Locale.T("tag_bonding", g) end
+        if ratio >= BOND_LABEL_FRIENDLY_RATIO then return Locale.T("tag_friendly", g) end
     end
     if disposition == nil then return "?" end
 
     -- An unmapped disposition falls back to the raw string rather than to a
     -- wrong name: if a tier is ever added and this table is not updated, it
     -- should look obviously unfinished instead of silently mislabelling a Pal.
-    return PERSONALITY_DISPLAY_NAMES[disposition] or disposition
+    local nameKey = PERSONALITY_DISPLAY_NAMES[disposition]
+    if nameKey == nil then return disposition end
+    return Locale.T(nameKey, g)
 end
 
 -- exposes `SetPercent`, `SetIsMarquee`, and `SetFillColorAndOpacity` as
@@ -1263,7 +1271,7 @@ local function update_trust_bars()
                                 entry.labelCheckedAt = nowLabel
                                 entry.labelLastDisposition = disposition
                                 entry.labelLastVisible = personalityLabelsVisible
-                                text = personality_display_text(entry.actor, disposition)
+                                text = personality_display_text(entry.actor, disposition, palId)
                             end
                             if entry.labelLastText ~= text then
                                 entry.labelLastText = text
@@ -1567,7 +1575,7 @@ local function update_boss_entry(key, entry)
                 disposition = Personality.GetDisposition(entry.palId)
             end
         end
-        local text = personality_display_text(actor, disposition)
+        local text = personality_display_text(actor, disposition, entry.palId)
         if text ~= entry.labelLastText then
             entry.labelLastText = text
             local ok, err = pcall(function() entry.label:SetText_GDKInternal(true, text) end)

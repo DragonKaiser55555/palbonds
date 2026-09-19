@@ -39,6 +39,7 @@ node worldchangetest.js <SCRIPTS>                 # the 1.1.2 world-change crash
 node feedtest.js    <SCRIPTS> prelude_emote.lua    # feed amount by item rarity
 node pointstest.js  <SCRIPTS>                      # own trust points: grants, bar, 50% follow, passive, join, hit rules, drift, world reset -- and the game's friendship is only ever written by the join bonus
 node settingstest.js <SCRIPTS>                     # the player's settings file: written defaults, validation, shared-folder location + fallback, never rewritten, sandboxed, and the modules use the values
+node localetest.js   <SCRIPTS>                     # translations: culture code -> language, all 23 strings in all 16 language sets, {name} kept, no '|', the Language setting, engine asked at most every 10 s, modules show translated text
 node playstoptest.js <SCRIPTS> prelude_emote.lua   # the player's cheer stops with the Pal's Play animation
 python hoistcheck.py <SCRIPTS>                     # calls before their definition
 python undefcheck.py <SCRIPTS>                     # calls to functions never defined

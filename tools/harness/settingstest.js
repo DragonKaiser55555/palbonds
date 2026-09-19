@@ -118,6 +118,8 @@ console.log('\n=== A. The default file ===');
     (v) => v === '35,30,10,10,5,5,5');
   expect('keys F8/F9/F10', S.str('__T.KeyPlay .. "," .. __T.KeyTags .. "," .. __T.KeyPassiveGain'), (v) => v === 'F8,F9,F10');
   expect('every value has a comment above it', S.str('select(2, __TEXT:gsub("\\n    %-%- ", ""))'), (v) => Number(v) >= 23);
+  expect('JoinBonus says 200000 is the game\'s highest rank', S.str('__TEXT:find("200000 is the game\'s highest friendship rank", 1, true) ~= nil'), (v) => v === 'true');
+  expect('the chances are explained as weights, with an example', S.str('__TEXT:find("weights, not percentages", 1, true) ~= nil and __TEXT:find("100/260", 1, true) ~= nil'), (v) => v === 'true');
 }
 
 console.log('\n=== B. Validation ===');
@@ -136,6 +138,11 @@ console.log('\n=== B. Validation ===');
   expect('the typo is named', S.str('table.concat(__P, " | "):find("Petting", 1, true) ~= nil'), (v) => v === 'true');
   S.must('__M, __P = Set.Validate({ ChanceNormal = 0, ChanceCurious = 0, ChanceTimid = 0, ChanceAloof = 0, ChanceGrumpy = 0, ChanceHostile = 0, ChanceFeral = 0 })', 'zero');
   expect('every chance 0 -> the default chances', S.str('__M.ChanceNormal .. "," .. __M.ChanceFeral .. "," .. #__P'), (v) => v === '35,5,1');
+  S.must('__M, __P = Set.Validate({ Language = "ES" })', 'lang-ok');
+  expect('Language: a listed language, any case', S.str('__M.Language .. "," .. #__P'), (v) => v === 'es,0');
+  S.must('__M, __P = Set.Validate({ Language = "klingon" })', 'lang-bad');
+  expect('Language: anything else -> auto, reported', S.str('__M.Language .. "," .. #__P'), (v) => v === 'auto,1');
+  expect('Language defaults to auto', S.str('select(1, Set.Validate({})).Language'), (v) => v === 'auto');
   S.must('__M, __P = Set.Validate({ ChanceFeral = 0, JoinBonus = 0, PassivePerTick = 0 })', 'zeros-ok');
   expect('0 is a legal value where it means "off"', S.str('__M.ChanceFeral .. "," .. __M.JoinBonus .. "," .. __M.PassivePerTick .. "," .. #__P'), (v) => v === '0,0,0,0');
 }

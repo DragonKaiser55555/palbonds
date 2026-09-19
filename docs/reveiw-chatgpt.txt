@@ -1,0 +1,656 @@
+Sí, lo revisé completo 😎. Y te digo algo de entrada: **está bastante mejor de lo que esperaba**. No veo ningún idioma que esté completamente roto o que vaya a mostrar frases absurdas constantemente. La IA hizo un trabajo bastante sólido.
+
+Pero **sí hay varias cosas que corregir antes de considerarlo “release-ready”**, sobre todo algunas traducciones puntuales que cambian el matiz o directamente tienen un significado equivocado.
+
+El archivo indica además que estos son exactamente los textos que el mod muestra en pantalla, así que vale la pena ser bastante estricto aquí. 
+
+## 🟢 Español — prácticamente listo
+
+En general está **muy bien**. Los términos son naturales y consistentes con el tono informal.
+
+Me gustan especialmente:
+
+* `Feroz` para Feral → funciona y evita usar *salvaje*, tal como exige el contexto. 
+* `Encariñado` para Bonding.
+* `Resentido` para Scarred.
+* `Receloso` para Wary.
+
+Hay un pequeño detalle:
+
+> `se quedó atrás y se dio por vencido contigo`
+
+Es perfectamente entendible, aunque algo más natural sería:
+
+> `se quedó atrás y perdió la confianza en ti`
+
+Pero **no lo considero necesario cambiar**. La actual tiene personalidad y comunica bien la idea.
+
+**Veredicto: 🟢 9/10**
+
+---
+
+# 🟢 Portugués brasileño
+
+También está bastante bueno. `Ranzinza`, `Apegado`, `Magoado`, `Desconfiado` funcionan bien. 
+
+El único que me llama un poco la atención es:
+
+> `Ganho passivo de amizade`
+
+Es entendible, pero suena ligeramente a terminología de sistema/traducción literal.
+
+No es incorrecto. Para una UI de videojuego funciona.
+
+`Magoado` para Scarred tampoco es literal, pero en este contexto funciona bastante bien porque comunica que el Pal quedó emocionalmente herido.
+
+**Veredicto: 🟢 8.5/10**
+
+---
+
+# 🟢 Francés — con un pequeño cambio recomendado
+
+La mayoría está muy bien:
+
+* `Curieux`
+* `Grincheux`
+* `Distant`
+* `Méfiant`
+* `Attaché`
+
+Todo correcto. 
+
+### ⚠️ `Scarred → Rancunier`
+
+Aquí sí cambiaría.
+
+`Rancunier` significa básicamente **rencoroso**, alguien que guarda resentimiento.
+
+Eso no está mal conceptualmente, pero el inglés explica específicamente que `Scarred` es una **herida emocional causada por haber sido traicionado**, no simplemente que el Pal sea rencoroso. 
+
+Yo usaría:
+
+> `Blessé`
+
+Aunque literalmente puede significar herido, también se usa para alguien emocionalmente herido/ofendido. Cambridge confirma precisamente ese uso emocional de *blessé*. ([Diccionario Cambridge][1])
+
+También:
+
+> `a eu peur de toi`
+
+para `flinched away from you`
+
+funciona, pero cambia ligeramente la acción. El original dice que **se apartó/retrocedió asustado**.
+
+Yo pondría:
+
+> `s'est écarté de toi, effrayé. Sa confiance est ébranlée.`
+
+Mucho más cercano.
+
+**Veredicto: 🟢 8.5/10 — corregir Scarred y quizá Shaken.**
+
+---
+
+# 🟢 Italiano
+
+Muy sólido.
+
+`Scontroso`, `Distaccato`, `Affezionato`, `Diffidente`, etc. funcionan perfectamente como etiquetas. 
+
+### Una pequeña cosa
+
+`Shaken`:
+
+> `si è spaventato. La sua fiducia è scossa.`
+
+Se entiende, pero nuevamente pierde la idea de **retroceder/apartarse**.
+
+Podría ser:
+
+> `si è ritratto spaventato. La sua fiducia è stata scossa.`
+
+Pero esto es un refinamiento, no un error grave.
+
+`Scarred → Rancoroso` me parece **aceptable** en este contexto.
+
+**Veredicto: 🟢 9/10**
+
+---
+
+# 🟡 Alemán — aquí sí hay cosas que arreglar
+
+Este es uno de los idiomas que revisaría con más cuidado.
+
+
+
+### 🚨 `joined_unnamed`
+
+Actualmente:
+
+> `Ein wildes Pal hat sich entschieden...`
+
+Esto está mal gramaticalmente.
+
+Debe ser:
+
+> **Ein wilder Pal hat sich entschieden, mit dir zu gehen.**
+
+Porque `Pal` se está tratando como masculino (`ein Pal`).
+
+Y eso nos lleva al segundo problema:
+
+### Pronombres
+
+La traducción utiliza:
+
+> `Es vertraut dir vollkommen.`
+
+> `Es wird sich nie wieder...`
+
+Pero si estás usando **der Pal / ein Pal**, lo natural sería:
+
+> `Er vertraut dir vollkommen.`
+
+> `Er wird sich nie wieder...`
+
+Aunque en juegos se puede personificar una criatura con `es`, aquí la combinación `ein Pal` + `es` resulta inconsistente.
+
+### `Feral → Rasend`
+
+`Rasend` significa más bien **furioso/enfurecido**, no exactamente feral.
+
+No es un desastre porque tu descripción dice que Feral es un Pal completamente caótico y agresivo, pero yo buscaría algo que comunique mejor esa personalidad.
+
+### UI
+
+> `Passive Freundschaftszunahme`
+
+Es entendible, pero bastante alemán-de-menú-automático 😂.
+
+Algo como:
+
+> `Passive Freundschaft: AN`
+
+sería muchísimo más limpio para una UI.
+
+**Veredicto: 🟡 7/10 — necesita unas correcciones claras.**
+
+---
+
+# 🟡 Polaco
+
+En general está bien, pero hay un problema importante:
+
+### 🚨 `Feral → Szalony`
+
+`Szalony` = **loco / crazy**.
+
+Eso captura parcialmente el concepto de caos, pero no el significado de *Feral*. El propio documento aclara que Feral no debe confundirse con Wild. 
+
+Y el problema es que la traducción literal `dziki` está prohibida por tu propia regla porque todos los Pals etiquetados ya son salvajes.
+
+Así que aquí habría que escoger una solución **por concepto**, no literalmente.
+
+Por ejemplo:
+
+> `Bestialski`
+
+podría transmitir una naturaleza brutal/salvaje sin ser simplemente *dziki*, aunque yo probaría el término con un hablante polaco antes de fijarlo.
+
+### `Pasywne zdobywanie przyjaźni`
+
+Es comprensible pero bastante mecánico.
+
+Algo como:
+
+> `Pasywne zwiększanie więzi`
+
+sería más cercano al sistema de bonding.
+
+El resto está bastante bien.
+
+**Veredicto: 🟡 7.5/10 — principalmente Feral y la terminología de passive bonding.**
+
+---
+
+# 🟡 Ruso
+
+Aquí encontré **un problema bastante importante de consistencia**.
+
+El documento dice que el tono debe ser informal, equivalente a "you". 
+
+Pero el ruso utiliza:
+
+> `с вами`
+
+> `вам`
+
+> `вас`
+
+Eso es **usted/ustedes**, formal.
+
+Por ejemplo:
+
+> `Он полностью вам доверяет.`
+
+debería ser:
+
+> `Он полностью тебе доверяет.`
+
+Y:
+
+> `Больше вам не доверяет`
+
+→
+
+> `Больше тебе не доверяет`
+
+Y:
+
+> `рядом с вами`
+
+→
+
+> `рядом с тобой`
+
+etc.
+
+### Curiosamente, las etiquetas están bastante bien.
+
+`Свирепый` para Feral funciona como una adaptación de "ferocious/savage", y evita `дикий`, que era justamente lo que querías evitar.
+
+`Обиженный` para Scarred también transmite bastante bien la herida emocional.
+
+`пал в бою` para Fell está **muy bien**, incluso tiene un tono dramático apropiado.
+
+El mayor problema es simplemente el registro formal.
+
+### Passive bonding
+
+> `Пассивное получение дружбы`
+
+Es entendible, pero suena artificial.
+
+Yo usaría:
+
+> `Пассивное укрепление дружбы`
+
+o incluso:
+
+> `Пассивное сближение`
+
+dependiendo de cuánto quieras enfatizar el sistema.
+
+**Veredicto: 🟡 7.5/10 — cambiar el registro de `вы` a `ты` es lo principal.**
+
+---
+
+# 🔴 Turco — aquí encontré un error que sí hay que arreglar
+
+Esta línea:
+
+> `tag_feral → Azgın`
+
+🚨 **NO.**
+
+`Azgın` puede significar algo como **excitado/sexualmente excitado**, además de ciertos sentidos como feroz/bravo dependiendo del contexto. Para un tag de personalidad de videojuego es una elección muy mala y puede producir una interpretación completamente equivocada.
+
+El problema es especialmente claro porque los diccionarios también listan `vahşi`, `yabani`, etc. como traducciones normales de *feral*, mientras que `Azgın` aparece con otros sentidos contextuales. ([Glosbe][2])
+
+Como tú específicamente no quieres `Vahşi` porque significa Wild, yo usaría algo como:
+
+> **Yırtıcı**
+
+que comunica una naturaleza agresiva/predatoria.
+
+Y tiene además bastante sentido con el concepto de Feral, porque el tag representa al Pal que ataca cualquier cosa inmediatamente.
+
+### El resto del turco
+
+Está bastante bien:
+
+* `Meraklı` = Curious
+* `Ürkek` = Timid
+* `Mesafeli` = Aloof
+* `Huysuz` = Grumpy
+* `Düşmanca` = Hostile
+* `Kırgın` = Scarred
+* `Terk Edilmiş` = Abandoned
+* `Temkinli` = Wary
+
+Las frases también son naturales.
+
+**Veredicto: 🟡 8/10, pero Feral DEBE cambiarse.**
+
+---
+
+# 🟢 Vietnamita
+
+Sorprendentemente bueno.
+
+
+
+Las etiquetas son naturales:
+
+* `Tò mò`
+* `Nhút nhát`
+* `Thờ ơ`
+* `Cáu kỉnh`
+* `Thù địch`
+* `Hung dữ`
+* `Thân thiện`
+* `Gắn bó`
+* `Dè chừng`
+
+Todo bastante sólido.
+
+`Tổn thương` para Scarred puede significar herido/lastimado y puede ser físico o emocional según contexto, pero aquí el mensaje posterior deja claro que es emocional.
+
+No lo tocaría.
+
+**Veredicto: 🟢 9/10**
+
+---
+
+# 🟢 Thai
+
+Aquí me llevé una sorpresa porque **esta parte está bastante bien**.
+
+
+
+Y esto además encaja con la batalla que tuvimos antes con la traducción tailandesa 😂.
+
+Las etiquetas funcionan:
+
+* `ขี้สงสัย` = Curious
+* `ขี้อาย` = Timid
+* `เมินเฉย` = Aloof
+* `ขี้หงุดหงิด` = Grumpy
+* `ก้าวร้าว` = Hostile
+* `ดุร้าย` = Feral
+* `เป็นมิตร` = Friendly
+* `ผูกพัน` = Bonding
+* `เจ็บใจ` = Scarred
+* `ถูกทิ้ง` = Abandoned
+* `ระแวง` = Wary
+
+Y las frases tienen sentido.
+
+`เจ็บใจ` es interesante porque transmite **sentirse herido/ofendido emocionalmente**, que precisamente es lo que buscabas para Scarred.
+
+No veo ninguna bomba escondida aquí.
+
+**Veredicto: 🟢 9/10**
+
+---
+
+# 🟢 Indonesio
+
+También bastante bueno.
+
+
+
+Especialmente:
+
+> `Cuek` → Aloof
+
+Muy natural y casual.
+
+> `Pemarah` → Grumpy
+
+Bien.
+
+> `Waspada` → Wary
+
+Bien.
+
+> `Terluka` → Scarred
+
+Aceptable; puede significar herido, pero el contexto del mensaje lo lleva hacia lo emocional.
+
+### Una frase que mejoraría
+
+> `akhirnya menyerah terhadapmu`
+
+para:
+
+> "gave up on you"
+
+Es entendible, pero `menyerah terhadapmu` suena un poquito extraño.
+
+Algo más natural podría ser:
+
+> `dan menyerah padamu`
+
+Pero no es un problema grave.
+
+**Veredicto: 🟢 8.5/10**
+
+---
+
+# 🟡 Japonés
+
+Aquí hay un par de cosas que un japonés probablemente entendería, pero **no suenan como las mejores etiquetas de UI**.
+
+
+
+### 🚨 `Curious → 好奇心`
+
+Esto es **"curiosidad"**, un sustantivo.
+
+El inglés es un adjetivo: Curious.
+
+Para un tag yo preferiría:
+
+> `好奇心旺盛`
+
+= muy curioso / lleno de curiosidad.
+
+Aunque tiene 4 caracteres, sigue siendo un tag perfectamente razonable.
+
+Otra posibilidad:
+
+> `好奇心が強い`
+
+pero es más largo.
+
+### `Scarred → 傷心`
+
+Esta es interesante.
+
+`傷心` significa **dolor emocional / corazón herido**, así que conceptualmente funciona muy bien.
+
+### `Bonding → 絆`
+
+También está bien. Es literalmente "bond/tie".
+
+### `Shaken`
+
+> `あなたに怯えています。信頼が揺らいでいます。`
+
+Significa aproximadamente:
+
+> "Tiene miedo de ti. Su confianza está tambaleándose."
+
+Funciona, aunque pierde el gesto físico de retroceder.
+
+### Passive
+
+> `受動的な友情値の上昇`
+
+Se entiende, pero suena **muy técnico**.
+
+Yo usaría algo como:
+
+> `時間経過による友情値上昇：オン`
+
+= "Incremento de amistad con el paso del tiempo: ON"
+
+Mucho más natural para una UI de juego.
+
+**Veredicto: 🟡 8/10 — principalmente Curious y Passive.**
+
+---
+
+# 🟡 Coreano
+
+La traducción es bastante buena, pero tiene el mismo problema que japonés: **algunas etiquetas son sustantivos en vez de adjetivos**, aunque esto puede funcionar perfectamente como estilo de UI.
+
+
+
+Por ejemplo:
+
+> `호기심`
+
+es "curiosidad", no literalmente "curioso".
+
+Pero como tag de personalidad:
+
+> `호기심`
+
+se entiende.
+
+Más natural como característica sería:
+
+> `호기심 많음`
+
+= "muy curioso".
+
+### El resto
+
+`소심함`, `무관심`, `심술궂음`, `적대적`, `흉포함`, `우호적`, `유대`, `상처받음`, `버려짐`, `경계`
+
+son perfectamente comprensibles.
+
+Y muy bien hecho lo de:
+
+> `{name}이(가)`
+
+El propio archivo contempla precisamente esta solución para nombres cuyo género/coda no conocemos. 
+
+### Passive
+
+> `수동적인 우정 상승`
+
+Suena un poco literal/robótico.
+
+Preferiría algo equivalente a:
+
+> `시간에 따른 우정 증가`
+
+Pero no es un error funcional.
+
+**Veredicto: 🟢/🟡 8.5/10**
+
+---
+
+# 🟢 Chino simplificado
+
+Muy sólido.
+
+
+
+Las etiquetas funcionan muy bien:
+
+* 好奇
+* 胆小
+* 冷漠
+* 暴躁
+* 敌对
+* 凶猛
+* 友好
+* 亲近
+* 心寒
+* 被抛弃
+* 警惕
+
+Especialmente:
+
+> `心寒`
+
+para Scarred.
+
+Es una elección bastante buena para transmitir **sentirse emocionalmente herido/decepcionado**.
+
+Las frases también están bien.
+
+La única que suena algo técnica es:
+
+> `被动友情增长`
+
+pero para una opción de configuración de videojuego es totalmente comprensible.
+
+**Veredicto: 🟢 9/10**
+
+---
+
+# 🟢 Chino tradicional
+
+Prácticamente igual de bueno que el simplificado.
+
+
+
+Las conversiones son coherentes:
+
+> 凶猛
+> 友善
+> 親近
+> 心寒
+> 被拋棄
+> 警惕
+
+Y las frases están bien adaptadas.
+
+No veo nada que me haga decir "esto hay que cambiarlo sí o sí".
+
+**Veredicto: 🟢 9/10**
+
+---
+
+# 📊 Mi resumen final
+
+| Idioma                  | Estado | Qué corregir                            |
+| ----------------------- | ------ | --------------------------------------- |
+| 🇪🇸 Español            | 🟢     | Nada importante                         |
+| 🇧🇷 Portugués BR       | 🟢     | Nada importante                         |
+| 🇫🇷 Francés            | 🟡     | `Scarred`, opcionalmente `Shaken`       |
+| 🇮🇹 Italiano           | 🟢     | `Shaken` opcional                       |
+| 🇩🇪 Alemán             | 🟡     | **Gramática/pronombres + UI**           |
+| 🇵🇱 Polaco             | 🟡     | **Feral + passive bonding**             |
+| 🇷🇺 Ruso               | 🟡     | **Cambiar formal `вы` → informal `ты`** |
+| 🇹🇷 Turco              | 🔴     | **`Azgın` → cambiar sí o sí**           |
+| 🇻🇳 Vietnamita         | 🟢     | Nada importante                         |
+| 🇹🇭 Tailandés          | 🟢     | Nada importante                         |
+| 🇮🇩 Indonesio          | 🟢     | Pequeño refinamiento opcional           |
+| 🇯🇵 Japonés            | 🟡     | `Curious`, `Passive`                    |
+| 🇰🇷 Coreano            | 🟢/🟡  | `Curious`, `Passive` opcional           |
+| 🇨🇳 Chino simplificado | 🟢     | Nada importante                         |
+| 🇹🇼 Chino tradicional  | 🟢     | Nada importante                         |
+
+## 🚨 Los que yo arreglaría antes de meter esto en el mod
+
+**Obligatorios:**
+
+1. 🇹🇷 `Azgın` → **cambiarlo**. Ese es el que más me preocuparía.
+2. 🇩🇪 `Ein wildes Pal` → **`Ein wilder Pal`**.
+3. 🇩🇪 revisar los `Es`/`Er` para mantener consistencia con `der/ein Pal`.
+4. 🇷🇺 cambiar el registro de **`вы/вам/вас` a `ты/тебе/тебя`**.
+5. 🇵🇱 revisar `Szalony` para Feral.
+
+**Recomendados:**
+
+6. 🇫🇷 `Rancunier` → algo más cercano a herido emocionalmente.
+7. 🇯🇵 `好奇心` → `好奇心旺盛`.
+8. 🇯🇵 revisar `受動的な友情値の上昇`.
+9. 🇰🇷 revisar `호기심` y `수동적인 우정 상승`.
+10. 🇩🇪 revisar `Passive Freundschaftszunahme`.
+
+Y hay algo importante: **no veo necesidad de rehacer las traducciones completas**. Eso sería pegarse otro tiro en el pie después de nuestra gloriosa guerra ruso-tailandesa 😂. El sistema está bastante bien; estamos hablando de **ajustes quirúrgicos de unas pocas entradas**.
+
+Además, la regla de que `Feral` no debe traducirse como "wild" es especialmente importante aquí, porque el propio contexto define que todos los Pals con tag ya son salvajes.  Por eso estoy siendo especialmente estricto con esa palabra en cada idioma. En inglés, *feral* tiene además un significado específico relacionado con animales que viven en estado salvaje, distinto de simplemente "wild", así que tiene sentido tratarlo como una personalidad separada. ([Diccionario Cambridge][3])
+
+**En resumen: la IA hizo un trabajo bastante bueno. Yo no publicaría todavía sin corregir las ~5 cosas importantes de arriba, pero tampoco haría una segunda traducción desde cero.**
+
+[1]: https://dictionary.cambridge.org/es/diccionario/ingles-frances/hurt?q=hurt_1&utm_source=chatgpt.com "HURT | traducir al francés - Cambridge Dictionary"
+[2]: https://tr.glosbe.com/en/tr/feral?utm_source=chatgpt.com "feral, Türkçe diline çeviri, vahşi, yabani, öldürücü. İngilizce - Türkçe sözlük | Glosbe"
+[3]: https://dictionary.cambridge.org/dictionary/english/feral?utm_source=chatgpt.com "FERAL | English meaning - Cambridge Dictionary"

@@ -1723,9 +1723,8 @@ function Interaction.Init()
             safe_call(function()
                 local okC, CaptureMod = pcall(require, "Capture")
                 if okC and CaptureMod and CaptureMod.ShowToast then
-                    CaptureMod.ShowToast(nowVisible
-                        and "Personality tags: ON"
-                        or "Personality tags: OFF")
+                    local Locale = require("Locale")
+                    CaptureMod.ShowToast(Locale.T(nowVisible and "tags_on" or "tags_off"))
                 end
             end)
         end)
@@ -1753,9 +1752,8 @@ function Interaction.Init()
                     -- the part being asked for; the sentence after it is there
                     -- because "OFF" alone does not tell a player whether they
                     -- just lost the trust their followers had already earned.
-                    CaptureMod.ShowToast(nowOn
-                        and "Passive bonding: ON - your Pals grow closer over time."
-                        or "Passive bonding: OFF - your Pals keep the trust they have.")
+                    local Locale = require("Locale")
+                    CaptureMod.ShowToast(Locale.T(nowOn and "passive_on" or "passive_off"))
                 end
             end)
         end)

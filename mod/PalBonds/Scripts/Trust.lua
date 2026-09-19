@@ -858,7 +858,13 @@ function Trust.OnInteractionSucceeded(pal)
         ratio and string.format("%.0f%%", ratio * 100) or "unknown"
     ))
     if not st.isFollowing and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
-        Trust.StartFollowing(pal, st, ratio)
+        -- An interaction that jumps straight to 100% (a Kinship Peach) also
+        -- starts the follow here, but the Pal is about to join: skip the
+        -- "starts following you" message so only the join message shows
+        -- (Dragón, 2026-09-18). The follow itself still starts, as it always
+        -- has, for the few seconds before the join.
+        local joinsNow = not st.captureTriggered and ratio >= 1
+        Trust.StartFollowing(pal, st, ratio, joinsNow)
     end
     -- Two-hundred-and-ninety-sixth pass (2026-09-11): `not st.isFollowing` is
     -- new, and it fixes a real preset clobber Dragón's log caught.
@@ -1005,17 +1011,31 @@ function Trust.GetBarRatio(palActor)
     return ratio
 end
 
-function Trust.StartFollowing(pal, st, ratio)
+-- A Pal just became a real, bonded follower (50%). Both ways in go through
+-- here: crossing 50% normally (StartFollowing) and crossing it during the 20%
+-- calm-down, where the Pal simply keeps following (StartBriefFollow).
+--   * Its name and gender are read now, while the Pal is certainly here: if it
+--     despawns later the abandoned toast still has a name to show
+--     (forget_despawned_pals). The calm-down path used to skip this.
+--   * The player is told it is now following (Dragón, 2026-09-18).
+local function on_became_bonded(pal, st, quiet)
+    local okCapName, CaptureName = pcall(require, "Capture")
+    if not (okCapName and CaptureName) then return end
+    if CaptureName.ResolveDisplayName then
+        st.displayName = safe_call(CaptureName.ResolveDisplayName, pal)
+        st.displayFemale = CaptureName.IsFemale and safe_call(CaptureName.IsFemale, pal) == true
+    end
+    if not quiet and CaptureName.NotifyStartedFollowing then
+        safe_call(CaptureName.NotifyStartedFollowing, st.displayName, st.displayFemale)
+    end
+end
+
+-- `quiet`: no "starts following you" message (the Pal is joining right away).
+function Trust.StartFollowing(pal, st, ratio, quiet)
     st = st or (select(1, get_state(pal)))
     if not st or st.isFollowing then return end
     st.isFollowing = true
-
-    -- Read now, while the Pal is certainly here: if it despawns later the
-    -- abandoned toast still has a name to show (forget_despawned_pals).
-    local okCapName, CaptureName = pcall(require, "Capture")
-    if okCapName and CaptureName and CaptureName.ResolveDisplayName then
-        st.displayName = safe_call(CaptureName.ResolveDisplayName, pal)
-    end
+    on_became_bonded(pal, st, quiet)
     Logger.log(string.format(
         "[PalBonds/Trust] bonding bar crossed %.0f%% (ratio=%s) — this Pal should now start following the player",
         FOLLOW_TRIGGER_RATIO * 100, ratio and string.format("%.2f", ratio) or "unknown"
@@ -1103,6 +1123,7 @@ function Trust.StartBriefFollow(pal, hatesPlayer, onDone)
             if ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
                 Logger.log(string.format("[PalBonds/Trust] [BRIEF-FOLLOW] %s — bar is at %.0f%% now, so it keeps following (calm=%s after %.1fs)",
                     tostring(key), ratio * 100, tostring(calmed), elapsed))
+                on_became_bonded(pal, st)
                 finish(calmed, elapsed, true)
                 return
             end
@@ -1343,7 +1364,7 @@ local function forget_despawned_pals()
             if wasBonded then
                 local okCap, CaptureD = pcall(require, "Capture")
                 if okCap and CaptureD and CaptureD.NotifyBondLostByName then
-                    safe_call(CaptureD.NotifyBondLostByName, st.displayName, "abandoned")
+                    safe_call(CaptureD.NotifyBondLostByName, st.displayName, "abandoned", st.displayFemale)
                 end
             end
         end

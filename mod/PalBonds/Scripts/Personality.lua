@@ -832,7 +832,18 @@ function Personality.GetOrInitState(palActor)
         if isHuman then
             effectiveDisposition = "normal"
         end
+        -- The Pal's gender, read once with the rest of its record, for the
+        -- languages whose tags change with it (2026-09-18). 2 = Female in
+        -- EPalGenderType; None (0) and anything unreadable count as not female.
+        local female = safe_call(function()
+            local comp = palActor.CharacterParameterComponent
+            if comp == nil or not comp:IsValid() then return false end
+            local param = comp:GetIndividualParameter()
+            if param == nil or not param:IsValid() then return false end
+            return tonumber(param:GetGenderType()) == 2
+        end) == true
         PersonalityState[palId] = {
+            female = female,
             disposition = effectiveDisposition,
             speciesDefault = speciesDefault,
             presetClassName = presetClassName,
@@ -900,6 +911,12 @@ function Personality.SetDisposition(palId, disposition)
     PersonalityState[palId] = PersonalityState[palId] or {}
     PersonalityState[palId].disposition = disposition
 end
+-- True for a Pal recorded as female (see GetOrInitState).
+function Personality.IsFemale(palId)
+    local st = palId ~= nil and PersonalityState[palId] or nil
+    return st ~= nil and st.female == true
+end
+
 function Personality.GetDisposition(palId)
     if palId == nil then return nil end
     local state = PersonalityState[palId]

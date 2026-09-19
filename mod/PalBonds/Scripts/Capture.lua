@@ -348,7 +348,7 @@ local function resolve_pal_display_name(pal, player)
     Logger.log("[PalBonds/Capture] [NOTIFY] resolved display name BEFORE capture = " .. tostring(palName))
     return palName
 end
-function Capture.NotifyJoined(pal, player, preResolvedName)
+function Capture.NotifyJoined(pal, player, preResolvedName, preResolvedFemale)
     local ok, err = pcall(function()
         local utility = get_pal_utility()
         if utility == nil then return end
@@ -376,11 +376,12 @@ function Capture.NotifyJoined(pal, player, preResolvedName)
         -- interface vocabulary, and the point of this mod is that the Pal made a
         -- choice rather than that a roster slot was filled.
         local palName = preResolvedName
+        local Locale = require("Locale")
         local message
         if palName then
-            message = palName .. " has chosen to go with you. It trusts you completely."
+            message = Locale.T("joined", { name = palName, female = preResolvedFemale })
         else
-            message = "A wild Pal has chosen to go with you."
+            message = Locale.T("joined_unnamed")
         end
         Logger.log("[PalBonds/Capture] [NOTIFY] join message: " .. message)
         local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
@@ -701,6 +702,7 @@ function Capture.OnTrustMaxed(pal)
     -- last run proved this: the toast fell through to its generic fallback
     -- because both name routes failed post-capture.
     local preResolvedDisplayName = resolve_pal_display_name(pal, player)
+    local preResolvedFemale = Capture.IsFemale(pal)
 
     -- Two-hundred-and-fortieth pass (2026-09-07): a Pal that JOINS by choice
     -- should not arrive as a stranger, so joining carries a flat friendship
@@ -742,7 +744,7 @@ function Capture.OnTrustMaxed(pal)
         -- tested so far (see this file's own thirty-ninth pass note), so this
         -- matches the project's existing confidence level rather than adding
         -- new uncertainty.
-        Capture.NotifyJoined(pal, player, preResolvedDisplayName)
+        Capture.NotifyJoined(pal, player, preResolvedDisplayName, preResolvedFemale)
 
         -- It's a real party member now (assuming the call above worked) —
         -- stop treating it as our own approximated bonding-follow state.
@@ -775,7 +777,7 @@ end
 -- tone used for joining, so these use tone 1. Sent BEFORE anything else in this
 -- function, while the actor is certainly still readable — the same discipline
 -- that the capture path needed after resolving names too late twice.
-local function notify_bond_lost(pal, reason, knownName)
+local function notify_bond_lost(pal, reason, knownName, knownFemale)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
@@ -788,10 +790,12 @@ local function notify_bond_lost(pal, reason, knownName)
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
         local palName = knownName or resolve_pal_display_name(pal, player)
-        local who = palName or "A Pal"
+        local Locale = require("Locale")
+        local who = palName or Locale.T("a_pal")
+        local g = { name = who, female = (knownFemale == nil) and Capture.IsFemale(pal) or knownFemale }
         local message
         if reason == "betrayed" then
-            message = who .. " no longer trusts you. It will not bond with you again."
+            message = Locale.T("betrayed", g)
 
         -- Two-hundred-and-ninety-sixth pass (2026-09-11): a companion that DIED
         -- used to fall through to the "left behind" wording, because death was
@@ -799,9 +803,9 @@ local function notify_bond_lost(pal, reason, knownName)
         -- limit and the drift check spoke for it. Dragón watched a Cawgnito die
         -- defending him and then get told it had wandered off.
         elseif reason == "died" then
-            message = who .. " fell while fighting alongside you."
+            message = Locale.T("fell", g)
         else
-            message = who .. " was left behind and gave up on you."
+            message = Locale.T("abandoned", g)
         end
         local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
         if text == nil then return end
@@ -837,6 +841,30 @@ function Capture.ShowToast(message)
         Logger.log("[PalBonds/Capture] [NOTIFY] " .. tostring(message))
     end)
 end
+-- 50%: the Pal starts following. The name and gender come from Trust's record
+-- (read once when it became a follower), so nothing extra is looked up.
+-- Positive tone, like the join message.
+function Capture.NotifyStartedFollowing(name, female)
+    pcall(function()
+        local player = safe_call(function() return require("PlayerRef").Get() end)
+        if player == nil or not safe_call(function() return player:IsValid() end) then return end
+        local utility = get_pal_utility()
+        if utility == nil then return end
+        local manager = safe_call(function() return utility:GetLogManager(player) end)
+        if manager == nil then return end
+        local widgetClass = resolve_toast_widget_class(manager)
+        if widgetClass == nil then return end
+        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
+        if textLibrary == nil then return end
+        local Locale = require("Locale")
+        local message = Locale.T("following", { name = name or Locale.T("a_pal"), female = female == true })
+        local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
+        if text == nil then return end
+        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 2 })
+        Logger.log("[PalBonds/Capture] [NOTIFY] following message: " .. message)
+    end)
+end
+
 function Capture.NotifyTrustShaken(pal)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
@@ -850,7 +878,8 @@ function Capture.NotifyTrustShaken(pal)
         local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
         if textLibrary == nil then return end
         local palName = resolve_pal_display_name(pal, player)
-        local message = (palName or "A Pal") .. " flinched away from you. Its trust is shaken."
+        local Locale = require("Locale")
+        local message = Locale.T("shaken", { name = palName or Locale.T("a_pal"), female = Capture.IsFemale(pal) })
         local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
         if text == nil then return end
         manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 1 })
@@ -860,6 +889,19 @@ end
 -- The Pal's display name, read while it is certainly alive. Trust caches it when
 -- a Pal starts following, so a toast can still name a follower that later
 -- despawns and can no longer be read.
+-- True for a female Pal (EPalGenderType 2), read straight off the Pal; used
+-- only when a message is about to be shown. Anything unreadable is false.
+function Capture.IsFemale(pal)
+    if pal == nil then return false end
+    return safe_call(function()
+        local comp = pal.CharacterParameterComponent
+        if comp == nil or not comp:IsValid() then return false end
+        local param = comp:GetIndividualParameter()
+        if param == nil or not param:IsValid() then return false end
+        return tonumber(param:GetGenderType()) == 2
+    end) == true
+end
+
 function Capture.ResolveDisplayName(pal)
     local player = safe_call(function() return require("PlayerRef").Get() end)
     return safe_call(function() return resolve_pal_display_name(pal, player) end)
@@ -868,8 +910,8 @@ end
 -- The bond-lost toast for a Pal whose actor is gone (a follower that despawned).
 -- Nothing else OnTrustLost does applies: there is no actor left to flag, re-tier
 -- or re-sense.
-function Capture.NotifyBondLostByName(name, reason)
-    notify_bond_lost(nil, reason, name)
+function Capture.NotifyBondLostByName(name, reason, female)
+    notify_bond_lost(nil, reason, name, female == true)
 end
 
 function Capture.OnTrustLost(pal, reason)
