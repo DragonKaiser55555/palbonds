@@ -1,5 +1,6 @@
 local Logger = require("Logger")
 local Trust = require("Trust")
+local Settings = require("Settings")
 local Capture = require("Capture")
 local Personality = require("Personality")
 local UEHelpers = require("UEHelpers") 
@@ -19,7 +20,10 @@ local Interaction = {}
 -- they are — he uses the real radial menu day to day, which internally
 -- calls these same do_pet/do_feed functions anyway (see do_interaction) —
 -- so this claims F8 instead, a single plain key, same shape as F9/F10.
-local PLAY_KEY = "F8"
+-- 2026-09-18: all three keys come from the player's settings file (Settings.lua).
+local PLAY_KEY = Settings.Get("KeyPlay")
+local TAGS_KEY = Settings.Get("KeyTags")
+local PASSIVE_KEY = Settings.Get("KeyPassiveGain")
 
 -- Cheer is emote 0, identified by Dragón with the F7 probe. Declared up here
 -- rather than next to the emote code because do_play uses it far above that
@@ -63,11 +67,10 @@ local capsuleReported = {}
 local PET_RANGE = 900.0
 local PET_MAX_ANGLE_DEG = 25  
 
--- Two-hundred-and-first pass: Play-specific now (Pet has its own
--- PET_FRIENDSHIP_GAIN/top-up mechanism below) — bumped 10 -> 25 per
--- Dragon's balance ask.
-local INTERACTION_FRIENDSHIP_GAIN = 25
-
+-- 2026-09-18: every amount below is PalBonds' own trust points, granted through
+-- Trust.AddPoints. None of them touches the game's friendship any more; the
+-- older notes below still say "real"/"vanilla" because that is what they were.
+--
 -- Hundred-and-eighty-fifth pass (2026-09-05): Dragón's simplified real
 -- balance spec — Pet/Play/Feed all use small, real vanilla-scale
 -- amounts during wild bonding (not the mod's own big custom numbers),
@@ -93,8 +96,15 @@ local INTERACTION_FRIENDSHIP_GAIN = 25
 -- rarity (Dragón's scale): common +10, uncommon +20, rare +30, epic +40,
 -- legendary +50, so a feed gives 60-100. See Interaction.FeedGrantAmount.
 -- Kinship Peaches keep their own amounts below.
-local FEED_FRIENDSHIP_BASE = 50
-local FEED_RARITY_BONUS = { [0] = 10, [1] = 20, [2] = 30, [3] = 40, [4] = 50 }
+-- 2026-09-18: read from the player's settings file; these are its defaults.
+local FEED_FRIENDSHIP_BASE = Settings.Get("FeedBase")
+local FEED_RARITY_BONUS = {
+    [0] = Settings.Get("FeedBonusCommon"),
+    [1] = Settings.Get("FeedBonusUncommon"),
+    [2] = Settings.Get("FeedBonusRare"),
+    [3] = Settings.Get("FeedBonusEpic"),
+    [4] = Settings.Get("FeedBonusLegendary"),
+}
 
 -- Two-hundred-and-first pass (2026-09-06): the comment three passes above
 -- (this same block) assumed Pet's real vanilla Happy-triggered grant just
@@ -128,7 +138,7 @@ local FEED_RARITY_BONUS = { [0] = 10, [1] = 20, [2] = 30, [3] = 40, [4] = 50 }
 -- previous numbers on a fresh save and reported the early game "felt a bit
 -- slower". The early game is where it matters most, because that is where a
 -- player decides whether the mod is fun.
-local PET_FRIENDSHIP_GAIN = 50
+local PET_FRIENDSHIP_GAIN = Settings.Get("Pet")
 
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón moved off the raw
 -- real vanilla FloatValue1 numbers (2000/20000) to clean values sized
@@ -137,9 +147,9 @@ local PET_FRIENDSHIP_GAIN = 50
 -- one use (a clean one-shot at equal level, matching Dragón's "it is
 -- indeed a one shot killer for friendship"), self-limiting against abuse
 -- since a much-higher-level Pal's own bonding threshold scales up too.
-local KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = 250   
-local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = 500     
-local PLAY_FRIENDSHIP_GAIN = 50
+local KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = Settings.Get("KinshipPeachLesser")
+local KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = Settings.Get("KinshipPeach")
+local PLAY_FRIENDSHIP_GAIN = Settings.Get("Play")
 
 -- Forward declaration. The real definition lives next to
 -- closeRadialMenuActionWindow (it needs the radial-menu state), but do_play
@@ -839,14 +849,10 @@ local function do_play()
         end)
     end)
     if not rescheduleOk then
+        -- Same grant path and amount as a normal Play (2026-09-18: this used to
+        -- give the game 25 directly and skip the permanently-fled check).
         Logger.log("[PalBonds/Interaction] Play: could not schedule the Happy follow-up (ExecuteInGameThreadWithDelay failed) — granting trust immediately as a fallback so the interaction isn't silently lost")
-        local grantOk, grantErr = pcall(function()
-            param:AddFriendShip(INTERACTION_FRIENDSHIP_GAIN, true)
-        end)
-        Logger.log(string.format("[PalBonds/Interaction] Play fallback AddFriendShip(%d, true) call returned — result=%s", INTERACTION_FRIENDSHIP_GAIN, grantOk and "ok" or tostring(grantErr)))
-        if Interaction.OnWildPalPetted then
-            Interaction.OnWildPalPetted(pal)
-        end
+        safe_call(function() grant_wild_interaction(pal, PLAY_FRIENDSHIP_GAIN, "Play (fallback)") end)
     end
 
     -- ===============================================================
@@ -1362,37 +1368,25 @@ grant_wild_interaction = function(pal, amount, label)
         Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": this Pal already lost all its trust permanently — refusing to grant")
         return false
     end
-    local param = get_individual_parameter(pal)
-    if not param or not param:IsValid() then
-        Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": could not resolve IndividualParameter — nothing granted")
+    -- PalBonds' own points (2026-09-18), not the game's friendship.
+    local before, after = Trust.AddPoints(pal, amount, label)
+    if before == nil then
+        Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": no points granted")
         return false
     end
-    local before = safe_call(function() return param:GetFriendshipPoint() end)
-    local grantOk, grantErr = pcall(function() param:AddFriendShip(amount, false) end)
-    local after = safe_call(function() return param:GetFriendshipPoint() end)
 
-    -- [BALANCE-TEST] is the line to read during Dragón's 5-interactions-per-
-    -- Pal verification run: it states the exact before, the exact after and
-    -- the amount intended, so a wrong number is visible directly instead of
-    -- being inferred from how many interactions a capture took.
+    -- [BALANCE-TEST] states the exact before, after and amount, so a wrong
+    -- number is visible directly instead of being inferred from how many
+    -- interactions a capture took.
     Logger.log(string.format(
-        "[PalBonds/Interaction] [BALANCE-TEST] %s on %s — intended +%s, friendship %s -> %s (call=%s)",
+        "[PalBonds/Interaction] [BALANCE-TEST] %s on %s — +%d, trust %d -> %d",
         tostring(label), tostring(safe_call(function() return pal:GetFullName() end)),
-        tostring(amount), tostring(before), tostring(after),
-        grantOk and "ok" or tostring(grantErr)
+        amount, before, after
     ))
     if Interaction.OnWildPalPetted then
         Interaction.OnWildPalPetted(pal)
     end
     return true
-
--- F9. Grants a share of the bonding bar directly, with NO interaction played.
---
--- Deliberately different from do_play() in two ways, both of which are the
--- point of the test rather than oversights:
---   * it does NOT require the player to be idle, and
---   * it does NOT require the TARGET to be idle
--- because nothing is played on either of them. do_play() checks both because
 end
 -- ===========================================================================
 -- A PET ONLY COUNTS IF IT HAPPENED (2026-09-16)
@@ -1711,12 +1705,12 @@ local function run_on_game_thread(fn)
 end
 
 function Interaction.Init()
-    Logger.log(string.format("[PalBonds/Interaction] %s = Play — random Pal idle animation + trust grant, same range/gating as Pet/Feed", PLAY_KEY))
+    Logger.log(string.format("[PalBonds/Interaction] keys: %s = Play, %s = personality tags, %s = passive gain", PLAY_KEY, TAGS_KEY, PASSIVE_KEY))
     RegisterKeyBind(Key[PLAY_KEY], function()
         run_on_game_thread(do_play)
     end)
 
-    RegisterKeyBind(Key.F9, function()
+    RegisterKeyBind(Key[TAGS_KEY], function()
         -- Same game-thread hop as Play (pass 333): this one touches live
         -- nameplate widgets and shows a toast, both engine work.
         run_on_game_thread(function()
@@ -1729,9 +1723,8 @@ function Interaction.Init()
             safe_call(function()
                 local okC, CaptureMod = pcall(require, "Capture")
                 if okC and CaptureMod and CaptureMod.ShowToast then
-                    CaptureMod.ShowToast(nowVisible
-                        and "Personality tags: ON"
-                        or "Personality tags: OFF")
+                    local Locale = require("Locale")
+                    CaptureMod.ShowToast(Locale.T(nowVisible and "tags_on" or "tags_off"))
                 end
             end)
         end)
@@ -1741,7 +1734,7 @@ function Interaction.Init()
     -- friendship drip. F10 was the old Feed key back when interactions were on
     -- bare function keys; nothing has been bound to it since the radial menu
     -- took over, so it is free.
-    RegisterKeyBind(Key.F10, function()
+    RegisterKeyBind(Key[PASSIVE_KEY], function()
         -- Same game-thread hop as Play (pass 333): this one touches live
         -- nameplate widgets and shows a toast, both engine work.
         run_on_game_thread(function()
@@ -1759,9 +1752,8 @@ function Interaction.Init()
                     -- the part being asked for; the sentence after it is there
                     -- because "OFF" alone does not tell a player whether they
                     -- just lost the trust their followers had already earned.
-                    CaptureMod.ShowToast(nowOn
-                        and "Passive bonding: ON - your Pals grow closer over time."
-                        or "Passive bonding: OFF - your Pals keep the trust they have.")
+                    local Locale = require("Locale")
+                    CaptureMod.ShowToast(Locale.T(nowOn and "passive_on" or "passive_off"))
                 end
             end)
         end)
@@ -1892,16 +1884,16 @@ function Interaction.Init()
                 Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] this Pal permanently lost its trust — the food is consumed but no friendship is granted")
                 return
             end
-            local param = get_individual_parameter(wildTarget)
-            if param and param:IsValid() then
-                local grantOk, grantErr = pcall(function() param:AddFriendShip(grantAmount, false) end)
-                Logger.log(string.format(
-                    "[PalBonds/Interaction] [FEED-FRIENDSHIP] real wild Feed granting %d friendship (item=%s) — result=%s",
-                    grantAmount, tostring(itemId), grantOk and "ok" or tostring(grantErr)
-                ))
-            else
-                Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] could not resolve wild target's IndividualParameter — no friendship granted")
+            -- PalBonds' own points (2026-09-18), not the game's friendship.
+            local before, after = Trust.AddPoints(wildTarget, grantAmount, "Feed")
+            if before == nil then
+                Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] no points granted for this feed (item=" .. tostring(itemId) .. ")")
+                return
             end
+            Logger.log(string.format(
+                "[PalBonds/Interaction] [FEED-FRIENDSHIP] wild Feed +%d, trust %d -> %d (item=%s)",
+                grantAmount, before, after, tostring(itemId)
+            ))
             if Interaction.OnWildPalPetted then
                 Interaction.OnWildPalPetted(wildTarget)
             end

@@ -20,7 +20,7 @@ Nexus package and the Nexus publish as done (published on Steam, Nexus, and
 announced in 2 Reddit posts, 2026-09-14; **v1.1.1 published to both stores
 2026-09-15**; **v1.1.2 on GitHub, Nexus and the Steam Workshop 2026-09-15**;
 **v1.1.3 on all three 2026-09-16**; **v1.1.4 on all three 2026-09-18**, GitHub
-`8846dca`); only the settings screen is left. v1.1.4 (the Play crash fix and
+`8846dca`; **v1.1.5 on Nexus and the Workshop 2026-09-19**); only the settings screen is left. v1.1.4 (the Play crash fix and
 20% forgiveness) moves no category. Recalculate whenever a category moves, and keep
 the `Progreso:` line of this project's block in `../game proyects.txt` in sync.
 
@@ -1696,6 +1696,47 @@ they fail against 1.1.3.
   in and survives `Mods/NativeMods/UE4SS/Mods/shared/`; GitHub release notes.
   Dragón re-edits his 16 Workshop descriptions with the translated tag names
   (from docs/translations-review.md) and fixes "Tímid".
+- **1.1.5 PACKAGED (2026-09-19, morning).** DEBUG_LOGGING false in `mod/`;
+  all 21 suites pass, 17 hooks. `release/PalBonds-v1.1.5.zip` (14 files:
+  LICENSE from the repo root, README.txt, enabled.txt, 11 scripts incl.
+  Locale.lua and Settings.lua) verified byte-identical to `mod/`; the 1.1.4 zip
+  deleted as usual. Both release trees and the game's manual-install copy are
+  identical to `mod/`. `release/workshop/PalBonds/Info.json` is 1.1.5 (that copy
+  has no BOM; the upload folder's does, so bump that one in place).
+  README.txt: SETTINGS section, languages and settings bullets, keys
+  changeable, the half-bar bonded hit, despawn message. README.md: the same
+  plus a Settings section and a note on the despawn known issue.
+  `nexus-description.txt`: Settings and Your language sections.
+  The Workshop UE4SS has `Mods/NativeMods/UE4SS/Mods/shared/` (UEHelpers in
+  it), so the settings path holds there; the Workshop test confirms it live.
+  Order today: Nexus first, then the Workshop.
+  - **Nexus: LIVE** (checked 2026-09-19): version 1.1.5, main file "PalBonds
+    V1.1.5", 288 KB (= our zip), Dragón's changelog (8 one-liners) and short
+    description. `release/nexus-description.txt` synced to the live page.
+    Terminology in player text (Dragón): the game's UI calls its value
+    "Trust", so where both appear (changelog) our bar is the "friendship bar";
+    other texts keep "trust bar" as they are.
+  - **Dev install DISABLED** for the Workshop test (`dwmapi.dll` and
+    `ue4ss/Mods/PalBonds/enabled.txt` → `*.MODS-DISABLED`).
+  - **Workshop upload folder prepared:** 11 scripts identical to
+    `release/workshop`, Info.json 1.1.5 with its BOM kept, `.workshop.json`
+    untouched. Next: Dragón ticks the Workshop mods and tests, then uploads.
+  - **Workshop pre-upload test PASSED (2026-09-19, 12:26-12:30).** The
+    NativeMods copy (re-copied 12:26) is identical to the release, 11 scripts.
+    The settings file was CREATED in `Mods/NativeMods/UE4SS/Mods/shared/` on
+    the first launch (12:26) and LOADED on the next one (UE4SS.log 12:29:
+    "[SETTINGS] loaded .../NativeMods/UE4SS/Mods/shared/PalBonds_settings.lua"),
+    17 hooks, no Lua errors. So the Workshop settings path is confirmed.
+    Still unobserved: the file surviving a real Steam update of the item
+    (it lives outside the PalBonds folder the update replaces).
+  - **Workshop: LIVE** (checked 2026-09-19): updated 19 Sep @ 12:40pm, change
+    note "Version 1.1.5" with the same 8 lines as Nexus, `.workshop.json`
+    `last_published_version` 1.1.5, upload folder still identical to the
+    release. English description has the Settings section (Steam route +
+    `Mods/NativeMods/UE4SS/Mods/shared/`), the keys line, the language bullet
+    and Known Issues; `release/workshop-description.txt` synced. Dragón still has
+    to update the 16 translated descriptions. Dev install still DISABLED.
+    Left: GitHub commit + release notes (ask first).
 - **1.1.5 PLAN (Dragón, 2026-09-18): ship TOMORROW (09-19), not today, with the
   own-points rework plus the settings file ("either if we finish the settings
   file or not"). Two uploads a few hours apart made no sense, and the 1.1.4

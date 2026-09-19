@@ -29,7 +29,7 @@ walk over:
 [list]
 [*][b]Normal[/b] - whatever its species normally does
 [*][b]Curious[/b] - stops and looks at you as you come closer
-[*][b]Timid[/b] - too shy will run and hide
+[*][b]Timid[/b] - too shy, runs and hides
 [*][b]Aloof[/b] - will probably ignore you
 [*][b]Grumpy[/b] - all posturing, until you look like easy prey
 [*][b]Hostile[/b] - will hunt you down
@@ -61,15 +61,32 @@ but you still lost it.
 [*][b]F10[/b] - on/off the passive follower friendship gain (so you can hoard minions)
 [/list]
 
+F8, F9 and F10 can be changed in the settings file.
+
+
+[size=5][b]Settings[/b][/size]
+
+PalBonds comes with a settings file, created the first time you launch the game with the mod. It lets you change:
+
+[list]
+[*]how many points petting, playing and feeding give (including each food rarity and Kinship Peaches)
+[*]how fast your followers warm up to you on their own
+[*]how much trust a Pal gets when it joins you
+[*]how often each personality appears
+[*]the keys for Play, tags and passive bonding
+[*]the language of the tags and messages (it follows your game's language by default)
+[/list]
+
+[b]Where to find it:[/b] in the same UE4SS Mods folder you dropped PalBonds into, open [b]shared/PalBonds_settings.lua[/b].
+
+Close the game, open the file with Notepad, change a number, save, and start the game again. Every setting has a short explanation above it, and if anything goes wrong, just delete the file and a fresh one is made.
+
+An in-game settings screen is planned for a future update.
+
 
 [size=5][b]Requirements[/b][/size]
 
 [url=https://www.nexusmods.com/palworld/mods/2237]UE4SS Experimental (Palworld)[/url] - install it first.
-
-Use only ONE UE4SS. If you already use the UE4SS from the Steam Workshop, don't
-install this one too - the game crashes when two copies load.
-
-Singleplayer and your own hosted worlds only. Don't use mods on official servers.
 
 
 [size=5][b]Installation[/b][/size]
@@ -94,9 +111,19 @@ Prefer Steam? The same mod is on the Workshop, where UE4SS installs automaticall
 but a Pal walking with you slowly warms up to you anyway.
 [*]Don't leave a bonded Pal behind. Distance costs you trust.
 [*]High-level Pals take longer. Low-level ones come around fast, but bosses may be harder to befriend.
-[*]A Pal that joins you this way shows up already fond of you. so free extra trust points.
-[*]Food rarity matters, the better the food the more friendship it will give, and Kinship peaches are your best friend to tame them.
-[*]This mod will allow you to befriend pals you wouldnt usually capture, keep that in mind.
+[*]A Pal that joins you this way shows up already fond of you, so free extra trust points.
+[*]Food rarity matters, the better the food the more friendship it will give, and Kinship Peaches are your best bet to tame them.
+[*]This mod will allow you to befriend pals you wouldn't usually capture, keep that in mind.
+[*]Only tested in Singleplayer.
+[*]Built with AI-assisted development - not a secret, and the GitHub repo has the full notes if you're curious how any of this works.
+[*]Tags and messages appear in your game's language, in every language Palworld offers.
+[/list]
+
+
+[size=5][b]Known Issues[/b][/size]
+
+[list]
+[*]A bonded wild Pal (50%+ friendship bar) may despawn if it moves too far from its spawn location - the game unloads wild Pals along with the area they came from. It's recommended to complete the bond before travelling to a different area.
 [/list]
 
 

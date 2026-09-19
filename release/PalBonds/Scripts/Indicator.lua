@@ -1,4 +1,5 @@
 local Logger = require("Logger")
+local Locale = require("Locale")
 local Trust = require("Trust") 
 local UEHelpers = require("UEHelpers") 
 local Personality = require("Personality") 
@@ -375,41 +376,16 @@ local function resolve_pal_actor_from_gauge(gaugeWidget)
     return nil, "no hooked handle for this gauge yet (bound before the hook was registered), and the stored bindedHandle field doesn't resolve in this build — see DIAG-HANDLE log"
 end
 
--- Reuses this project's own already-proven route to the friendship value
--- (Interaction.lua's get_individual_parameter: actor.CharacterParameterComponent
--- :GetIndividualParameter()), just starting from an actor resolved via the
--- gauge's bindedHandle instead of a targeted/interacted-with Pal.
+-- The bar's fill comes from PalBonds' own trust points (Trust.GetBarRatio,
+-- 2026-09-18). It used to read the game's FriendshipPoint through the Pal's
+-- CharacterParameterComponent, three reflection calls per bar per refresh; it is
+-- now one name lookup and a table read. A Pal with no bonding record reads 0
+-- without any level lookup, as before.
 local function get_friendship_ratio(actor)
-    local paramOk, param = pcall(function()
-        local comp = actor.CharacterParameterComponent
-        if comp ~= nil and comp:IsValid() then
-            return comp:GetIndividualParameter()
-        end
-        return nil
-    end)
-    if not (paramOk and param ~= nil and param:IsValid()) then
-        return nil, "no readable CharacterParameterComponent/IndividualParameter"
+    local ok, ratio = pcall(function() return Trust.GetBarRatio(actor) end)
+    if not ok or type(ratio) ~= "number" then
+        return nil, "Trust.GetBarRatio failed: " .. tostring(ratio)
     end
-    local pointOk, point = pcall(function() return param:GetFriendshipPoint() end)
-    if not (pointOk and point ~= nil) then
-        return nil, "GetFriendshipPoint() failed"
-    end
-
-    -- Hundred-and-eighty-ninth pass (2026-09-05): Trust.GetBondingThreshold
-    -- now returns nil on purpose for a Pal with no real interaction on
-    -- record — Dragón's explicit ask, "dont use a fallback, just dont
-    -- compute it at all." A nil here means literally nothing to show
-    -- yet, so this returns 0 directly WITHOUT dividing by any default —
-    -- no per-Pal level lookup, no fallback constant, nothing computed
-    -- for the vast majority of Pals that are never actually interacted
-    -- with.
-    local capOk, cap = pcall(function() return Trust.GetBondingThreshold(actor) end)
-    if not (capOk and cap ~= nil and cap > 0) then
-        return 0, nil
-    end
-    local ratio = point / cap
-    if ratio > 1 then ratio = 1 end
-    if ratio < 0 then ratio = 0 end
     return ratio, nil
 end
 
@@ -457,19 +433,22 @@ end
 --
 -- No name for 100%, per Dragón: by then the Pal is already being captured.
 local USE_PLAYER_FACING_PERSONALITY_NAMES = true
+-- 2026-09-18: translation keys (Locale.lua), not the words themselves; the
+-- tag is shown in the game's language. English: Normal, Curious, Timid,
+-- Aloof, Grumpy, Hostile, Feral, Bonding.
 local PERSONALITY_DISPLAY_NAMES = {
-    normal = "Normal",
-    unknown = "Normal",
-    friendly = "Curious",
-    escape = "Timid",
-    notinterested = "Aloof",
-    warlike = "Grumpy",
-    warlike_anyway = "Hostile",
-    kill_all = "Feral",
+    normal = "tag_normal",
+    unknown = "tag_normal",
+    friendly = "tag_curious",
+    escape = "tag_timid",
+    notinterested = "tag_aloof",
+    warlike = "tag_grumpy",
+    warlike_anyway = "tag_hostile",
+    kill_all = "tag_feral",
 
     -- Reached only if the ratio lookup fails; the thresholds below normally
     -- catch this state first.
-    companion_combat = "Bonding",
+    companion_combat = "tag_bonding",
 }
 local BOND_LABEL_FRIENDLY_RATIO = 0.2
 local BOND_LABEL_BONDING_RATIO = 0.5
@@ -630,7 +609,7 @@ function Indicator.TogglePersonalityLabels()
     end
     Logger.log("[PalBonds/Indicator] [TAG-TOGGLE] personality tags are now " ..
         (personalityLabelsVisible and "VISIBLE" or "HIDDEN") ..
-        " (F9; session-only, resets to visible on the next launch)")
+        " (" .. tostring(require("Settings").Get("KeyTags")) .. "; session-only, resets to visible on the next launch)")
 
     -- Two-hundred-and-eighty-seventh pass: returned so the key handler can put
     -- the new state on screen. Both toggles are invisible otherwise -- with the
@@ -661,16 +640,18 @@ end
 -- The two causes are genuinely different things the player did, so they get
 -- different words. Betrayal was an act; abandonment was a neglect.
 local BROKEN_BOND_LABELS = {
-    betrayed = "Scarred",
-    abandoned = "Abandoned",
+    betrayed = "tag_scarred",
+    abandoned = "tag_abandoned",
 }
 
 -- Used only if a bond ended without its cause being recorded — older saves, or
 -- any future path that forgets to pass a reason. Deliberately not one of the two
 -- real words: a Pal should never be labelled "Scarred" unless the player
 -- actually hurt it.
-local BROKEN_BOND_FALLBACK = "Wary"
-local function personality_display_text(actor, disposition)
+local BROKEN_BOND_FALLBACK = "tag_wary"
+local function personality_display_text(actor, disposition, palId)
+    -- Picks the feminine word for a female Pal where the language has one.
+    local g = { female = palId ~= nil and Personality.IsFemale and Personality.IsFemale(palId) or false }
     if not personalityLabelsVisible then return "" end
 
     -- 2026-09-14, Dragón's instruction: "owned pals should not show tags at
@@ -695,7 +676,7 @@ local function personality_display_text(actor, disposition)
     if okCap and CaptureMod and CaptureMod.HasPermanentlyFled then
         if safe_call(function() return CaptureMod.HasPermanentlyFled(actor) end) then
             local why = CaptureMod.GetFledReason and safe_call(function() return CaptureMod.GetFledReason(actor) end)
-            return BROKEN_BOND_LABELS[why] or BROKEN_BOND_FALLBACK
+            return Locale.T(BROKEN_BOND_LABELS[why] or BROKEN_BOND_FALLBACK, g)
         end
     end
     if not USE_PLAYER_FACING_PERSONALITY_NAMES then
@@ -706,15 +687,17 @@ local function personality_display_text(actor, disposition)
     -- won over, what it started as stops being the useful thing to show.
     local ratio = get_friendship_ratio(actor)
     if ratio ~= nil then
-        if ratio >= BOND_LABEL_BONDING_RATIO then return "Bonding" end
-        if ratio >= BOND_LABEL_FRIENDLY_RATIO then return "Friendly" end
+        if ratio >= BOND_LABEL_BONDING_RATIO then return Locale.T("tag_bonding", g) end
+        if ratio >= BOND_LABEL_FRIENDLY_RATIO then return Locale.T("tag_friendly", g) end
     end
     if disposition == nil then return "?" end
 
     -- An unmapped disposition falls back to the raw string rather than to a
     -- wrong name: if a tier is ever added and this table is not updated, it
     -- should look obviously unfinished instead of silently mislabelling a Pal.
-    return PERSONALITY_DISPLAY_NAMES[disposition] or disposition
+    local nameKey = PERSONALITY_DISPLAY_NAMES[disposition]
+    if nameKey == nil then return disposition end
+    return Locale.T(nameKey, g)
 end
 
 -- exposes `SetPercent`, `SetIsMarquee`, and `SetFillColorAndOpacity` as
@@ -1288,7 +1271,7 @@ local function update_trust_bars()
                                 entry.labelCheckedAt = nowLabel
                                 entry.labelLastDisposition = disposition
                                 entry.labelLastVisible = personalityLabelsVisible
-                                text = personality_display_text(entry.actor, disposition)
+                                text = personality_display_text(entry.actor, disposition, palId)
                             end
                             if entry.labelLastText ~= text then
                                 entry.labelLastText = text
@@ -1592,7 +1575,7 @@ local function update_boss_entry(key, entry)
                 disposition = Personality.GetDisposition(entry.palId)
             end
         end
-        local text = personality_display_text(actor, disposition)
+        local text = personality_display_text(actor, disposition, entry.palId)
         if text ~= entry.labelLastText then
             entry.labelLastText = text
             local ok, err = pcall(function() entry.label:SetText_GDKInternal(true, text) end)

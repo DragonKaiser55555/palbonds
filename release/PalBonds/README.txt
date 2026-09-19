@@ -54,6 +54,11 @@ WHAT IT ADDS
   * A Pal that joins you this way arrives already fond of you, with a large
     friendship head start.
 
+  * Tags and messages follow your game's language, in every language
+    Palworld offers.
+
+  * A settings file lets you tune the mod to your liking (see SETTINGS below).
+
 
 CONTROLS
 --------
@@ -65,6 +70,46 @@ CONTROLS
        so you can keep a group instead of them joining your party)
 
   Stand within about 5 metres and look directly at a Pal for any of these.
+  F8, F9 and F10 can be changed in the settings file.
+
+
+SETTINGS
+--------
+
+  The first time you start the game with PalBonds, it creates a settings
+  file, PalBonds_settings.lua. In it you can change:
+
+    - how much trust petting, playing and feeding give (each food rarity
+      and Kinship Peaches included)
+    - how fast your followers warm up to you on their own
+    - how much friendship a Pal gets when it joins you
+    - how often each personality appears
+    - the keys for Play, the tags and passive bonding
+    - the language of the tags and messages (it follows your game's
+      language by default)
+
+  Where to find it: in Steam, right-click Palworld > Manage > Browse local
+  files, then open
+
+    - UE4SS from the Steam Workshop:
+          Mods/NativeMods/UE4SS/Mods/shared/PalBonds_settings.lua
+    - UE4SS installed by hand:
+          Pal/Binaries/Win64/ue4ss/Mods/shared/PalBonds_settings.lua
+
+  How to edit it:
+
+    1. Close the game. The file is only read when the game starts.
+    2. Open the file with Notepad.
+    3. Change a number (or the text in quotes, for keys and the language).
+       Every setting has a short explanation above it. Keep the comma at the
+       end of the line.
+    4. Save, and start the game.
+
+  A value the mod can't use falls back to its default, and the UE4SS console
+  says which one. If the file gets messed up, delete it: a fresh one with
+  every default is made the next time you start the game.
+
+  An in-game settings screen is planned for a future update.
 
 
 REQUIREMENTS
@@ -119,8 +164,13 @@ THINGS WORTH KNOWING
     its trust to zero, and it goes back to its old personality. It will not
     forgive you a second time.
 
-  * A bonded Pal that loses all its trust flees for good and cannot be bonded
+  * Hitting a bonded Pal costs it half of its trust bar, and it lets you know.
+    A bonded Pal that loses all its trust flees for good and cannot be bonded
     again.
+
+  * A bonded Pal is still a wild Pal until it joins you, so the game can
+    still despawn it when you leave its area behind. If that happens, you
+    get a message saying it gave up on you.
 
   * The personality tag toggle (F9) lasts for the current session only. It
     comes back on the next time you launch the game.

@@ -61,6 +61,28 @@ but you still lost it.
 [*][b]F10[/b] - on/off the passive follower friendship gain (so you can hoard minions)
 [/list]
 
+F8, F9 and F10 can be changed in the settings file.
+
+
+[h2]Settings[/h2]
+
+PalBonds comes with a settings file, created the first time you launch the game with the mod. It lets you change:
+
+[list]
+[*]how many points petting, playing and feeding give (including each food rarity and Kinship Peaches)
+[*]how fast your followers warm up to you on their own
+[*]how much trust a Pal gets when it joins you
+[*]how often each personality appears
+[*]the keys for Play, tags and passive bonding
+[*]the language of the tags and messages (it follows your game's language by default)
+[/list]
+
+[b]Where to find it:[/b] in Steam, right-click Palworld > Manage > Browse local files, then open [b]Mods/NativeMods/UE4SS/Mods/shared/PalBonds_settings.lua[/b]
+
+Close the game, open the file with Notepad, change a number, save, and start the game again. Every setting has a short explanation above it, and if anything goes wrong, just delete the file and a fresh one is made.
+
+An in-game settings screen is planned for a future update.
+
 
 [h2]Requirements[/h2]
 
@@ -77,7 +99,16 @@ but a Pal walking with you slowly warms up to you anyway.
 [*]A Pal that joins you this way shows up already fond of you, so it starts with extra trust.
 [*]Food rarity matters, the better the food the more friendship it will give, and Kinship Peaches are your best bet to tame them.
 [*]This mod will allow you to befriend pals you wouldn't usually capture, keep that in mind.
-[*]Only tested in Singleplayer.
+[*]Only tested in singleplayer.
+[*]Built with AI-assisted development - not a secret, and the GitHub repo has the full notes if you're curious how any of this works.
+[*]Tags and messages appear in your game's language, in every language Palworld offers.
+[/list]
+
+
+[h2]Known Issues[/h2]
+
+[list]
+[*]A bonded wild Pal (50%+ friendship bar) may despawn if it moves too far from its spawn location - the game unloads wild Pals along with the area they came from. It's recommended to complete the bond before travelling to a different area.
 [/list]
 
 
