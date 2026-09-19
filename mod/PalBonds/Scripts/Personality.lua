@@ -1125,7 +1125,18 @@ local function log_preset_slots_once(desiredBaseName, cdo)
     end
     Logger.log("[PalBonds/Personality] [PRESET-SLOTS] " .. desiredBaseName .. " real field values: " .. table.concat(parts, ", "))
 end
+local function sensor_alive(sensor)
+    local ok, valid = pcall(function() return sensor ~= nil and sensor:IsValid() end)
+    return ok and valid == true
+end
+
 local function apply_forced_preset(sensor, desiredBaseName)
+    -- Esaeon's suggestion (GitHub issue #1, 2026-09-19): the new preset object
+    -- and the donor defaults are both checked, the sensor they are written
+    -- into never was. Checked first, and again right before the write.
+    if not sensor_alive(sensor) then
+        return false, "the Pal's sensor is gone (despawned, joined or out of range)"
+    end
     local cdo = find_preset_cdo(desiredBaseName)
     if not cdo then
         return false, "could not resolve the default preset object for " .. tostring(desiredBaseName)
@@ -1147,6 +1158,9 @@ local function apply_forced_preset(sensor, desiredBaseName)
     end)
     if not copyOk then
         return false, "failed copying preset fields: " .. tostring(copyErr)
+    end
+    if not sensor_alive(sensor) then
+        return false, "the Pal's sensor went away while its preset was being built"
     end
     local setOk, setErr = pcall(function() sensor.AIResponsePreset = fresh end)
     if not setOk then
@@ -2121,6 +2135,11 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist, playerI
         Logger.log("[PalBonds/Personality] [COMPANION] failed building the companion preset: " .. tostring(buildErr))
         return false
     end
+    -- Same check as apply_forced_preset (Esaeon's suggestion, 2026-09-19).
+    if not sensor_alive(sensor) then
+        Logger.log("[PalBonds/Personality] [COMPANION] the Pal's sensor went away while its preset was being built — nothing written")
+        return false
+    end
     local setOk, setErr = pcall(function() sensor.AIResponsePreset = fresh end)
     if not setOk then
         Logger.log("[PalBonds/Personality] [COMPANION] AIResponsePreset write FAILED: " .. tostring(setErr))
@@ -2483,6 +2502,52 @@ end
 -- Deliberately KEPT: presetCDOCache holds class default objects, which belong
 -- to the classes rather than to any world, and the "logged once" tables, which
 -- only stop the log repeating itself.
+-- ===================================================================
+-- FORGETTING A PAL THAT JOINED (2026-09-19, Esaeon's crash)
+-- ===================================================================
+-- Esaeon (Proton, GitHub issue #1): the game crashes 5-15 s after a Pal
+-- joins, with PalBonds as the only mod (1.1.5), EXCEPTION_ACCESS_VIOLATION
+-- reading 0x0 with every frame inside UE4SS. Swordfish (Windows) saw it once
+-- "right when the trust bar went full". A join destroys the wild actor and
+-- the game later frees it -- a one-Pal version of the world change that
+-- 1.1.3/1.1.4 fixed by dropping every reference. At a join, only Trust
+-- (ForgetBonding) and Combat (StopFollowing) let go; the rest kept the dead
+-- Pal for up to 10 minutes and went on calling IsValid() and more on it.
+-- IsValid() on a freed object has to read freed memory: on Windows that
+-- memory usually still holds something readable, under Proton/Wine it
+-- often doesn't. So this module now forgets the Pal the moment it joins,
+-- the same way ResetForNewWorld forgets a whole world.
+-- `actorKey` is the wild actor's GetFullName(), read before the capture.
+function Personality.ForgetJoinedPal(palId, actorKey)
+    local n = 0
+    if palId ~= nil then
+        for _, t in ipairs({ PersonalityState, cachedSensorByPalId, pawnByPalId }) do
+            if t[palId] ~= nil then t[palId] = nil; n = n + 1 end
+        end
+        for addr, id in pairs(handledSensorAddresses) do
+            if id == palId then handledSensorAddresses[addr] = nil; n = n + 1 end
+        end
+    end
+    if actorKey ~= nil and sensorIndexByOwnerKey[actorKey] ~= nil then
+        sensorIndexByOwnerKey[actorKey] = nil
+        n = n + 1
+    end
+    return n
+end
+
+-- For the harness: how many references this module still holds for a Pal.
+function Personality.HeldReferencesFor(palId, actorKey)
+    local n = 0
+    for _, t in ipairs({ PersonalityState, cachedSensorByPalId, pawnByPalId }) do
+        if palId ~= nil and t[palId] ~= nil then n = n + 1 end
+    end
+    for _, id in pairs(handledSensorAddresses) do
+        if palId ~= nil and id == palId then n = n + 1 end
+    end
+    if actorKey ~= nil and sensorIndexByOwnerKey[actorKey] ~= nil then n = n + 1 end
+    return n
+end
+
 function Personality.ResetForNewWorld()
     local n = 0
     for _ in pairs(PersonalityState) do n = n + 1 end

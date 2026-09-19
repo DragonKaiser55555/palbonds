@@ -37,7 +37,7 @@ local Logger = {}
 -- With it on, every log line is flushed to disk as it is written and the file
 -- grows for the whole session. That is the behaviour the release build exists to
 -- remove.
-local DEBUG_LOGGING = false
+local DEBUG_LOGGING = true
 
 -- Only used when DEBUG_LOGGING is on. Relative, because the absolute path this
 -- used to hardcode pointed at one specific machine's Steam install: mods
@@ -110,7 +110,9 @@ end
 -- What deliberately still logs, because these are what a real bug report needs:
 -- FOLLOW-ACTION, BETRAYAL, HP-WATCH, HATE-ASSIST, HATE-RELEASE, RECALL,
 -- JOIN-BONUS, NOTIFY, GRANT, TAG-TOGGLE, LEVEL-MULT, WON-OVER, FORCE-TIER,
--- COMPANION, plus anything that reports a real failure.
+-- COMPANION, ENFORCE (un-filtered 2026-09-19: Esaeon's crash log went silent
+-- right after a preset dump, and ENFORCE is what runs next), plus anything that
+-- reports a real failure.
 local SHOW_DIAGNOSTICS = false
 local SUPPRESSED_TAGS = {
     "%[DIAG", "%[BALANCE%-DIAG%]", "%[BALANCE%-TEST%]", "%[EMOTE%-DIAG%]",
@@ -124,7 +126,7 @@ local SUPPRESSED_TAGS = {
     "%[TRAINER%-REASSERT%]", "%[AIM%-FREEZE%]", "%[RADIAL%-REDIRECT%-PERF%]",
     "%[RADIAL%-REDIRECT%-FIELD%]", "%[RADIAL%-REDIRECT%]",
     "%[WORKER%-BIND%-FIX", "%[DIRECT%-FEED%-TEST%]", "%[EXPERIMENT%]",
-    "%[PERSONALITY%-ROLL%]", "%[ENFORCE%]", "%[POST%-CAPTURE%-SLOT%]",
+    "%[PERSONALITY%-ROLL%]", "%[POST%-CAPTURE%-SLOT%]",
     "%[WILD%-ACTION%]", "%[FEED%-FRIENDSHIP%]", "%[RETARGET%]",
     "%[JOIN%-CELEBRATION%]", "%[JOIN%-VFX%]", "%[TERRITORY%]", "%[LEASH%]",
 }
@@ -151,6 +153,10 @@ end
 -- REMOVED for the stable build (2026-09-12): the F7 runtime log switch
 -- (SetEnabled/IsEnabled/IsDevBuild). It answered its question -- run 37 showed
 -- logging is not the fight lag -- and a release build has no log to toggle.
+-- DevWatch (temporary instrumentation) asks this before doing any work.
+function Logger.DebugEnabled()
+    return DEBUG_LOGGING
+end
 function Logger.log(msg)
 
     -- First line on purpose: everything below is development-only.

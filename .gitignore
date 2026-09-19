@@ -25,3 +25,7 @@ perf-captures/
 
 # Other mods kept locally as reference only (not ours to redistribute)
 DarnMenu*/
+
+# Local only: player-submitted logs and locally built test zips (attached to GitHub releases instead)
+docs/bug-reports/
+release/test-build/

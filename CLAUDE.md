@@ -1221,6 +1221,256 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 
 ## Pending, deliberately deferred
 
+**New player reports (2026-09-19, after 1.1.5 shipped — not yet triaged by Dragón):**
+- **CRASH AROUND THE JOIN, two independent reports.** Esaeon (Proton,
+  GitHub issue #1, log saved at `docs/bug-reports/esaeon-issue1-palbonds-live.log`,
+  1.1.4, DEBUG on, Pet/Feed only — no F8) ends EXACTLY at the join: join
+  toast shown, StopFollowing, ForgetBonding at 19:15:17, then nothing. Not yet
+  confirmed with him that the game crashed at that moment. His Nexus comment:
+  also crashes "after a while of simply running around", most reliably after
+  Pet/Feed; many other mods (PalSchema + 10 schema mods, LogicMods/~mods paks).
+  Swordfish (Steam, no other mods): crashed "right when the trust bar went full"
+  while spamming Pet on hostile Pals; rare. Lead, unverified: after a join the
+  wild actor is destroyed, but only Trust (ForgetBonding) and Combat
+  (StopFollowing) drop it; Indicator and Personality still hold references to
+  it (a one-actor version of the world-change teardown fixed in 1.1.3/1.1.4).
+  A stale reference touched after garbage collection could crash at a random
+  later moment, which would also fit "while running around".
+- **Feed on a charging Pal (Goldaer, Reindrix):** the Pal ran at him, hit him
+  (damage), ran off without eating, and the PLAYER stayed stuck in the
+  clapping/waiting animation (could move/jump inside it) until he fed again
+  up close.
+- **Boss joins don't count (Goldaer):** bonding with an overworld boss did not
+  count it as defeated or captured (boss defeat record / Paldeck).
+- **Alpha Mammorest falls through the floor after petting** — now a second
+  report (Swordfish, twice, uneven terrain). Earlier judged base-game, but
+  petting wild Pals only exists through our mod.
+- **Feature request (Swordfish):** a way to release Pals back into the wild.
+- **Icon (Meail):** use the meme image as the Workshop icon. Dragón's call.
+- **DRAGÓN'S TRIAGE (2026-09-19):**
+  - Crash: do NOT treat the two reports as one bug yet. Swordfish said it was
+    rare and hasn't reported again (likely an older version). Esaeon may be a
+    conflict with one of his many mods. Next step is information: ask Esaeon to
+    confirm the timing and to run 1.1.5 with ONLY PalBonds active (rules out
+    Proton vs mod conflict), with both logs. Asked on Nexus 2026-09-19.
+    GitHub issue #1: answer (and close) only once it's fixed and finished,
+    not before (Dragón).
+  - Feed on an attacking Pal: his read is that the Pal's attack lands and
+    staggers the player, interrupting the interaction but not the player's
+    animation. Fix: stop the player's animation (or reject the interaction)
+    when it fails, OR interrupt the Pal so the interaction takes priority. TO DO.
+  - Boss joins must count as defeated/captured: find how the game records it.
+    TO DO.
+  - Mammorest under the floor: base-game limitation, NOT ours. Lifting the Pal
+    would only cover uneven ground, not cliffs or walls. Reply as usual.
+  - Releasing Pals: backlog, after the settings screen and multiplayer.
+  - **Feed fix direction (Dragón, 2026-09-19):** release the player's
+    animation when the interaction fails, and a failed feed should cost
+    nothing ("stop the interaction entirely"). Finding: for wild Pals the
+    GAME never takes the food; our RequestUseToCharacter post-hook takes it
+    and grants the trust at the moment the food is PICKED, before the Pal
+    walks over. So we can defer both until the Pal actually eats.
+  - **Instrumentation for one combined test run (2026-09-19):**
+    `Scripts/DevWatch.lua` (TEMPORARY, remove before any release, plus the
+    call sites marked "DevWatch" in Interaction, Capture, main and
+    `Logger.DebugEnabled`). [PAIR-WATCH] logs player / Pal AI / Pal action
+    changes for 15 s after each Pet/Feed, plus the moment the food is taken.
+    [BOSS-WATCH] hooks `APalNPCSpawnerBase:ProcessBossDefeatInfo_ServerInternal`
+    (header-dump candidate for the boss-defeat record) and lists spawners near
+    every joining Pal. [RECORD-WATCH] diffs the player's UPalPlayerRecordData
+    (boss defeats, NormalBossDefeatFlag keys, capture counts) every 15 s and
+    3 s after a join. 18 hooks with it. For the run, the game's settings file
+    has **Pet = 20000** (instant join for the boss): SET IT BACK TO 50 after.
+  - **Run 1 results (2026-09-19, 14:56-15:10):**
+    - Feed sequence (7 feeds): player `BP_ActionPairStandby_FeedItem` (waiting
+      pose) while Pal AI `BP_AIActionPairCall_FeedItem` walks over; food taken
+      (RequestUseToCharacter) at ARRIVAL, when the player switches to
+      `BP_ActionPairBehavior_FeedItem`; both end together ~5.5 s later. So an
+      interrupted approach never costs food (my earlier "taken when picked"
+      was wrong). A Lamball that rolled into Dragón and ragdolled left him in
+      the waiting pose 6 s, then the game released him itself; no food taken.
+      Dragón could NOT reproduce the stuck pose (tried hostile Pals, Reindrix,
+      hitting them himself): rarer than thought.
+    - Bosses: killing a Menasting fired
+      `ProcessBossDefeatInfo_ServerInternal(boss, "sakura_red_B_BOSS")` and the
+      record gained that NormalBossDefeatFlag (map: defeated). A PETTED Lyleen
+      fired the SAME function during our capture ("sakura_purple_D_LilyQueen")
+      but NO flag was written (map: undefeated); it did count as a capture
+      (LilyQueen 5 -> 6). Difference: nobody attacked the Lyleen.
+    - Dragón: the first defeat gives a key item; a befriended boss must not
+      get it twice.
+  - **Built after run 1 (tests pass, deployed):**
+    - Stuck-pose watchdog (Interaction, `[PAIR-RELEASE]`): after every wild
+      Pet/Feed, if the player is in a `BP_ActionPair*` pose and the Pal is out
+      of its `AIActionPairCall` for 1.5 s (or gone), or waiting > 12 s /
+      eating > 15 s, the pose is cancelled (CancelAction, as for Play's cheer).
+      Nothing else is ever cancelled. Test: `pairwatchtest.js` A-H.
+    - Boss credit (Capture, `[BOSS-CREDIT]`): for a `_BOSS/_GYM/_RAID` class,
+      right before the capture the player is written in as the boss's last
+      attacker (DamageReactionComponent.LastAttackerInstanceID from the
+      player's IndividualHandle.ID, and LastDeadInfo.LastAttacker), so the
+      game's own defeat function credits the player and handles first-time
+      rewards itself. UNVERIFIED: run 2 decides. Test: `pairwatchtest.js` I.
+  - **Run 2 results (2026-09-19, 15:27-15:34):** the boss credit RAN (both
+    fields written and read back as the player) and ProcessBossDefeatInfo
+    fired for the right spawner (Lyleen Noct, "sakura_purple_D_LilyQueen_Dark"),
+    but still NO defeat flag: the last attacker is NOT the lever. Map:
+    undefeated. A petted, already-beaten Mammorest gave no second reward (but
+    nothing is written for bosses at all yet, so that proves nothing). Feeds and
+    pets all played out normally, no [PAIR-RELEASE] (the watchdog never cut a
+    normal one). Pet follows the same pattern: `BP_ActionPairStandby_Petting`
+    -> `BP_ActionPairBehavior_Petting`, Pal AI `BP_AIActionPairCall_Petting`.
+    The stuck pose still didn't happen.
+  - Next: DevWatch now also hooks 9 record-writing candidates
+    (PalPlayerRecordDataUtility SetRecordData_*, CaptureJudgeObject
+    OnCaptureSuccess, the boss-reward client RPCs, OnDefeatCharacter delegate)
+    to see who writes the flag on a REAL defeat or sphere capture. The
+    BOSS-CREDIT code is kept for now but is disproven: delete it once the real
+    lever is found.
+  - **Run 3 (2026-09-19, 15:43-15:46):** Dragón confirmed a sphere-caught boss
+    counts as defeated in the base game, then caught an undefeated Grintale
+    (NaughtyCat, "81_1_grass_FBOSS_18"). ONLY ProcessBossDefeatInfo fired (none
+    of the 7 hookable candidates; the two reward client RPCs couldn't be
+    hooked), and the record gained the flag (defeats 8 -> 9). So that function
+    decides alone, from the boss's state.
+  - **Built after run 3 (tests pass, deployed):** the last-attacker write is
+    DELETED (disproven). Replaced by a hate push: for a boss only, right before
+    the capture, `Controller:GetHateSystem():ChangeHate(player, 1000)`, so the
+    player is in the boss's UPalHate.HateMap the way any fight or sphere catch
+    leaves them. Positive ChangeHate is proven in this build (combat assist);
+    subtraction is not. `[BOSS-CREDIT]` logs the most-hated before/after.
+    UNVERIFIED: run 4 decides.
+  - **Run 4 (2026-09-19, 15:52-15:54): hate DISPROVEN too.** Petted an
+    undefeated Grizzbolt-line alpha (GrassPanda_Electric,
+    "81_1_grass_FBOSS_26"): the push worked (most hated nil -> the player) and
+    ProcessBossDefeatInfo fired for the right spawner, still NO flag (captures
+    +1, paldeck +1). The hate push is DELETED (Capture has no boss-credit code
+    now; pairwatchtest section I removed with it).
+  - Ruled out as the lever: last attacker (both fields), the hate table. Not
+    visible from Lua: what ProcessBossDefeatInfo checks internally. Unhooked
+    lead: `APalCharacter:OnCaptured(SelfCharacter, Attacker)` delegate (what a
+    sphere catch broadcasts vs what PalCaptureSuccess broadcasts). Every
+    experiment costs Dragón an UNDEFEATED alpha (they respawn only slowly), so
+    ask before the next one. Dragón keeps one already-beaten alpha for the
+    later "no second reward" check.
+  - Dragón: "lets do more runs" (waiting for respawns is fine). Run 5 setup:
+    DevWatch `[BOSS-STATE]` snapshot of the boss AT ProcessBossDefeatInfo (both
+    cases) and "before our capture" (joins): battle mode, captured-processing,
+    dead/dying/live, otomo flags, owner UId, HP, last attacker, dead type,
+    most hated. Hooks on `PalCharacter:OnCaptured`, its delegate, and
+    `OnDeadCharacter` log who the capture names as attacker. Protocol: one
+    sphere catch AND one petted join of undefeated alphas, then diff.
+  - **Run 5 (2026-09-19, 16:05-16:08):** sphere-caught Dumud (LazyCatfish,
+    "81_1_grass_FBOSS_27", flag written) vs petted Nitewing (HawkBird,
+    "81_1_grass_FBOSS_22", no flag). Boss state AT ProcessBossDefeatInfo was
+    identical (no battle mode, not dead/dying, no owner yet, no last attacker)
+    EXCEPT `IsCapturedProcessing` true (sphere) vs false (ours), and a most-hated
+    target (sphere only; hate alone already disproven). OnCaptured and its
+    delegate did not fire (native). ALSO: Dragón got stuck in the PET pose on
+    the Nitewing: it accepted the pet mid-attack 6-7 m away, the game ended the
+    player's pair action at +2.7 s (the Pal went back to attacking), but the
+    POSE ANIMATION kept playing until he petted his own Pal. The watchdog only
+    looks at the action, so it saw nothing. And the pet was PAID at 0.26 s
+    (the Pal's pair call counts as accepting, not arriving): 20000 points, so the
+    boss joined without ever being petted.
+  - **Built after run 5 (tests pass, deployed):**
+    - Boss: `Capture.MarkBossAsBeingCaptured`: for a boss only,
+      `CharacterParameterComponent:SetIsCapturedProcessing(true)` (field write as
+      fallback) right before the capture, as a sphere does. UNVERIFIED: run 6.
+    - Pose: when a pair ends before the shared animation (failed), or the
+      watchdog releases it, any montage still on the player is stopped
+      (`Mesh:GetAnimInstance():GetCurrentActiveMontage()` + `Montage_Stop(0.25)`),
+      logging its name. A pair that ended normally is never touched.
+    - Pet pays only once the player is in `BP_ActionPairBehavior_*` (really
+      petting); if the player's action is unreadable, the old rule applies.
+      Tests: pairwatchtest I-L, bosstest C5.
+  - **Run 6 (2026-09-19, 16:25-16:32):**
+    - Boss (Foxparks Cryst, Kitsunebi_Ice, "81_1_grass_FBOSS_15"): at the
+      defeat routine it had IsCapturedProcessing=true AND the player as most
+      hated, i.e. both run-5 differences matched the sphere case, and STILL no
+      flag. The boss's state is NOT the lever: the defeat record is written by
+      the sphere's (and the kill's) own native code, which Lua can't reach or
+      see. The captured-flag code is DELETED. Petted-but-unflagged bosses in
+      Dragón's save: sakura_purple_D_LilyQueen, sakura_purple_D_LilyQueen_Dark,
+      81_1_grass_FBOSS_26, 81_1_grass_FBOSS_22, 81_1_grass_FBOSS_15.
+      Remaining route (needs Dragón's decision): write the record ourselves
+      and handle the first-defeat reward ourselves.
+    - Stuck pet, reproduced on a Nitewing: the release fired 2 s in and
+      stopped `AM_Player_Female_Petting_Middle_Beckon` (the waiting wave, used
+      by Pet AND Feed), but Dragón stayed stuck until he rolled. It also once
+      stopped `AM_Player_Female_hit`. The pet check correctly refused to pay
+      ("accepted the pet but never reached you").
+  - **Built after run 6 (tests pass, deployed):** the release only touches a
+    waiting pose (Petting/Feed/Beckon in the montage name), stops it with no
+    blend, re-checks 0.4 s later, and if it is still playing and the player has
+    no action, gives the player a fresh action the way a roll does (the Play
+    cheer emote via ActionComponent:PlayAction, cancelled 0.15 s later), logging
+    every step. pairwatchtest L-M.
+  - **BOSS DEFEAT: STILL OPEN (Dragón, 2026-09-19).** First he said "ideally
+    we would let the game itself mark them as defeated and give the items, if
+    we do it ourselves, there are too many risks"; I wrongly recorded that as a
+    known limitation and he corrected it: "i said 'ideally' not that we flag
+    it as a known limitation, if we have to do it manually and give the item
+    and mark it as defeated ourselves then we find how to - but IDEALLY we let
+    the game itself do it - dont mark stuff as known limitations unless i
+    state it myself". So: the game's route stays preferred; if it cannot be
+    reached, write the record AND give the first-defeat rewards ourselves.
+    What a first kill gives (Dragón, Elphidran, 2026-09-19): technology
+    points, a "first boss kill" toast in the centre of the screen, and a
+    bounty token. Boss instrumentation was removed from DevWatch (re-add what
+    the next step needs); Pet restored to 50 in the game's settings file.
+  - **Run 7 (2026-09-19, 17:09-17:14):** a Nitewing pet: the release stopped
+    the pose and it was gone 0.4 s later (worked). A Nitewing FEED where the
+    Pal HIT him: the top animation was `AM_Player_Female_hit`, left alone
+    correctly, but the release then gave up and the waiting pose came back
+    underneath: stuck until he rolled. Fixed: another animation on top is
+    waited out (re-checked every 0.4 s, up to 6 checks), then the pose is
+    stopped; a fresh action (cheer start+cancel) if the stop doesn't hold.
+    pairwatchtest N. Dragón also petted an undefeated alpha (Petallia,
+    VioletFairy, "81_1_forest_FBOSS_1"): captured, not defeated, as expected.
+  - **Esaeon's crash, new evidence (2026-09-19, GitHub #1 comment + Nexus):**
+    1.1.5, EVERY other mod disabled (his UE4SS.log: PalSchema disabled, only
+    UE4SS's default Lua mods). Crash 5-15 s after a Lamball joined;
+    CrashContext: EXCEPTION_ACCESS_VIOLATION reading 0x0, every frame in UE4SS
+    (+ VCRUNTIME140 memcpy). palbonds-live.log's last line: [PRESET-SLOTS]
+    Warlike, 10 s after the join ([ENFORCE] lines are filtered, so what ran
+    after it is invisible). His UE4SS.log is in UTC ("local disabled due to
+    wine") and not flushed per line, so its tail is stale. His Claude's
+    analysis: apply_forced_preset never validated the sensor. Files saved in
+    `docs/bug-reports/esaeon-0919-*`.
+  - **Built for it (tests pass, deployed, NOT yet verified by Esaeon):**
+    - Join cleanup: `Personality.ForgetJoinedPal(palId, actorKey)` (state,
+      sensor caches, pawn, handled addresses, sensor index),
+      `Indicator.ForgetJoinedPal(palId, actorAddr)` (tracked bars, boss
+      entries, pending boss gauges; entries now store `actorAddr`), and
+      `Interaction.ForgetJoinedPal(actorAddr)` (radial-menu targets, pending
+      feed, the pose watchdog), all called by Capture after ForgetBonding with
+      the id/address read BEFORE the capture. `[JOIN-CLEANUP]` logs the count.
+      Before this, Personality kept the dead wild Pal up to 10 min.
+    - Esaeon's suggestion: `sensor_alive(sensor)` checked at the top of
+      apply_forced_preset, and right before BOTH `sensor.AIResponsePreset =
+      fresh` writes (ApplyCompanionPreset too).
+    - Test: `jointest.js` J1-J5 (22 suites now).
+  - **Esaeon test build (Dragón's idea, 2026-09-19):** give him the fix early
+    through GitHub instead of making him wait for 1.1.6, so a miss costs no
+    release. Built locally, NOT pushed yet (ask first):
+    `release/test-build/PalBonds-v1.1.6-test1.zip` = current `mod/` minus
+    DevWatch.lua (its call sites are pcall-guarded no-ops), DEBUG_LOGGING ON so
+    his log is written without edits, 1.1.5 README. 17 hooks, all suites pass
+    against it. `[ENFORCE]` is no longer filtered from the log (it is what ran
+    after his last visible line). Plan: commit to a branch (not master, which
+    is the 1.1.5 stable), GitHub pre-release `v1.1.6-test1` with the zip.
+  - Boss reward popup: `UPalNetworkPlayerComponent:ShowBossDefeatRewardUI_ToClient
+    (FPalUIBossDefeatRewardDisplayData{TechnologyPoint, DefeatCharacterID},
+    AfterTeleport, DelayTime)` and `ShowDefeatBossBonusExpReward_ToClient(int)`:
+    run 3 hooked them on the wrong class (PalPlayerController), which is why
+    they "could not hook". Client RPCs go through ProcessEvent, so hooked on
+    the right class they should show what a real first kill hands out. The
+    popup is the RESULT of the server writing the record, not its cause.
+  - Dragón finished all 16 translated Workshop descriptions (Russian and
+    Thai were rewritten shorter: Steam's character limit).
+  - Icon: no (the meme isn't square).
+
 **New player reports (Nexus posts, read 2026-09-18):**
 - **Esae0n (18 Sep):** plays through **Proton** (Linux / Steam Deck
   compatibility layer). Taming works, but the game crashes *every time*

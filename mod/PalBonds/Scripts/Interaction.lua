@@ -1294,6 +1294,7 @@ local function do_real_wild_feed_via_worker_menu()
         return false
     end
     Logger.log("[PalBonds/Interaction] [WILD-ACTION] [REAL-FEED] call returned ok")
+    pcall(function() require("DevWatch").WatchPair(wildPal, "Feed") end) -- DevWatch
     return true
 
 -- Two-hundred-and-seventh pass (2026-09-06) — THE ROOT CAUSE OF THE
@@ -1430,6 +1431,23 @@ end
 -- the Pal to be seen doing something else first.
 local paidPetActionByPal = {}
 
+-- true: the player is in the shared animation of a pet/feed; false: readable,
+-- and not in it; nil: can't tell (no player, no action component).
+local function player_is_in_pair_behavior()
+    local player = safe_call(function() return require("PlayerRef").Get() end)
+    if player == nil then return nil end
+    local ac = safe_call(function() return player.ActionComponent end)
+    if ac == nil or not safe_call(function() return ac:IsValid() end) then return nil end
+    local name = safe_call(function()
+        local cur = ac:GetCurrentAction()
+        if cur == nil or not cur:IsValid() then return "" end
+        return tostring(cur:GetFullName())
+    end)
+    if name == nil then return nil end
+    return name:find("BP_ActionPairBehavior", 1, true) ~= nil
+end
+Interaction.PlayerIsInPairBehavior = player_is_in_pair_behavior
+
 local function is_pet_action(name)
     return name ~= nil and tostring(name):find(PET_ACTION_MARKER, 1, true) ~= nil
 end
@@ -1442,6 +1460,7 @@ local function grant_pet_when_it_happens(pal)
     local startName, startAddr = current_action(pal)
     local oldAddr = is_pet_action(startName) and startAddr or nil
     local sawGap = not is_pet_action(startName)
+    local acceptedNotArrived = false
     local function check()
         if not safe_call(function() return pal:IsValid() end) then
             Logger.log("[PalBonds/Interaction] [PET-CHECK] the Pal is gone before the pet happened — nothing granted")
@@ -1457,6 +1476,16 @@ local function grant_pet_when_it_happens(pal)
                 isNew = sawGap
             end
             if isNew and addr ~= nil and paidPetActionByPal[palKey] == addr then isNew = false end
+            -- The Pal's pair call starts the moment it ACCEPTS the pet, even
+            -- mid-attack and metres away: run 5's Nitewing was paid 20000 at
+            -- 0.26 s and joined, though it never came over. Pay once the player
+            -- is actually petting (BP_ActionPairBehavior_*). If the player's
+            -- action can't be read at all, fall back to the old rule rather
+            -- than never paying a pet again.
+            if isNew and player_is_in_pair_behavior() == false then
+                isNew = false
+                acceptedNotArrived = true
+            end
             if isNew then
                 paidPetActionByPal[palKey] = addr
                 Logger.log(string.format("[PalBonds/Interaction] [PET-CHECK] pet confirmed after %.2fs — granting", os.clock() - startedAt))
@@ -1469,6 +1498,7 @@ local function grant_pet_when_it_happens(pal)
         if (os.clock() - startedAt) >= PET_VERIFY_MAX_SECONDS then
             local busy = lastSeen and tostring(lastSeen):match("^(%S+)") or "unknown action"
             if is_pet_action(lastSeen) then busy = busy .. ", still the PREVIOUS pet" end
+            if acceptedNotArrived then busy = busy .. ", accepted the pet but never reached you" end
             Logger.log("[PalBonds/Interaction] [PET-CHECK] the pet never happened (Pal was busy: " .. busy .. ") — nothing granted")
             return
         end
@@ -1484,6 +1514,262 @@ end
 -- Exported for tools/harness/bosstest.js, like FeedGrantAmount.
 Interaction.GrantPetWhenItHappens = grant_pet_when_it_happens
 
+-- ===================================================================
+-- STUCK IN THE WAITING POSE (2026-09-19)
+-- ===================================================================
+-- Goldaer (Steam): fed a Reindrix, it rammed him and ran off without eating,
+-- and his character stayed in the clapping/waiting pose (he could still move
+-- and jump inside it) until he fed again up close. Dragón has seen it too.
+--
+-- What a Feed really is, measured in the 2026-09-19 run ([PAIR-WATCH]):
+--   1. the player enters BP_ActionPairStandby_FeedItem (the waiting pose) while
+--      the Pal's AI runs BP_AIActionPairCall_FeedItem (walking over);
+--   2. when the Pal arrives the food is taken (RequestUseToCharacter) and the
+--      player switches to BP_ActionPairBehavior_FeedItem (both eat together);
+--   3. both end in the same moment.
+-- So an approach that breaks never costs food. The pose is the player's own
+-- action and waits for the Pal; the game usually lets go after a few seconds
+-- (a Lamball that rolled into Dragón and ragdolled: released after 6 s), and
+-- in the stuck case it evidently doesn't.
+--
+-- The fix is a watchdog on the PLAYER's side, started with every wild Pet and
+-- Feed: once the player is in a pair action, the Pal must stay in its pair
+-- call. If the Pal leaves it (it attacked, fled, got knocked away, or is gone)
+-- and the player is still posing 1.5 s later, the pose is cancelled -- the same
+-- UPalActionComponent:CancelAction the Play cheer uses. Also cancelled: a
+-- waiting pose past 12 s or an eating pose past 15 s (normal: under 4 s and
+-- about 5.5 s). Only an action whose class is a BP_ActionPair* is ever
+-- touched, so a roll, an attack or anything else the player does is left alone.
+local PAIR_WATCH_POLL_MS = 250
+local PAIR_ORPHAN_GRACE_SECONDS = 1.5
+local PAIR_NEVER_STARTED_SECONDS = 6.0
+local PAIR_STANDBY_MAX_SECONDS = 12.0
+local PAIR_BEHAVIOR_MAX_SECONDS = 15.0
+
+local function player_pair_action(player)
+    return safe_call(function()
+        if not player:IsValid() then return nil end
+        local ac = player.ActionComponent
+        if ac == nil or not ac:IsValid() then return nil end
+        local cur = ac:GetCurrentAction()
+        if cur == nil or not cur:IsValid() then return nil end
+        local name = tostring(cur:GetFullName())
+        if name:find("BP_ActionPair", 1, true) == nil then return nil end
+        return { action = cur, name = name, ac = ac }
+    end)
+end
+
+-- Run 5 (Dragón, a Nitewing mid-attack): the game ended the player's pet
+-- action after 2.7 s, but the pose kept playing -- the ACTION is gone, its
+-- animation is not, so there was nothing left for the watchdog to cancel. It
+-- only cleared when he petted his own Pal.
+--
+-- Run 6: stopping that animation (AM_Player_Female_Petting_Middle_Beckon, the
+-- "come here" wave that both Pet and Feed use while waiting) was NOT enough --
+-- the release fired 2 s in and Dragón stayed stuck until he rolled. A roll is
+-- a new ACTION, and starting one is what clears it. It also stopped his "got
+-- hit" animation once, which it had no business touching.
+-- So now, only the waiting pose itself is touched (Petting / Feed / Beckon in
+-- its name), it's stopped at once, and 0.4 s later, if that pose is still (or
+-- again) playing and the player is doing nothing else, the player is given a
+-- fresh action the way a roll would: the cheer emote Play already uses
+-- (ActionComponent:PlayAction, the path proven safe in 1.1.4), cancelled again
+-- straight away. Every step is logged, so the next run shows which one worked.
+local POSE_RECHECK_MS = 400
+local POSE_EMOTE_CANCEL_MS = 150
+
+local function is_pair_pose(name)
+    return type(name) == "string" and (name:find("Petting", 1, true) ~= nil
+        or name:find("Feed", 1, true) ~= nil or name:find("Beckon", 1, true) ~= nil)
+end
+
+local function active_pose(player)
+    return safe_call(function()
+        local anim = player.Mesh:GetAnimInstance()
+        if anim == nil or not anim:IsValid() then return nil end
+        local m = anim:GetCurrentActiveMontage()
+        if m == nil or not m:IsValid() then return nil end
+        return { anim = anim, montage = m, name = tostring(m:GetFullName()) }
+    end)
+end
+
+local function player_is_idle(player)
+    return safe_call(function()
+        local ac = player.ActionComponent
+        if ac == nil or not ac:IsValid() then return false end
+        local cur = ac:GetCurrentAction()
+        return cur == nil or not cur:IsValid()
+    end) == true
+end
+
+local function later(ms, fn)
+    return pcall(function() ExecuteInGameThreadWithDelay(ms, function() safe_call(fn) end) end)
+end
+
+-- Run 7 (Dragón, a Nitewing that HIT him mid-feed): the animation on top was
+-- AM_Player_Female_hit, correctly left alone -- but the release then gave up,
+-- and the waiting pose underneath came back once the hit ended. So another
+-- animation on top is now waited out (re-checked every 0.4 s, up to 2 s), and
+-- the pose is dealt with once it is on top again.
+local POSE_MAX_CHECKS = 6
+
+local function release_pose_step(player, label, check, stopped, escalated)
+    if not safe_call(function() return player:IsValid() end) then return false end
+    local pose = active_pose(player)
+    if pose == nil then
+        if check == 1 then
+            Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": no animation left playing on the player")
+        elseif stopped then
+            Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": the pose is gone")
+        end
+        return false
+    end
+    if not is_pair_pose(pose.name) then
+        if check >= POSE_MAX_CHECKS then
+            Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": stopped watching, the player is playing " .. pose.name)
+            return false
+        end
+        if check == 1 then
+            Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": waiting for " .. pose.name .. " to finish first")
+        end
+        later(POSE_RECHECK_MS, function() release_pose_step(player, label, check + 1, stopped, escalated) end)
+        return false
+    end
+    if not player_is_idle(player) then
+        Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": the pose is there but the player is doing something — left alone")
+        return false
+    end
+    if stopped and not escalated then
+        -- Stopping it didn't hold: give the player a fresh action, as a roll would.
+        Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": the pose is STILL playing (" ..
+            pose.name .. ") — giving the player a fresh action, as a roll would")
+        safe_call(function() play_player_emote(CHEER_EMOTE_INDEX) end)
+        later(POSE_EMOTE_CANCEL_MS, function()
+            local cancelled = stop_player_cheer(player)
+            later(POSE_RECHECK_MS, function()
+                local final = active_pose(player)
+                Logger.log(string.format("[PalBonds/Interaction] [PAIR-RELEASE] %s: after the fresh action (emote cancelled: %s) the player plays %s",
+                    tostring(label), tostring(cancelled), final and final.name or "no animation"))
+            end)
+        end)
+        return true
+    end
+    if escalated then
+        Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": the pose survived the fresh action too (" .. pose.name .. ")")
+        return false
+    end
+    local okStop = pcall(function() pose.anim:Montage_Stop(0.0, pose.montage) end)
+    Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] " .. tostring(label) .. ": stopped the waiting pose " ..
+        pose.name .. (okStop and "" or " (Montage_Stop FAILED)"))
+    later(POSE_RECHECK_MS, function() release_pose_step(player, label, check + 1, true, false) end)
+    return true
+end
+
+local function stop_leftover_pose(player, label)
+    return release_pose_step(player, label, 1, false, false)
+end
+Interaction.StopLeftoverPose = stop_leftover_pose
+
+local function pal_in_pair_call(pal)
+    if pal == nil or not safe_call(function() return pal:IsValid() end) then return false end
+    local name = current_action(pal)
+    return type(name) == "string" and name:find("AIActionPairCall", 1, true) ~= nil
+end
+
+-- One step of the watchdog. `st` carries the state between steps; returns
+-- "wait" (check again), "done" (nothing to do any more) or "released".
+-- Exported for the harness, which drives it with its own clock.
+function Interaction.PairWatchStep(st, player, pal, now)
+    if player == nil then return "done" end
+    local cur = player_pair_action(player)
+    if cur == nil then
+        if st.sawPair then
+            -- It ended. If the Pal never got to the shared animation, it
+            -- failed, and its pose may still be playing.
+            if st.phase ~= "eating" then
+                Logger.log(string.format("[PalBonds/Interaction] [PAIR-RELEASE] %s: ended before the Pal reached the player", tostring(st.label)))
+                stop_leftover_pose(player, st.label)
+                return "failed"
+            end
+            return "done"
+        end
+        if (now - st.startedAt) >= PAIR_NEVER_STARTED_SECONDS then return "done" end
+        return "wait"
+    end
+    st.sawPair = true
+    local phase = cur.name:find("Standby", 1, true) and "waiting" or "eating"
+    if phase ~= st.phase then
+        st.phase = phase
+        st.phaseSince = now
+    end
+    if pal_in_pair_call(pal) then
+        st.orphanSince = nil
+    elseif st.orphanSince == nil then
+        st.orphanSince = now
+    end
+
+    local why = nil
+    if st.orphanSince ~= nil and (now - st.orphanSince) >= PAIR_ORPHAN_GRACE_SECONDS then
+        why = "the Pal stopped coming to you"
+    elseif phase == "waiting" and (now - st.phaseSince) >= PAIR_STANDBY_MAX_SECONDS then
+        why = string.format("waited %.0fs", PAIR_STANDBY_MAX_SECONDS)
+    elseif phase == "eating" and (now - st.phaseSince) >= PAIR_BEHAVIOR_MAX_SECONDS then
+        why = string.format("eating pose over %.0fs", PAIR_BEHAVIOR_MAX_SECONDS)
+    end
+    if why == nil then return "wait" end
+
+    local ok = pcall(function() cur.ac:CancelAction(cur.action) end)
+    Logger.log(string.format("[PalBonds/Interaction] [PAIR-RELEASE] %s: released the player from the %s pose (%s) — cancel %s",
+        tostring(st.label), phase, why, ok and "ok" or "FAILED"))
+    stop_leftover_pose(player, st.label)
+    return "released"
+end
+
+local pairWatchToken = 0
+local pairWatchPalAddr = nil
+local function watch_player_pair(pal, label)
+    pairWatchToken = pairWatchToken + 1
+    pairWatchPalAddr = safe_call(function() return pal:GetAddress() end)
+    local token = pairWatchToken
+    local st = { startedAt = os.clock(), label = label }
+    local function tick()
+        if token ~= pairWatchToken then return end
+        local player = safe_call(function() return require("PlayerRef").Get() end)
+        local result = Interaction.PairWatchStep(st, player, pal, os.clock())
+        if result ~= "wait" then return end
+        local ok = pcall(function()
+            ExecuteInGameThreadWithDelay(PAIR_WATCH_POLL_MS, function() safe_call(tick) end)
+        end)
+        if not ok then
+            Logger.log("[PalBonds/Interaction] [PAIR-RELEASE] could not schedule the watchdog — it stops here")
+        end
+    end
+    safe_call(tick)
+end
+Interaction.WatchPlayerPair = watch_player_pair
+
+-- A Pal that joined: drop every reference this file keeps to its wild actor
+-- (the radial menu's target, a pending feed, the pose watchdog), compared by
+-- the address read before the capture. See Personality.ForgetJoinedPal.
+function Interaction.ForgetJoinedPal(actorAddr)
+    if actorAddr == nil then return 0 end
+    local function same(o)
+        if o == nil then return false end
+        local ok, a = pcall(function() return o:GetAddress() end)
+        return ok and a == actorAddr
+    end
+    local n = 0
+    if same(cachedRedirectWildPal) then cachedRedirectWildPal = nil; n = n + 1 end
+    if same(lastRedirectedWildPalActor) then lastRedirectedWildPalActor = nil; n = n + 1 end
+    if same(pendingWildFeedTarget) then pendingWildFeedTarget = nil; n = n + 1 end
+    if pairWatchPalAddr ~= nil and pairWatchPalAddr == actorAddr then
+        pairWatchToken = pairWatchToken + 1 -- the running watchdog stops at its next step
+        pairWatchPalAddr = nil
+        n = n + 1
+    end
+    return n
+end
+
 local function closeRadialMenuActionWindow()
     if radialMenuRedirectedThisWindow and lastDecidedInstruction then
         Logger.log("[PalBonds/Interaction] [WILD-ACTION] window closing with a substituted wild Pal and a decided instruction=" .. tostring(lastDecidedInstruction) .. " — firing the real action now")
@@ -1495,9 +1781,15 @@ local function closeRadialMenuActionWindow()
             -- worse, would be swallowed by its own anti-spam gate.
             -- 2026-09-16: granted only once the pet is seen happening.
             local petTarget = lastRedirectedWildPalActor
+            pcall(function() require("DevWatch").WatchPair(petTarget, "Pet") end) -- DevWatch
             safe_call(function() grant_pet_when_it_happens(petTarget) end)
+            safe_call(function() watch_player_pair(petTarget, "Pet") end)
         elseif lastDecidedInstruction == "feed" then
+            local feedTarget = cachedRedirectWildPal
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
+            if realFeedOk then
+                safe_call(function() watch_player_pair(feedTarget, "Feed") end)
+            end
             if not realFeedOk then
 
                 -- Two-hundred-and-eighty-sixth pass (2026-09-09) -- REMOVED, and
@@ -1833,6 +2125,7 @@ function Interaction.Init()
             local wildTarget = pendingWildFeedTarget
             pendingWildFeedTarget = nil 
             if not wildTarget or not wildTarget:IsValid() then return end
+            pcall(function() require("DevWatch").Note("food taken now (RequestUseToCharacter)") end) -- DevWatch
             local slot = hook_get(Context)
             local useNum = hook_get(UseNum)
             if not slot or not slot:IsValid() or type(useNum) ~= "number" then

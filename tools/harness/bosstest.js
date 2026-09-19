@@ -430,6 +430,34 @@ console.log('\n=== C4. A second pet chosen while the first is still playing is n
   expect('no addresses: paid after a gap then a pet', S.str('__PTS()'), (v) => v === '150');
 }
 
+console.log('\n=== C5. A pet pays only once the player is really petting (run 5, the Nitewing) ===');
+function petStateWithPlayer() {
+  const S = petState();
+  S.must([
+    '__PCUR = nil',
+    '__PAC5 = { IsValid = function() return true end, GetCurrentAction = function() return __PCUR end }',
+    '__ME5 = { IsValid = function() return true end, ActionComponent = __PAC5 }',
+    'package.loaded["PlayerRef"] = { Get = function() return __ME5 end }',
+    '__STANDBY = { IsValid = function() return true end, GetFullName = function() return "BP_ActionPairStandby_Petting_C /x.S_1" end }',
+    '__BEHAV = { IsValid = function() return true end, GetFullName = function() return "BP_ActionPairBehavior_Petting_C /x.B_1" end }',
+  ].join('\n'), 'player');
+  return S;
+}
+{
+  const S = petStateWithPlayer();
+  S.must('__CURRENT = nil; I.GrantPetWhenItHappens(__WILD); __CURRENT = __PETTING; __PCUR = __STANDBY; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'accepted');
+  expect('the Pal accepted, the player is still waiting: nothing yet', S.str('__PTS()'), (v) => v === '0');
+  S.must('__PCUR = __BEHAV; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'petting');
+  expect('the player is petting: paid', S.str('__PTS() .. "," .. __NOTIFIED'), (v) => v === '50,1');
+}
+{
+  const S = petStateWithPlayer();
+  S.must('__CURRENT = nil; I.GrantPetWhenItHappens(__WILD); __CURRENT = __PETTING; __PCUR = __STANDBY; __CLOCK = __CLOCK + 0.25; __PUMP(1)', 'accepted');
+  S.must('__CURRENT = __ATTACK; __PCUR = nil; for i = 1, 20 do __CLOCK = __CLOCK + 0.25; __PUMP(1) end', 'never-came');
+  expect('accepted mid-attack, never came over: nothing paid', S.str('__PTS() .. "," .. __NOTIFIED'), (v) => v === '0,0');
+  expect('logged as accepted but never reached', S.str('__grep("PET%-CHECK")'), (t) => t.indexOf('never reached you') !== -1);
+}
+
 console.log('\n=== D. Self-defence may reach 3000 from the player (Dragón, 2026-09-16) ===');
 {
   const S = newState('prelude_323.lua');

@@ -702,6 +702,11 @@ function Capture.OnTrustMaxed(pal)
     -- last run proved this: the toast fell through to its generic fallback
     -- because both name routes failed post-capture.
     local preResolvedDisplayName = resolve_pal_display_name(pal, player)
+    -- Read now, while the wild actor is alive: after the capture every module
+    -- forgets it by these, without touching the dead actor (see
+    -- Personality.ForgetJoinedPal).
+    local joinedId = safe_call(function() return Personality.GetStableId(pal) end)
+    local joinedAddr = safe_call(function() return pal:GetAddress() end)
     local preResolvedFemale = Capture.IsFemale(pal)
 
     -- Two-hundred-and-fortieth pass (2026-09-07): a Pal that JOINS by choice
@@ -758,6 +763,12 @@ function Capture.OnTrustMaxed(pal)
             local okT, TrustMod = pcall(require, "Trust")
             if okT and TrustMod and TrustMod.ForgetBonding then TrustMod.ForgetBonding(pal) end
         end)
+        local forgot = 0
+        forgot = forgot + (safe_call(function() return Personality.ForgetJoinedPal(joinedId, name) end) or 0)
+        forgot = forgot + (safe_call(function() return require("Indicator").ForgetJoinedPal(joinedId, joinedAddr) end) or 0)
+        forgot = forgot + (safe_call(function() return require("Interaction").ForgetJoinedPal(joinedAddr) end) or 0)
+        Logger.log(string.format("[PalBonds/Capture] [JOIN-CLEANUP] %s joined — dropped %d leftover reference(s) to its wild actor",
+            tostring(name), forgot))
     end)
 end
 
