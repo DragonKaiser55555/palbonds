@@ -110,7 +110,9 @@ end
 -- What deliberately still logs, because these are what a real bug report needs:
 -- FOLLOW-ACTION, BETRAYAL, HP-WATCH, HATE-ASSIST, HATE-RELEASE, RECALL,
 -- JOIN-BONUS, NOTIFY, GRANT, TAG-TOGGLE, LEVEL-MULT, WON-OVER, FORCE-TIER,
--- COMPANION, plus anything that reports a real failure.
+-- COMPANION, ENFORCE (un-filtered 2026-09-19: Esaeon's crash log went silent
+-- right after a preset dump, and ENFORCE is what runs next), plus anything that
+-- reports a real failure.
 local SHOW_DIAGNOSTICS = false
 local SUPPRESSED_TAGS = {
     "%[DIAG", "%[BALANCE%-DIAG%]", "%[BALANCE%-TEST%]", "%[EMOTE%-DIAG%]",
@@ -124,7 +126,7 @@ local SUPPRESSED_TAGS = {
     "%[TRAINER%-REASSERT%]", "%[AIM%-FREEZE%]", "%[RADIAL%-REDIRECT%-PERF%]",
     "%[RADIAL%-REDIRECT%-FIELD%]", "%[RADIAL%-REDIRECT%]",
     "%[WORKER%-BIND%-FIX", "%[DIRECT%-FEED%-TEST%]", "%[EXPERIMENT%]",
-    "%[PERSONALITY%-ROLL%]", "%[ENFORCE%]", "%[POST%-CAPTURE%-SLOT%]",
+    "%[PERSONALITY%-ROLL%]", "%[POST%-CAPTURE%-SLOT%]",
     "%[WILD%-ACTION%]", "%[FEED%-FRIENDSHIP%]", "%[RETARGET%]",
     "%[JOIN%-CELEBRATION%]", "%[JOIN%-VFX%]", "%[TERRITORY%]", "%[LEASH%]",
 }
@@ -151,6 +153,24 @@ end
 -- REMOVED for the stable build (2026-09-12): the F7 runtime log switch
 -- (SetEnabled/IsEnabled/IsDevBuild). It answered its question -- run 37 showed
 -- logging is not the fight lag -- and a release build has no log to toggle.
+-- ===================================================================
+-- PHASE TRACE (2026-09-20, for Esaeon's crash -- GitHub #1)
+-- ===================================================================
+-- Their game dies inside UE4SS with no Lua error and no stack: the log simply
+-- stops. Two crashes now, the same 64 frames, reached from different places,
+-- and the second one had no Pal joining at all. What we cannot see is WHICH
+-- of the mod's repeating jobs was running at that instant.
+--
+-- So each job and each risky engine call writes one line before it runs. The
+-- log is flushed per line, so whatever line comes last when the game dies
+-- names the operation. Off by default (it is loud); the test builds turn it on.
+local TRACE_PHASES = false
+
+function Logger.trace(phase, detail)
+    if not (DEBUG_LOGGING and TRACE_PHASES) then return end
+    Logger.log("[TRACE] " .. tostring(phase) .. (detail ~= nil and (" " .. tostring(detail)) or ""))
+end
+
 function Logger.log(msg)
 
     -- First line on purpose: everything below is development-only.

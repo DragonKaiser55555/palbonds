@@ -74,6 +74,11 @@ local SCHEMA = {
              "en, es, fr, de, it, pl, pt, ru, tr, vi, th, id, ja, ko, zh-hans, zh-hant" },
     { key = "Language", default = "auto", kind = "language", text = "Language of PalBonds' tags and messages." },
 
+    { section = "DISPLAY",
+      note = "The personality tag shown over a wild Pal's health bar. The Tags key below turns the tags\n" ..
+             "on and off while you play; this is only what they start as when the game launches." },
+    { key = "ShowPersonalityTags", default = 1, min = 0, max = 1, text = "1 starts with the personality tags shown, 0 starts with them hidden." },
+
     { section = "KEYS",
       note = "Key names as UE4SS spells them: F1 to F12, A to Z, ONE to NINE, NUM_ZERO to NUM_NINE,\n" ..
              "and so on. Use a key nothing else of yours is using." },
@@ -165,6 +170,22 @@ function Settings.Validate(user)
     return merged, found
 end
 
+-- How one SCHEMA entry is written into the file. Shared by the fresh file and
+-- by the settings a later version appends, so a value can never be written two
+-- different ways.
+local function write_section(entry, out)
+    out[#out + 1] = ""
+    out[#out + 1] = "    -- ===== " .. entry.section .. " ====="
+    for line in (entry.note .. "\n"):gmatch("(.-)\n") do out[#out + 1] = "    -- " .. line end
+    out[#out + 1] = ""
+end
+
+local function write_entry(entry, out)
+    for line in (entry.text .. "\n"):gmatch("(.-)\n") do out[#out + 1] = "    -- " .. line end
+    local shown = type(entry.default) == "string" and string.format("%q", entry.default) or tostring(entry.default)
+    out[#out + 1] = "    " .. entry.key .. " = " .. shown .. ","
+end
+
 -- The text of a fresh settings file, built from SCHEMA so the two can never
 -- disagree.
 function Settings.DefaultFileText()
@@ -178,19 +199,88 @@ function Settings.DefaultFileText()
         "return {",
     }
     for _, entry in ipairs(SCHEMA) do
-        if entry.section then
-            out[#out + 1] = ""
-            out[#out + 1] = "    -- ===== " .. entry.section .. " ====="
-            for line in (entry.note .. "\n"):gmatch("(.-)\n") do out[#out + 1] = "    -- " .. line end
-            out[#out + 1] = ""
-        else
-            for line in (entry.text .. "\n"):gmatch("(.-)\n") do out[#out + 1] = "    -- " .. line end
-            local shown = type(entry.default) == "string" and string.format("%q", entry.default) or tostring(entry.default)
-            out[#out + 1] = "    " .. entry.key .. " = " .. shown .. ","
-        end
+        if entry.section then write_section(entry, out) else write_entry(entry, out) end
     end
     out[#out + 1] = "}"
     return table.concat(out, "\n") .. "\n"
+end
+
+-- ===========================================================================
+-- SETTINGS ADDED BY A LATER VERSION (2026-09-20)
+-- ===========================================================================
+-- Until now an existing file was never touched, so a setting added by a new
+-- version only reached players who deleted their file -- and every future
+-- setting would ask them to do it again, throwing away their own values each
+-- time. niconoko's request (Nexus, 2026-09-19) for the tags to start hidden is
+-- the first setting this would have happened to.
+--
+-- So a missing setting is now added to the file the player already has. The
+-- file is never rewritten or reformatted: this is an INSERTION before its last
+-- "}", so every value, comment and blank line they wrote stays exactly where it
+-- was. And nothing is written until the result has been read back and checked
+-- (Settings.AppendedTextIsGood below) -- if the insertion produced anything the
+-- mod would not load, the file is left untouched and the console says so.
+
+-- Returns the player's file text with a block for the missing settings added,
+-- or nil if there is nothing to add or no "}" to add it before.
+function Settings.TextWithMissingKeys(existing, missingKeys)
+    if type(existing) ~= "string" or type(missingKeys) ~= "table" or #missingKeys == 0 then return nil end
+    local wanted = {}
+    for _, k in ipairs(missingKeys) do wanted[k] = true end
+
+    local block = {
+        "",
+        "    -- ===== ADDED BY A NEWER PALBONDS =====",
+        "    -- These settings did not exist when this file was made, so they were added here with",
+        "    -- their default values. Nothing else in the file was changed.",
+        "",
+    }
+    local added = 0
+    for _, entry in ipairs(SCHEMA) do
+        if entry.key and wanted[entry.key] then
+            write_entry(entry, block)
+            added = added + 1
+        end
+    end
+    if added == 0 then return nil end
+
+    local lastBrace = nil
+    for pos in existing:gmatch("()}") do lastBrace = pos end
+    if lastBrace == nil then return nil end
+
+    local head, tail = existing:sub(1, lastBrace - 1), existing:sub(lastBrace)
+    -- A file whose last value has no comma after it ("return { Pet = 80 }")
+    -- needs one before anything can follow it.
+    local trimmed = head:gsub("%s*$", "")
+    local lastChar = trimmed:sub(-1)
+    if lastChar ~= "," and lastChar ~= ";" and lastChar ~= "{" then
+        head = trimmed .. ","
+    end
+    if head:sub(-1) ~= "\n" then head = head .. "\n" end
+    return head .. table.concat(block, "\n") .. "\n" .. tail
+end
+
+-- Reads the would-be file back the way the mod really reads one (empty
+-- environment, must return a table) and checks that every value the player had
+-- survived and every added setting arrived at its default.
+function Settings.AppendedTextIsGood(newText, user, missingKeys)
+    if type(newText) ~= "string" then return false end
+    local ok, result = pcall(function()
+        local chunk = load(newText, "PalBonds_settings check", "t", {})
+        if chunk == nil then return false end
+        local ranOk, t = pcall(chunk)
+        if not ranOk or type(t) ~= "table" then return false end
+        for k, v in pairs(user or {}) do
+            if t[k] ~= v then return false end
+        end
+        for _, k in ipairs(missingKeys or {}) do
+            for _, entry in ipairs(SCHEMA) do
+                if entry.key == k and t[k] ~= entry.default then return false end
+            end
+        end
+        return true
+    end)
+    return ok and result == true
 end
 
 local function scripts_dir()
@@ -235,15 +325,60 @@ end
 
 -- Written to a temporary file first and then renamed, so a crash mid-write can
 -- never leave the player with a half-written file.
-local function write_default_file(path)
+local function write_text_file(path, text)
     local tmp = path .. ".tmp"
     local f = io.open(tmp, "w")
     if f == nil then return false end
-    local ok = f:write(Settings.DefaultFileText())
+    local ok = f:write(text)
     f:close()
     if not ok then os.remove(tmp) return false end
-    if not os.rename(tmp, path) then os.remove(tmp) return false end
+
+    -- Windows' os.rename FAILS when the destination already exists, so an
+    -- existing file is moved aside first and only deleted once the new one is
+    -- safely in place -- and put straight back if anything goes wrong. Found
+    -- live (2026-09-20): the first launch of 1.1.6 could create a settings
+    -- file but never replace one, which is every launch after the first.
+    local bak = nil
+    local current = io.open(path, "r")
+    if current ~= nil then
+        current:close()
+        bak = path .. ".bak"
+        os.remove(bak)
+        if not os.rename(path, bak) then os.remove(tmp) return false end
+    end
+    if not os.rename(tmp, path) then
+        os.remove(tmp)
+        if bak ~= nil then os.rename(bak, path) end
+        return false
+    end
+    if bak ~= nil then os.remove(bak) end
     return true
+end
+
+local function write_default_file(path)
+    return write_text_file(path, Settings.DefaultFileText())
+end
+
+-- Adds the settings this version has and the player's file does not.
+local function append_missing_settings(path, user, missing)
+    local list = table.concat(missing, ", ")
+    local existing = nil
+    local f = io.open(path, "r")
+    if f ~= nil then
+        existing = f:read("*a")
+        f:close()
+    end
+    local updated = Settings.TextWithMissingKeys(existing, missing)
+    if updated == nil or not Settings.AppendedTextIsGood(updated, user, missing) then
+        say("could not add " .. list .. " to your settings file — it was left exactly as it is and " ..
+            "those settings use their defaults. Delete the file to get a fresh one with every setting in it.")
+        return
+    end
+    if write_text_file(path, updated) then
+        say("added " .. list .. " to " .. path .. " (your own values were kept)")
+    else
+        say("could not write " .. path .. " — " .. list .. " use their defaults")
+    end
 end
 
 function Settings.Load()
@@ -281,6 +416,12 @@ function Settings.Load()
         status = "loaded"
         say("loaded " .. sourcePath)
         for _, p in ipairs(problems) do say(p) end
+
+        local missing = {}
+        for _, entry in ipairs(SCHEMA) do
+            if entry.key and user[entry.key] == nil then missing[#missing + 1] = entry.key end
+        end
+        if #missing > 0 then append_missing_settings(sourcePath, user, missing) end
     end)
     if not ok then
         values = Settings.Validate(nil)

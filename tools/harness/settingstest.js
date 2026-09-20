@@ -9,10 +9,14 @@
 //      all-zero chances -> defaults, each reported.
 //   C. First launch: the file is created in UE4SS's shared folder (atomic write).
 //   D. Shared folder not writable: created in our own mod folder instead.
-//   E. An existing file is read and never rewritten; a broken one is left alone.
+//   E. An existing file is read, its own text kept; a broken one is left alone.
 //   F. The file is sandboxed: it cannot call anything.
 //   G. The modules use the values: keys, feed amounts, join bonus, passive gain,
 //      personality weights.
+//   H. Settings added by a later version are appended to the player's own file:
+//      their values and text survive, the result parses, it happens once, and a
+//      file that cannot take the insertion safely is left alone.
+//   I. The personality tags start hidden when the file says so.
 //
 // Usage: node settingstest.js <SCRIPTS>
 const { lua, lauxlib, lualib, to_luastring, to_jsstring } = require('fengari');
@@ -56,7 +60,9 @@ const FAKE_FS = [
   '  return { write = function(self, s) buf[#buf + 1] = s return self end,',
   '           close = function() __FS[p] = table.concat(buf); __WRITES = __WRITES + 1 end }',
   'end',
-  'os.rename = function(a, b) a = norm(a); b = norm(b); if __FS[a] == nil then return nil end; __FS[b] = __FS[a]; __FS[a] = nil; return true end',
+  // Windows: rename FAILS when the destination already exists (this is real -- it is
+  // why 1.1.6's first attempt at appending a setting could not write the file).
+  'os.rename = function(a, b) a = norm(a); b = norm(b); if __FS[a] == nil or __FS[b] ~= nil then return nil end; __FS[b] = __FS[a]; __FS[a] = nil; return true end',
   'os.remove = function(a) __FS[norm(a)] = nil return true end',
   'loadfile = function(p, mode, env)',
   '  local c = __FS[norm(p)]; if c == nil then return nil, "cannot open " .. tostring(p) end',
@@ -174,8 +180,11 @@ console.log('\n=== E. An existing file ===');
   expect('read', S.str('select(1, Set.Status()) .. "," .. Set.Get("Pet") .. "," .. Set.Get("KeyPlay")'), (v) => v === 'loaded,80,G');
   expect('a bad value falls back and is reported on the console', S.str('Set.Get("JoinBonus") .. "," .. tostring(__said("JoinBonus"))'), (v) => v === '50000,true');
   expect('missing settings use their defaults', S.str('Set.Get("Play") .. "," .. Set.Get("ChanceNormal")'), (v) => v === '50,35');
-  expect('the file is never rewritten', S.str('__WRITES .. "," .. tostring(__FS[SHARED]:find("999999", 1, true) ~= nil)'), (v) => v === '0,true');
+  expect('the player\'s own text is kept as it was', S.str('tostring(__FS[SHARED]:find("return { Pet = 80, KeyPlay = \\"G\\", JoinBonus = 999999", 1, true) ~= nil)'), (v) => v === 'true');
+  S.must('Set.Load()', 'reload');
+  expect('...and re-reads to the same values', S.str('Set.Get("Pet") .. "," .. Set.Get("KeyPlay")'), (v) => v === '80,G');
   S.must('__FS[SHARED] = "return { Pet = 80,,, "; __PRINTS = {}; Set.Load()', 'broken');
+  S.must('__WRITES = 0; Set.Load()', 'broken-load');
   expect('a file that does not parse: every default, file left as it is', S.str('select(1, Set.Status()) .. "," .. Set.Get("Pet") .. "," .. __WRITES .. "," .. tostring(__FS[SHARED] == "return { Pet = 80,,, ")'),
     (v) => v === 'unreadable,50,0,true');
   expect('...and the console says it can be fixed', S.str('__said("left as it is")'), (v) => v === 'true');
@@ -227,6 +236,79 @@ console.log('\n=== G. The modules use the values ===');
   const src = fs.readFileSync(path.join(scriptsDir, 'Personality.lua'), 'utf8');
   expect('Personality weights come from the file', String(/weight = SettingsP\.Get\("ChanceHostile"\)/.test(src) && /weight = SettingsP\.Get\("ChanceFeral"\)/.test(src)), (v) => v === 'true');
   expect('(Personality loads with a settings file present)', S.str('type(require("Personality"))'), (v) => v === 'table');
+}
+
+console.log('\n=== H. Settings added by a later version ===');
+{
+  // A file written by an older version: every setting of its day, none of the new one.
+  const OLD = [
+    '-- PalBonds settings',
+    'return {',
+    '    -- Petting a wild Pal.',
+    '    Pet = 80,',
+    '    Play = 50, FeedBase = 50, FeedBonusCommon = 10, FeedBonusUncommon = 20, FeedBonusRare = 30,',
+    '    FeedBonusEpic = 40, FeedBonusLegendary = 50, KinshipPeachLesser = 250, KinshipPeach = 500,',
+    '    PassivePerTick = 2, JoinBonus = 50000,',
+    '    ChanceNormal = 35, ChanceCurious = 30, ChanceTimid = 10, ChanceAloof = 10,',
+    '    ChanceGrumpy = 5, ChanceHostile = 5, ChanceFeral = 5,',
+    '    Language = "es",',
+    '    KeyPlay = "G", KeyTags = "F9", KeyPassiveGain = "F10",',
+    '}',
+    '',
+  ].join('\n');
+  const S = newState(null, '__OLD = ' + JSON.stringify(OLD) + '; __FS[SHARED] = __OLD; Set = require("Settings")');
+  expect('the missing setting is added', S.str('tostring(__FS[SHARED]:find("ShowPersonalityTags = 1,", 1, true) ~= nil)'), (v) => v === 'true');
+  expect('...with its comment', S.str('tostring(__FS[SHARED]:find("0 starts with them hidden", 1, true) ~= nil)'), (v) => v === 'true');
+  expect('...under a heading saying where it came from', S.str('tostring(__FS[SHARED]:find("ADDED BY A NEWER PALBONDS", 1, true) ~= nil)'), (v) => v === 'true');
+  expect('the player\'s file is kept, not rewritten', S.str('tostring(__FS[SHARED]:sub(1, #__OLD:gsub("%s*$", "") - 1) == __OLD:gsub("%s*$", ""):sub(1, -2))'), (v) => v === 'true');
+  S.must('Set.Load()', 'reload');
+  expect('their own values survive', S.str('Set.Get("Pet") .. "," .. Set.Get("KeyPlay") .. "," .. Set.Get("Language")'), (v) => v === '80,G,es');
+  expect('...and the new setting reads as its default', S.str('Set.Get("ShowPersonalityTags")'), (v) => v === '1');
+  expect('no problems reported for it', S.str('#select(3, Set.Status())'), (v) => v === '0');
+  expect('the console says what was added', S.str('tostring(__said("added ShowPersonalityTags"))'), (v) => v === 'true');
+  S.must('__WRITES = 0; Set.Load()', 'again');
+  expect('a second launch adds nothing and writes nothing', S.str('__WRITES .. "," .. select(2, __FS[SHARED]:gsub("ShowPersonalityTags", ""))'), (v) => v === '0,1');
+  expect('no temporary file left behind', S.str('tostring(__FS[SHARED .. ".tmp"] == nil and __FS[SHARED .. ".bak"] == nil)'), (v) => v === 'true');
+}
+{
+  // The file cannot be replaced (read-only folder, antivirus, whatever): the
+  // player's own file must survive untouched and nothing may be left behind.
+  const S = newState(null, '__FS[SHARED] = "return { Pet = 80 }"; __RENAME = os.rename; os.rename = function() return nil end; Set = require("Settings")');
+  expect('a failed write leaves the file exactly as it was', S.str('__FS[SHARED]'), (v) => v === 'return { Pet = 80 }');
+  expect('...with no leftovers', S.str('tostring(__FS[SHARED .. ".tmp"] == nil and __FS[SHARED .. ".bak"] == nil)'), (v) => v === 'true');
+  expect('...the values still load', S.str('Set.Get("Pet") .. "," .. Set.Get("ShowPersonalityTags")'), (v) => v === '80,1');
+  expect('...and the console says so', S.str('tostring(__said("could not write"))'), (v) => v === 'true');
+}
+{
+  // The awkward shapes: no trailing comma, and a file that is one line.
+  const S = newState(null, '__FS[SHARED] = "return { Pet = 80 }"; Set = require("Settings")');
+  S.must('Set.Load()', 'reload');
+  expect('a last value with no comma still parses afterwards', S.str('select(1, Set.Status()) .. "," .. Set.Get("Pet") .. "," .. Set.Get("ShowPersonalityTags")'), (v) => v === 'loaded,80,1');
+  S.must('__FS[SHARED] = "return {}"; Set.Load()', 'empty');
+  expect('an empty table takes every setting', S.str('select(2, __FS[SHARED]:gsub("=", "")) .. "," .. Set.Get("Pet")'), (v) => Number(v.split(',')[0]) >= 23 && v.split(',')[1] === '50');
+}
+{
+  // The guard: nothing is written unless the result reads back correctly.
+  const S = newState(null, 'Set = require("Settings")');
+  expect('a table with no closing brace is refused', S.str('tostring(Set.TextWithMissingKeys("return ", { "ShowPersonalityTags" }))'), (v) => v === 'nil');
+  expect('nothing missing -> nothing to write', S.str('tostring(Set.TextWithMissingKeys("return { Pet = 80 }", {}))'), (v) => v === 'nil');
+  expect('the check accepts a good insertion', S.str('tostring(Set.AppendedTextIsGood(Set.TextWithMissingKeys("return { Pet = 80, }", { "ShowPersonalityTags" }), { Pet = 80 }, { "ShowPersonalityTags" }))'), (v) => v === 'true');
+  expect('...refuses one that does not parse', S.str('tostring(Set.AppendedTextIsGood("return { Pet = 80 ShowPersonalityTags = 1 }", { Pet = 80 }, { "ShowPersonalityTags" }))'), (v) => v === 'false');
+  expect('...refuses one that lost the player\'s value', S.str('tostring(Set.AppendedTextIsGood("return { Pet = 50, ShowPersonalityTags = 1 }", { Pet = 80 }, { "ShowPersonalityTags" }))'), (v) => v === 'false');
+  expect('...refuses one where the new setting is not at its default', S.str('tostring(Set.AppendedTextIsGood("return { Pet = 80, ShowPersonalityTags = 0 }", { Pet = 80 }, { "ShowPersonalityTags" }))'), (v) => v === 'false');
+  expect('...refuses a file that can run code', S.str('tostring(Set.AppendedTextIsGood("os.time() return { Pet = 80, ShowPersonalityTags = 1 }", { Pet = 80 }, { "ShowPersonalityTags" }))'), (v) => v === 'false');
+  expect('a fresh default file has the new setting in the DISPLAY section', S.str('tostring(Set.DefaultFileText():find("===== DISPLAY =====", 1, true) ~= nil and Set.DefaultFileText():find("ShowPersonalityTags = 1,", 1, true) ~= nil)'), (v) => v === 'true');
+  expect('0 and 1 are accepted, 2 is not', S.str('select(1, Set.Validate({ ShowPersonalityTags = 0 })).ShowPersonalityTags .. "," .. select(1, Set.Validate({ ShowPersonalityTags = 2 })).ShowPersonalityTags'), (v) => v === '0,1');
+}
+
+console.log('\n=== I. The tags start as the file says ===');
+{
+  const src = fs.readFileSync(path.join(scriptsDir, 'Indicator.lua'), 'utf8');
+  expect('Indicator starts the tags from the setting', String(/local personalityLabelsVisible = \(require\("Settings"\)\.Get\("ShowPersonalityTags"\) ~= 0\)/.test(src)), (v) => v === 'true');
+  const S = newState('prelude_323.lua', '__FS[SHARED] = "return { ShowPersonalityTags = 0 }"; I = require("Indicator")');
+  expect('with 0 in the file the tags start hidden', S.str('tostring(I.TogglePersonalityLabels())'), (v) => v === 'true');
+  const S2 = newState('prelude_323.lua', '__FS[SHARED] = "return { ShowPersonalityTags = 1 }"; I = require("Indicator")');
+  expect('with 1 in the file they start shown', S2.str('tostring(I.TogglePersonalityLabels())'), (v) => v === 'false');
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + failures + ' CHECK(S) FAILED');

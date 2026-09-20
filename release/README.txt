@@ -49,7 +49,8 @@ WHAT IT ADDS
     tower bosses, predators and raid bosses - needs twice the trust before it
     will join you. Even raid bosses can be won over, if you survive long enough.
     A boss shows its trust bar and personality tag under its big health bar
-    at the top of the screen.
+    at the top of the screen. Winning a boss over also counts as beating it:
+    the first time, the game gives you the same rewards as defeating it.
 
   * A Pal that joins you this way arrives already fond of you, with a large
     friendship head start.
@@ -84,6 +85,7 @@ SETTINGS
     - how fast your followers warm up to you on their own
     - how much friendship a Pal gets when it joins you
     - how often each personality appears
+    - whether the personality tags start shown or hidden
     - the keys for Play, the tags and passive bonding
     - the language of the tags and messages (it follows your game's
       language by default)
@@ -108,6 +110,9 @@ SETTINGS
   A value the mod can't use falls back to its default, and the UE4SS console
   says which one. If the file gets messed up, delete it: a fresh one with
   every default is made the next time you start the game.
+
+  When an update adds a new setting, it is added to the file you already have,
+  at the end, with your own values left exactly as they were.
 
   An in-game settings screen is planned for a future update.
 
@@ -172,8 +177,9 @@ THINGS WORTH KNOWING
     still despawn it when you leave its area behind. If that happens, you
     get a message saying it gave up on you.
 
-  * The personality tag toggle (F9) lasts for the current session only. It
-    comes back on the next time you launch the game.
+  * The personality tag toggle (F9) lasts for the current session only. The
+    next time you launch the game the tags go back to what the settings file
+    says (shown, unless you set ShowPersonalityTags to 0).
 
 
 TROUBLESHOOTING

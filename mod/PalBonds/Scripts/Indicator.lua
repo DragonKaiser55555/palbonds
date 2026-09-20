@@ -610,7 +610,12 @@ end
 -- labelLastText is cleared on every Pal at toggle time so the "only write when
 -- the text CHANGES" optimisation does not skip the very write that applies the
 -- toggle.
-local personalityLabelsVisible = true
+--
+-- Three-hundred-and-thirty-fourth pass (2026-09-20), niconoko on Nexus: "me
+-- prefer the personality info to be hidden and not want to press toggle
+-- everytime me log into the game". So where the tags START is now the player's
+-- to decide in the settings file; the key still toggles them from there.
+local personalityLabelsVisible = (require("Settings").Get("ShowPersonalityTags") ~= 0)
 function Indicator.TogglePersonalityLabels()
     personalityLabelsVisible = not personalityLabelsVisible
     for _, entry in pairs(trackedBars) do
@@ -618,7 +623,7 @@ function Indicator.TogglePersonalityLabels()
     end
     Logger.log("[PalBonds/Indicator] [TAG-TOGGLE] personality tags are now " ..
         (personalityLabelsVisible and "VISIBLE" or "HIDDEN") ..
-        " (" .. tostring(require("Settings").Get("KeyTags")) .. "; session-only, resets to visible on the next launch)")
+        " (" .. tostring(require("Settings").Get("KeyTags")) .. "; session-only, back to ShowPersonalityTags on the next launch)")
 
     -- Two-hundred-and-eighty-seventh pass: returned so the key handler can put
     -- the new state on screen. Both toggles are invisible otherwise -- with the

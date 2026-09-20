@@ -36,6 +36,8 @@ before installing, not after.
   found rather than crafted, are worth the most.
 - **Level and rank aware.** The trust bar scales with the level gap between
   you and the Pal; alphas need twice the usual trust before they'll join.
+  Befriending a boss also counts as defeating it, with the game's own
+  first-time rewards.
 - **Forgiveness, once.** The first time a Pal's trust reaches 20% it forgives
   you: it stops attacking, follows you for a moment, then goes back to its own
   business as a Friendly Pal.
@@ -48,8 +50,8 @@ before installing, not after.
 - **Your language.** Tags and messages follow the game's language, in every
   language Palworld offers, with the right grammatical gender for female Pals.
 - **Settings file.** Trust amounts, the join bonus, how often each personality
-  appears, the keys and the language can all be changed (see
-  [Settings](#settings)).
+  appears, whether the tags start shown, the keys and the language can all be
+  changed (see [Settings](#settings)).
 
 ## Get it
 
@@ -112,11 +114,16 @@ Mods/NativeMods/UE4SS/Mods/shared/PalBonds_settings.lua        <- Steam Workshop
 
 It covers the trust each interaction gives (per food rarity, Kinship Peaches
 included), how fast followers warm up on their own, the friendship a Pal gets
-when it joins you, how often each personality appears, the three keys, and the
+when it joins you, how often each personality appears, whether the personality
+tags start shown or hidden (`ShowPersonalityTags`), the three keys, and the
 language. Close the game, edit the file in any text editor, save, and start the
 game again. Every setting is explained in the file. A value the mod can't use
 falls back to its default and is reported in the UE4SS console; delete the file
 and a fresh one with every default is written on the next launch.
+
+A setting added by a later version is appended to the file you already have,
+with your own values untouched — the file is read back and checked before
+anything is written, and left alone if that check fails.
 
 An in-game settings screen is planned for a future update.
 

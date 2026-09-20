@@ -4,6 +4,15 @@ local Trust = require("Trust")
 local UEHelpers = require("UEHelpers") 
 local Personality = require("Personality") 
 local Indicator = {}
+
+-- An object's address, read while it is alive (see Indicator.ForgetJoinedPal).
+local function address_of_obj(o)
+    if o == nil then return nil end
+    local ok, a = pcall(function() return o:GetAddress() end)
+    if ok then return a end
+    return nil
+end
+
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then return result end
@@ -601,7 +610,12 @@ end
 -- labelLastText is cleared on every Pal at toggle time so the "only write when
 -- the text CHANGES" optimisation does not skip the very write that applies the
 -- toggle.
-local personalityLabelsVisible = true
+--
+-- Three-hundred-and-thirty-fourth pass (2026-09-20), niconoko on Nexus: "me
+-- prefer the personality info to be hidden and not want to press toggle
+-- everytime me log into the game". So where the tags START is now the player's
+-- to decide in the settings file; the key still toggles them from there.
+local personalityLabelsVisible = (require("Settings").Get("ShowPersonalityTags") ~= 0)
 function Indicator.TogglePersonalityLabels()
     personalityLabelsVisible = not personalityLabelsVisible
     for _, entry in pairs(trackedBars) do
@@ -609,7 +623,7 @@ function Indicator.TogglePersonalityLabels()
     end
     Logger.log("[PalBonds/Indicator] [TAG-TOGGLE] personality tags are now " ..
         (personalityLabelsVisible and "VISIBLE" or "HIDDEN") ..
-        " (" .. tostring(require("Settings").Get("KeyTags")) .. "; session-only, resets to visible on the next launch)")
+        " (" .. tostring(require("Settings").Get("KeyTags")) .. "; session-only, back to ShowPersonalityTags on the next launch)")
 
     -- Two-hundred-and-eighty-seventh pass: returned so the key handler can put
     -- the new state on screen. Both toggles are invisible otherwise -- with the
@@ -877,6 +891,7 @@ local function try_upgrade_entry_with_bar(entry)
     Logger.log("[PalBonds/Indicator] [DIAG-CREATE] upgraded a label-only entry with a real trust bar (first interaction) for " .. describe_pal(entry.actor))
 end
 local function install_trust_bar(gaugeWidget)
+    Logger.trace("build trust bar")
     local key = describe_widget(gaugeWidget)
     if barInstalledForGauge[key] then return end
 
@@ -1114,7 +1129,8 @@ local function install_trust_bar(gaugeWidget)
     -- promotes it to the real key once resolution succeeds on a later
     -- retry.
     local trackKey = earlyPalId or key
-    trackedBars[trackKey] = { bar = newBar, gaugeWidget = gaugeWidget, actor = earlyActor, label = newLabel, palId = earlyPalId }
+    trackedBars[trackKey] = { bar = newBar, gaugeWidget = gaugeWidget, actor = earlyActor, label = newLabel, palId = earlyPalId,
+        actorAddr = address_of_obj(earlyActor) }
 end
 
 -- Fifty-seventh pass: periodic refresh for every installed bar — re-reads
@@ -1168,6 +1184,7 @@ local function update_trust_bars()
                 local actor = resolve_pal_actor_from_gauge(entry.gaugeWidget)
                 if actor then
                     entry.actor = actor
+                    entry.actorAddr = address_of_obj(actor)
                     Logger.log("[PalBonds/Indicator] [DIAG-TRUST] resolved a real Pal actor on a retry for a previously-unresolved gauge: " .. describe_pal(actor))
 
                     -- This entry may still be keyed by its gauge widget's
@@ -1526,7 +1543,8 @@ local function install_boss_display(key, pending)
     end
     -- The game shows this bar only for bosses: count it for the x2 bond meter.
     safe_call(Trust.MarkBossActor, actor)
-    local entry = { widget = widget, actor = actor, palId = safe_call(Personality.GetStableId, actor) }
+    local entry = { widget = widget, actor = actor, palId = safe_call(Personality.GetStableId, actor),
+        actorAddr = address_of_obj(actor) }
     build_boss_label(entry, layout)
     if Trust.HasBondingState(actor) then build_boss_bar(entry, layout) end
     bossEntries[key] = entry
@@ -1817,7 +1835,9 @@ end
 local function scheduleScan()
     local ok = pcall(function()
         ExecuteInGameThreadWithDelay(SCAN_INTERVAL_MS, function()
+            Logger.trace("nameplate scan start")
             safe_call(scan_for_gauge_widgets)
+            Logger.trace("nameplate scan end")
             scheduleScan()
         end)
     end)
@@ -1898,6 +1918,51 @@ end
 -- and bars we build hang off nameplates that die with their world, so the
 -- correct response to a world change is simply to forget all of them and let
 -- the hook install fresh ones in the new world.
+-- ===================================================================
+-- FORGETTING A PAL THAT JOINED (2026-09-19, Esaeon's crash)
+-- ===================================================================
+-- Esaeon (Proton, GitHub issue #1): the game crashes 5-15 s after a Pal
+-- joins, with PalBonds as the only mod (1.1.5), EXCEPTION_ACCESS_VIOLATION
+-- reading 0x0 with every frame inside UE4SS. Swordfish (Windows) saw it once
+-- "right when the trust bar went full". A join destroys the wild actor and
+-- the game later frees it -- a one-Pal version of the world change that
+-- 1.1.3/1.1.4 fixed by dropping every reference. At a join, only Trust
+-- (ForgetBonding) and Combat (StopFollowing) let go; the rest kept the dead
+-- Pal for up to 10 minutes and went on calling IsValid() and more on it.
+-- IsValid() on a freed object has to read freed memory: on Windows that
+-- memory usually still holds something readable, under Proton/Wine it
+-- often doesn't. So this module now forgets the Pal the moment it joins,
+-- the same way ResetForNewWorld forgets a whole world.
+-- `actorAddr` is the wild actor's address, read before the capture; entries
+-- are compared by address or Pal id, never by calling into the stored actor.
+function Indicator.ForgetJoinedPal(palId, actorAddr)
+    local n = 0
+    local function matches(key, entry)
+        if palId ~= nil and (key == palId or (type(entry) == "table" and entry.palId == palId)) then return true end
+        if actorAddr ~= nil and type(entry) == "table" and entry.actorAddr == actorAddr then return true end
+        return false
+    end
+    for _, t in ipairs({ trackedBars, bossEntries, pendingBossGauges }) do
+        for key, entry in pairs(t) do
+            if matches(key, entry) then t[key] = nil; n = n + 1 end
+        end
+    end
+    return n
+end
+
+function Indicator.HeldReferencesFor(palId, actorAddr)
+    local n = 0
+    for _, t in ipairs({ trackedBars, bossEntries, pendingBossGauges }) do
+        for key, entry in pairs(t) do
+            if (palId ~= nil and (key == palId or (type(entry) == "table" and entry.palId == palId)))
+                or (actorAddr ~= nil and type(entry) == "table" and entry.actorAddr == actorAddr) then
+                n = n + 1
+            end
+        end
+    end
+    return n
+end
+
 function Indicator.ResetForNewWorld()
     local bars, bosses = 0, 0
     for _ in pairs(trackedBars) do bars = bars + 1 end

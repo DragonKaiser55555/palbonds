@@ -2055,6 +2055,82 @@ they fail against 1.1.3.
     and Known Issues; `release/workshop-description.txt` synced. Dragón still has
     to update the 16 translated descriptions. Dev install still DISABLED.
     Left: GitHub commit + release notes (ask first).
+- **1.1.6 PACKAGED (2026-09-20, morning) — NOT yet uploaded.** Dragón's call
+  that morning: Esaeon never answered, so 1.1.6 ships without any claim about
+  the Proton crash, and niconoko's request goes in because it is small.
+  - **New setting `ShowPersonalityTags`** (DISPLAY section, 1/0, default 1):
+    where the tags START; the Tags key still toggles them from there.
+    `Indicator.lua` reads it at load. niconoko (Nexus, 19 Sep): they did not
+    want to press the key every session.
+  - **Settings added by a later version are now appended to the player's own
+    file** (`Settings.TextWithMissingKeys` + `Settings.AppendedTextIsGood`).
+    It is an INSERTION before the file's last `}`, never a rewrite, and the
+    result is parsed back in an empty environment and checked (every player
+    value survived, every new key at its default) before anything is written;
+    if the check fails the file is left alone and the console says so. This was
+    the scaling problem with the old "never rewrite" rule: every future setting
+    would have asked every existing player to delete their file.
+  - **Dev instrumentation removed:** `DevWatch.lua` deleted with its four call
+    sites (`Interaction.lua` x3, `main.lua`), `Logger.DebugEnabled` deleted
+    (only DevWatch used it), `DEBUG_LOGGING = false`, `TRACE_PHASES = false`.
+    `Logger.trace` and its call sites STAY, inert: a future test build is one
+    flag away. Hooks back to 17 (the two `[BOSS-REWARD]` ones were DevWatch's).
+  - **Tests:** settingstest.js sections H (append: added once, own values and
+    own text kept, idempotent on the next launch, no-comma and empty files,
+    every refusal case of the safety check) and I (the tags start from the
+    file). All 22 suites pass against `mod/` AND against
+    `release/PalBonds/Scripts`; undefcheck 4 / hoistcheck 2 known false
+    positives.
+  - **Packaged:** `release/PalBonds-v1.1.6.zip` (14 files, 298 KB), both
+    release trees re-synced, `release/workshop/PalBonds/Info.json` → 1.1.6,
+    README.txt (x2), README.md and both store descriptions updated (the new
+    setting, the append behaviour, and bosses counting as defeated). The 1.1.5
+    zip is still there; delete it once 1.1.6 is live.
+  - **Deployed to both live installs** (manual `ue4ss/Mods/PalBonds/Scripts`
+    and `Mods/NativeMods/UE4SS/Mods/PalBonds/Scripts`), md5-verified, DevWatch
+    deleted from the manual copy. The manual loader (`dwmapi.dll`) is enabled.
+    Dragón's live settings file is a 1.1.5-era one with no
+    `ShowPersonalityTags`, so his next launch is a real test of the append.
+  - **FOUND LIVE, run 1 (2026-09-20 14:33): `os.rename` cannot overwrite on
+    Windows.** The append built the right text and passed its own safety check,
+    then `[SETTINGS] could not write ... — ShowPersonalityTags use their
+    defaults`. `write_text_file` wrote `<file>.tmp` and renamed it over the
+    target, which works only when the target does not exist — i.e. only when
+    CREATING the file, never when replacing one. Every existing player would
+    have seen exactly this. Fixed with the move-aside dance DarnMenu also uses:
+    tmp → move the current file to `.bak` → rename tmp into place → delete the
+    `.bak`, and on any failure the `.bak` goes straight back. **The harness's
+    fake `os.rename` now fails when the destination exists, like Windows** —
+    it happily overwrote before, which is why 22 green suites still shipped a
+    file the game could not write. Tests added for the failed-write path (the
+    player's file untouched, no `.tmp`/`.bak` left, console message).
+  - **Nexus: LIVE** (checked 2026-09-20): version 1.1.6, "PalBonds V1.1.6",
+    297 KB, uploaded 3:01PM, Dragón's six-line changelog and his short
+    description. The page description was NOT touched and must not be.
+  - **STORE DESCRIPTIONS ARE NOT PART OF A RELEASE (Dragón, 2026-09-20).** I had
+    edited both description files for 1.1.6; he told me to revert them: "we are
+    not changing the descriptions until i deem it necesary, not for every small
+    change we add." The description is already long enough that players skip it
+    — his proof is the Steam commenter who asked about multiplayer when the
+    description says it is singleplayer-tested only. Both `.txt` files were
+    reverted to the live 1.1.5 text. **Planned instead: trim the descriptions
+    around 1.2.0**, once several things have settled — the next description work
+    is a cut, not an addition.
+  - **Workshop staged and live-tested (2026-09-20).** Dev install disabled
+    (`dwmapi.dll` and `ue4ss/Mods/PalBonds/enabled.txt` → `*.MODS-DISABLED`).
+    Upload folder: 11 scripts md5-identical to `release/workshop`, Info.json
+    1.1.6 with its BOM, `.workshop.json` untouched (still 1.1.5 until the
+    uploader rewrites it). Dragón's Workshop run was clean, and the append ran
+    a second time on the Workshop path: `Mods/NativeMods/UE4SS/Mods/shared/`
+    took `ShowPersonalityTags` at 15:09 with no `.tmp`/`.bak` left behind.
+  - **Workshop: LIVE** (checked 2026-09-20): change note "Version 1.1.6" with
+    the six lines, dated 20 SEP 11:17 Steam time. **`.workshop.json` was
+    touched at publish time but still reads `last_published_version` 1.1.5** —
+    the same inconsistency seen at 1.1.3 (it kept 1.1.1) while 1.1.5 did write
+    back. So that field is NOT a reliable publish check; read the item's
+    change-note page instead. Descriptions untouched on both stores.
+  - **Left:** GitHub (commit, release notes) and the merge of
+    `test/join-cleanup` into `master`.
 - **1.1.5 PLAN (Dragón, 2026-09-18): ship TOMORROW (09-19), not today, with the
   own-points rework plus the settings file ("either if we finish the settings
   file or not"). Two uploads a few hours apart made no sense, and the 1.1.4

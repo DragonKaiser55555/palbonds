@@ -1256,6 +1256,13 @@ function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
     local st = key ~= nil and State[key] or nil
     if not st then return end
 
+    -- The capture is already under way (the 5 s celebration, then the join).
+    -- For a boss, Capture tells the game the player hit it so the defeat is
+    -- recorded, which comes back through this very hook: without this, the
+    -- mod would punish the player for its own capture -- half the bar gone and
+    -- a "trust is shaken" toast in the middle of the join.
+    if st.captureTriggered then return end
+
     -- A Pal that already fled for good (betrayed or abandoned) keeps what that
     -- did to it. Without this, the player hitting a betrayed Pal back reached
     -- the below-50% rule and RevertForgiveness put it back to its original
@@ -2134,6 +2141,7 @@ function Trust.Init()
     local function scheduleTick()
         local ok = pcall(function()
             ExecuteInGameThreadWithDelay(TICK_INTERVAL_MS, function()
+                Logger.trace("follower tick (trust)")
 
                 -- Two-hundred-and-sixth pass (2026-09-06): this line used
                 -- to log unconditionally, every 1.5s, forever — 396 lines

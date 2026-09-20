@@ -37,7 +37,7 @@ local Logger = {}
 -- With it on, every log line is flushed to disk as it is written and the file
 -- grows for the whole session. That is the behaviour the release build exists to
 -- remove.
-local DEBUG_LOGGING = true
+local DEBUG_LOGGING = false
 
 -- Only used when DEBUG_LOGGING is on. Relative, because the absolute path this
 -- used to hardcode pointed at one specific machine's Steam install: mods
@@ -153,7 +153,6 @@ end
 -- REMOVED for the stable build (2026-09-12): the F7 runtime log switch
 -- (SetEnabled/IsEnabled/IsDevBuild). It answered its question -- run 37 showed
 -- logging is not the fight lag -- and a release build has no log to toggle.
--- DevWatch (temporary instrumentation) asks this before doing any work.
 -- ===================================================================
 -- PHASE TRACE (2026-09-20, for Esaeon's crash -- GitHub #1)
 -- ===================================================================
@@ -172,9 +171,6 @@ function Logger.trace(phase, detail)
     Logger.log("[TRACE] " .. tostring(phase) .. (detail ~= nil and (" " .. tostring(detail)) or ""))
 end
 
-function Logger.DebugEnabled()
-    return DEBUG_LOGGING
-end
 function Logger.log(msg)
 
     -- First line on purpose: everything below is development-only.

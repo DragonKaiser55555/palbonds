@@ -1294,7 +1294,6 @@ local function do_real_wild_feed_via_worker_menu()
         return false
     end
     Logger.log("[PalBonds/Interaction] [WILD-ACTION] [REAL-FEED] call returned ok")
-    pcall(function() require("DevWatch").WatchPair(wildPal, "Feed") end) -- DevWatch
     return true
 
 -- Two-hundred-and-seventh pass (2026-09-06) — THE ROOT CAUSE OF THE
@@ -1781,7 +1780,6 @@ local function closeRadialMenuActionWindow()
             -- worse, would be swallowed by its own anti-spam gate.
             -- 2026-09-16: granted only once the pet is seen happening.
             local petTarget = lastRedirectedWildPalActor
-            pcall(function() require("DevWatch").WatchPair(petTarget, "Pet") end) -- DevWatch
             safe_call(function() grant_pet_when_it_happens(petTarget) end)
             safe_call(function() watch_player_pair(petTarget, "Pet") end)
         elseif lastDecidedInstruction == "feed" then
@@ -2125,7 +2123,6 @@ function Interaction.Init()
             local wildTarget = pendingWildFeedTarget
             pendingWildFeedTarget = nil 
             if not wildTarget or not wildTarget:IsValid() then return end
-            pcall(function() require("DevWatch").Note("food taken now (RequestUseToCharacter)") end) -- DevWatch
             local slot = hook_get(Context)
             local useNum = hook_get(UseNum)
             if not slot or not slot:IsValid() or type(useNum) ~= "number" then

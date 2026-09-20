@@ -687,6 +687,53 @@ end
 -- from zero lands at rank 5, just short of 6.
 -- 2026-09-18: from the player's settings file (JoinBonus, 0 to 200000, default 50000).
 local JOIN_FRIENDSHIP_POINT_GRANT = require("Settings").Get("JoinBonus")
+-- ===================================================================
+-- A BOSS THAT JOINS COUNTS AS DEFEATED (2026-09-19, Dragón found it)
+-- ===================================================================
+-- A boss befriended through PalBonds did not count as defeated (Goldaer), so
+-- no map mark and no first-defeat reward. Six runs ruled out everything the
+-- mod could see on the boss: its last attacker (written and read back), its
+-- hate table (the player pushed to the top), being marked "captured", battle
+-- mode, owner, HP. Writing the record ourselves is not possible either: UE4SS
+-- cannot hand the player's record array to
+-- UPalPlayerRecordDataUtility:SetRecordData_Bool_ForServer ("no table was on
+-- the stack", run 8).
+--
+-- Then Dragón ran the experiment that answered it: he fired ONE bullet at a
+-- boss before befriending it, and when it joined, the game recorded the defeat
+-- and paid the first-kill reward (1 technology point, 6060 bonus EXP, both
+-- logged by [BOSS-REWARD]). The same Pal, and the next one, with no shot: no
+-- record. So the game credits a defeat to players who actually DAMAGED the
+-- boss -- which a sphere capture always has, and a pure bonding never did.
+--
+-- What registers that without hurting the Pal is the game's own
+-- UPalDamageReactionComponent:ForceDamageDelegateForCaptureBall(Attacker) --
+-- what a capture sphere calls when it lands, an attacker with no damage. So
+-- for a boss, just before the capture, the mod says "this player hit it" the
+-- way a sphere does, and the game's own code hands out the record and the
+-- reward. Nothing is written into the player's save by us, and a boss already
+-- beaten gets nothing new, because the game decides both.
+local function is_boss_actor(pal)
+    local full = safe_call(function() return pal:GetFullName() end)
+    if type(full) ~= "string" then return false end
+    local cls = (full:match("^(%S+)") or ""):upper()
+    return cls:find("_BOSS", 1, true) ~= nil or cls:find("_GYM", 1, true) ~= nil or cls:find("_RAID", 1, true) ~= nil
+end
+
+local function register_player_hit_on_boss(pal, player)
+    if not is_boss_actor(pal) then return false end
+    local drc = safe_call(function() return pal.DamageReactionComponent end)
+    if drc == nil or not safe_call(function() return drc:IsValid() end) then
+        Logger.log("[PalBonds/Capture] [BOSS-CREDIT] the boss has no damage reaction component — the defeat will not be recorded")
+        return false
+    end
+    local ok, err = pcall(function() drc:ForceDamageDelegateForCaptureBall(player) end)
+    Logger.log("[PalBonds/Capture] [BOSS-CREDIT] told the game the player hit this boss, as a capture sphere does — " ..
+        (ok and "ok" or ("FAILED: " .. tostring(err))))
+    return ok
+end
+Capture.RegisterPlayerHitOnBoss = register_player_hit_on_boss
+
 function Capture.OnTrustMaxed(pal)
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
@@ -702,6 +749,11 @@ function Capture.OnTrustMaxed(pal)
     -- last run proved this: the toast fell through to its generic fallback
     -- because both name routes failed post-capture.
     local preResolvedDisplayName = resolve_pal_display_name(pal, player)
+    -- Read now, while the wild actor is alive: after the capture every module
+    -- forgets it by these, without touching the dead actor (see
+    -- Personality.ForgetJoinedPal).
+    local joinedId = safe_call(function() return Personality.GetStableId(pal) end)
+    local joinedAddr = safe_call(function() return pal:GetAddress() end)
     local preResolvedFemale = Capture.IsFemale(pal)
 
     -- Two-hundred-and-fortieth pass (2026-09-07): a Pal that JOINS by choice
@@ -735,6 +787,7 @@ function Capture.OnTrustMaxed(pal)
             Logger.log("[PalBonds/Capture] [JOIN-CELEBRATION] Pal went invalid during the celebration delay — aborting the capture entirely")
             return
         end
+        safe_call(function() register_player_hit_on_boss(pal, player) end)
         Capture.TryDirectCapture(pal, player)
 
         -- Hundred-and-thirtieth pass: real on-screen confirmation. Fired
@@ -758,6 +811,12 @@ function Capture.OnTrustMaxed(pal)
             local okT, TrustMod = pcall(require, "Trust")
             if okT and TrustMod and TrustMod.ForgetBonding then TrustMod.ForgetBonding(pal) end
         end)
+        local forgot = 0
+        forgot = forgot + (safe_call(function() return Personality.ForgetJoinedPal(joinedId, name) end) or 0)
+        forgot = forgot + (safe_call(function() return require("Indicator").ForgetJoinedPal(joinedId, joinedAddr) end) or 0)
+        forgot = forgot + (safe_call(function() return require("Interaction").ForgetJoinedPal(joinedAddr) end) or 0)
+        Logger.log(string.format("[PalBonds/Capture] [JOIN-CLEANUP] %s joined — dropped %d leftover reference(s) to its wild actor",
+            tostring(name), forgot))
     end)
 end
 
