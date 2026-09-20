@@ -1250,7 +1250,7 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 - **DRAGÓN'S TRIAGE (2026-09-19):**
   - Crash: do NOT treat the two reports as one bug yet. Swordfish said it was
     rare and hasn't reported again (likely an older version). Esaeon may be a
-    conflict with one of his many mods. Next step is information: ask Esaeon to
+    conflict with one of their many mods. Next step is information: ask Esaeon to
     confirm the timing and to run 1.1.5 with ONLY PalBonds active (rules out
     Proton vs mod conflict), with both logs. Asked on Nexus 2026-09-19.
     GitHub issue #1: answer (and close) only once it's fixed and finished,
@@ -1429,13 +1429,13 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
     pairwatchtest N. Dragón also petted an undefeated alpha (Petallia,
     VioletFairy, "81_1_forest_FBOSS_1"): captured, not defeated, as expected.
   - **Esaeon's crash, new evidence (2026-09-19, GitHub #1 comment + Nexus):**
-    1.1.5, EVERY other mod disabled (his UE4SS.log: PalSchema disabled, only
+    1.1.5, EVERY other mod disabled (their UE4SS.log: PalSchema disabled, only
     UE4SS's default Lua mods). Crash 5-15 s after a Lamball joined;
     CrashContext: EXCEPTION_ACCESS_VIOLATION reading 0x0, every frame in UE4SS
     (+ VCRUNTIME140 memcpy). palbonds-live.log's last line: [PRESET-SLOTS]
     Warlike, 10 s after the join ([ENFORCE] lines are filtered, so what ran
-    after it is invisible). His UE4SS.log is in UTC ("local disabled due to
-    wine") and not flushed per line, so its tail is stale. His Claude's
+    after it is invisible). Their UE4SS.log is in UTC ("local disabled due to
+    wine") and not flushed per line, so its tail is stale. Their Claude's
     analysis: apply_forced_preset never validated the sensor. Files saved in
     `docs/bug-reports/esaeon-0919-*`.
   - **Built for it (tests pass, deployed, NOT yet verified by Esaeon):**
@@ -1451,15 +1451,21 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
       apply_forced_preset, and right before BOTH `sensor.AIResponsePreset =
       fresh` writes (ApplyCompanionPreset too).
     - Test: `jointest.js` J1-J5 (22 suites now).
-  - **Esaeon test build (Dragón's idea, 2026-09-19):** give him the fix early
-    through GitHub instead of making him wait for 1.1.6, so a miss costs no
+  - **Esaeon test build (Dragón's idea, 2026-09-19):** give them the fix early
+    through GitHub instead of making them wait for 1.1.6, so a miss costs no
     release. Built locally, NOT pushed yet (ask first):
     `release/test-build/PalBonds-v1.1.6-test1.zip` = current `mod/` minus
     DevWatch.lua (its call sites are pcall-guarded no-ops), DEBUG_LOGGING ON so
-    his log is written without edits, 1.1.5 README. 17 hooks, all suites pass
+    their log is written without edits, 1.1.5 README. 17 hooks, all suites pass
     against it. `[ENFORCE]` is no longer filtered from the log (it is what ran
     after his last visible line). Plan: commit to a branch (not master, which
     is the 1.1.5 stable), GitHub pre-release `v1.1.6-test1` with the zip.
+  - **PUBLISHED 2026-09-19 (Dragón's go-ahead):** branch `test/join-cleanup`
+    (commit `f8fb794`; `master` stays the 1.1.5 stable), GitHub pre-release
+    https://github.com/DragonKaiser55555/palbonds/releases/tag/v1.1.6-test1
+    with `PalBonds-v1.1.6-test1.zip`. Dragón replies to Esaeon (Nexus and the
+    issue) with the link. Esaeon's pronouns are unknown: use they/them.
+    Local work continues on the branch.
   - Boss reward popup: `UPalNetworkPlayerComponent:ShowBossDefeatRewardUI_ToClient
     (FPalUIBossDefeatRewardDisplayData{TechnologyPoint, DefeatCharacterID},
     AfterTeleport, DelayTime)` and `ShowDefeatBossBonusExpReward_ToClient(int)`:
@@ -1467,6 +1473,68 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
     they "could not hook". Client RPCs go through ProcessEvent, so hooked on
     the right class they should show what a real first kill hands out. The
     popup is the RESULT of the server writing the record, not its cause.
+  - **Boss Tier Drops (Workshop 3782109509, subscribed 2026-09-19):** PalSchema
+    DATA only (AlphaBossDrops.json / PredatorBossDrops.json rewriting
+    DT_PalDropItem rows for BOSS_*). No code, no hooks, nothing about the
+    defeat record. It does separate the two things a kill gives: drop-table
+    items (every kill) and the first-kill bonus (technology points + bonus EXP,
+    what the popup reports).
+  - **Run 8 setup (built, deployed, awaiting Dragón):** save backed up and
+    MD5-verified first (`save-backups/2026-09-19_before-boss-record-write/`,
+    SaveGames 462 files + SteamCloud 27). DevWatch `[BOSS-WRITE]`: 25 s after
+    a world loads, if `81_1_grass_FBOSS_22` (the Nitewing he petted) is not in
+    the record, it calls
+    `UPalPlayerRecordDataUtility:SetRecordData_Bool_ForServer(player,
+    rec.NormalBossDefeatFlag, FName(key), true)` once, with the whole flag list
+    logged before and after. Five other petted-but-unrecorded bosses are kept
+    for later tests. Also `[BOSS-REWARD]`: the reward RPCs hooked on the right
+    class (UPalNetworkPlayerComponent) to see what a real first kill gives.
+    19 hooks in dev.
+  - **RUN 8 SOLVED THE BOSS PROBLEM — Dragón found it (2026-09-19).**
+    - The direct write is IMPOSSIBLE: UE4SS refuses to pass the record array to
+      SetRecordData_Bool_ForServer ("Tried storing reference to a Lua table for
+      an 'Out' parameter ... no table was on the stack"). Route closed.
+    - His own experiment: he fired ONE bullet at an undefeated boss (Caprity
+      Noct / BerryGoat_Dark) before bonding. When it joined through the mod,
+      the game recorded the defeat and paid the first-kill reward
+      ([BOSS-REWARD]: TechnologyPoint=1, bonus EXP 6060 — the same shape as his
+      real Tarantriss kill: 1 point, 5682). The next boss (Gumoss / PlantSlime),
+      petted only, produced nothing. So the lever is REAL DAMAGE BY THE PLAYER,
+      recorded by the game itself; last attacker and hate were the wrong knobs.
+    - **Fix built (tests pass, deployed):** for a boss only, right before the
+      capture, `DamageReactionComponent:ForceDamageDelegateForCaptureBall(player)`
+      — the game's own "a capture sphere landed" registration: an attacker, no
+      damage. The game then writes the record and pays the reward itself, so a
+      boss already beaten gets nothing twice and we write nothing into the save.
+      `Capture.RegisterPlayerHitOnBoss`, logged as [BOSS-CREDIT].
+    - That event comes back through our own damage hook, so
+      `Trust.OnFollowerDamaged` now returns early when `st.captureTriggered` —
+      otherwise the mod would punish the player for its own capture (half the
+      bar and a "trust is shaken" toast mid-join). Tests: pairwatchtest O,
+      pointstest P5.
+    - The [BOSS-WRITE] test code in DevWatch is now pointless: remove it
+      (keep [BOSS-REWARD], it reads the result).
+  - **RUN 9: BOSS DEFEAT VERIFIED WORKING (2026-09-19).** Broncherry
+    (SakuraSaurus), bonded with NO shot fired: [BOSS-CREDIT] ok, then the game
+    paid the first-kill reward by itself ([BOSS-REWARD] TechnologyPoint=1,
+    bonus EXP 6195) and the map marked it defeated. In the same run a Chillet
+    (WeaselDragon) he had ALREADY beaten: [BOSS-CREDIT] ok, and NO reward
+    fired — the game refuses the second payout on its own, which is exactly
+    Dragón's "must not give the key item twice". No betrayal/shaken lines: the
+    captureTriggered guard holds. Both joins dropped 8 leftover references.
+  - **Esaeon, test build 1 result (2026-09-20, GitHub #1): STILL CRASHES, and
+    the join is NOT the trigger.** Crash 139 s in, seconds after the THIRD pet
+    on a Chikipi, no join in the whole session (logs saved as
+    `docs/bug-reports/esaeon-0920-*`). The crash stack is IDENTICAL to the
+    first one, all 64 frames, VCRUNTIME memcpy + UE4SS only, reading 0x0 -- so
+    both crashes hit the same place inside UE4SS from different call sites.
+    (`PCallStackHash` is the SHA-1 of an empty string in both dumps, i.e. the
+    field is unused; their AI read it as "byte-for-byte identical".)
+    Their AI blamed Combat's 5 s [POST-BOND-DUMP]: its silence is not evidence
+    (that tag has been filtered from the log since the 1.1.2 cleanup), and the
+    timing clears it -- it fired at 19:07:44 and the log kept going to
+    19:07:53. DELETED anyway (2026-09-20): dead diagnostic, six native reads on
+    a possibly-dead action object, exactly the risky shape.
   - Dragón finished all 16 translated Workshop descriptions (Russian and
     Thai were rewritten shorter: Steam's character limit).
   - Icon: no (the meme isn't square).

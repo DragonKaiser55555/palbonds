@@ -886,6 +886,7 @@ local function try_upgrade_entry_with_bar(entry)
     Logger.log("[PalBonds/Indicator] [DIAG-CREATE] upgraded a label-only entry with a real trust bar (first interaction) for " .. describe_pal(entry.actor))
 end
 local function install_trust_bar(gaugeWidget)
+    Logger.trace("build trust bar")
     local key = describe_widget(gaugeWidget)
     if barInstalledForGauge[key] then return end
 
@@ -1829,7 +1830,9 @@ end
 local function scheduleScan()
     local ok = pcall(function()
         ExecuteInGameThreadWithDelay(SCAN_INTERVAL_MS, function()
+            Logger.trace("nameplate scan start")
             safe_call(scan_for_gauge_widgets)
+            Logger.trace("nameplate scan end")
             scheduleScan()
         end)
     end)

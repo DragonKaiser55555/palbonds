@@ -109,6 +109,7 @@ console.log('\n=== P1. AddPoints ===');
   expect('the game\'s friendship was never touched', S.str('__GAME_TOUCH'), (v) => v === '0');
 }
 
+
 console.log('\n=== P2. The bar ===');
 {
   const S = newState();
@@ -158,6 +159,13 @@ console.log('\n=== P5. 100% joins, with no second bonus ===');
   expect('no "starts following" message when the same interaction reaches 100% (only the join shows)', S.str('#__FOLLOW_TOASTS'), (v) => v === '0');
   expect('...but the name is still kept, as for any follower', S.str('tostring(__has("interaction #1"))'), (v) => v === 'true');
   expect('the game\'s friendship was never touched', S.str('__GAME_TOUCH'), (v) => v === '0');
+
+  // Run 8: for a boss, Capture reports "the player hit it" to the game during
+  // the capture (that is what makes the defeat count), and it comes back
+  // through our own damage hook. It must not cost the Pal anything.
+  S.must('__BEFORE = T.GetPoints(__PAL); T.OnFollowerDamaged(__PAL, true)', 'own-hit');
+  expect('the capture\'s own reported hit costs nothing', S.str('T.GetPoints(__PAL) == __BEFORE'), (v) => v === 'true');
+  expect('...and says nothing about shaken trust', S.str('tostring(__has("trust shaken") or __has("[BETRAYAL]"))'), (v) => v === 'false');
 }
 
 console.log('\n=== P6. The player hitting a bonded Pal ===');

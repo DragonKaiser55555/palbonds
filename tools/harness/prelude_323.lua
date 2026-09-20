@@ -145,6 +145,8 @@ package.preload["Logger"] = function()
     __ALLLOG[#__ALLLOG + 1] = tostring(m)
   end
   function M.DiagnosticsEnabled() return false end
+  function M.trace() end
+  function M.DebugEnabled() return false end
   return M
 end
 package.preload["Personality"] = function()

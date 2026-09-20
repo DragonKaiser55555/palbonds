@@ -85,6 +85,8 @@ package.preload["Logger"] = function()
   function M.Init() end
   function M.log(m) __LOG[#__LOG + 1] = tostring(m) end
   function M.DiagnosticsEnabled() return false end
+  function M.trace() end
+  function M.DebugEnabled() return false end
   return M
 end
 -- the Pal must look WILD, or ApplyCompanionPreset refuses outright

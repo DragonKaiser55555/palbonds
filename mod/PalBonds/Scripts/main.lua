@@ -55,6 +55,9 @@ function PalBonds.Init()
 
     Capture.Init()
 
+    -- DevWatch: temporary instrumentation, removed before any release.
+    pcall(function() require("DevWatch").Init() end)
+
     print("[PalBonds] all modules initialized\n")
 end
 

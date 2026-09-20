@@ -527,6 +527,7 @@ local function log_index_build_once(instanceCount, matchedCount)
     ))
 end
 local function rebuild_sensor_index()
+    Logger.trace("sensor-index rebuild (FindAllOf PalAISensorComponent)")
     sensorIndexByOwnerKey = {}
     local instances = safe_call(function() return FindAllOf("PalAISensorComponent") end)
     if not instances then
@@ -1146,6 +1147,7 @@ local function apply_forced_preset(sensor, desiredBaseName)
     if not nativeClass then
         return false, "could not resolve the native PalAIResponsePreset class"
     end
+    Logger.trace("preset build", desiredBaseName)
     local fresh = safe_call(function() return StaticConstructObject(nativeClass, sensor) end)
     local freshValidOk, freshValid = pcall(function() return fresh ~= nil and fresh:IsValid() end)
     if not (freshValidOk and freshValid) then
@@ -1162,6 +1164,7 @@ local function apply_forced_preset(sensor, desiredBaseName)
     if not sensor_alive(sensor) then
         return false, "the Pal's sensor went away while its preset was being built"
     end
+    Logger.trace("preset write", desiredBaseName)
     local setOk, setErr = pcall(function() sensor.AIResponsePreset = fresh end)
     if not setOk then
         return false, "AIResponsePreset write FAILED: " .. tostring(setErr)
@@ -1235,6 +1238,7 @@ local INTERRUPT_VERBOSE = false
 --
 -- `cancelActions` splits them: false does job 2 only.
 local function interrupt_and_resense(palActor, sensor, palId, cancelActions)
+    Logger.trace("interrupt and re-sense", palId)
     if cancelActions == nil then cancelActions = true end
     local controller = safe_call(function() return palActor.Controller end)
     local controllerValid = controller ~= nil and safe_call(function() return controller:IsValid() end)
@@ -2140,6 +2144,7 @@ function Personality.ApplyCompanionPreset(palId, palActor, combatAssist, playerI
         Logger.log("[PalBonds/Personality] [COMPANION] the Pal's sensor went away while its preset was being built — nothing written")
         return false
     end
+    Logger.trace("companion preset write", palId)
     local setOk, setErr = pcall(function() sensor.AIResponsePreset = fresh end)
     if not setOk then
         Logger.log("[PalBonds/Personality] [COMPANION] AIResponsePreset write FAILED: " .. tostring(setErr))
@@ -2430,7 +2435,9 @@ end
 local function schedule_personality_scan()
     local ok = pcall(function()
         ExecuteInGameThreadWithDelay(PERSONALITY_SCAN_INTERVAL_MS, function()
+            Logger.trace("personality-scan start")
             safe_call(scan_nearby_wild_pals_for_personality)
+            Logger.trace("personality-scan end")
             schedule_personality_scan()
         end)
     end)

@@ -193,5 +193,32 @@ expect('the hit ended, the waiting pose is back on top -> stopped', str('__STOPP
 run('__new(); __Q = {}; __MONTAGE = HIT; I.StopLeftoverPose(__PL, "Feed"); for i = 1, 8 do __PUMPQ() end', 'endless-hit');
 expect('something else keeps playing: gives up after a few checks, never stops it', str('#__STOPPED .. "," .. #__Q'), '0,0');
 
+console.log('\n=== O. A joining boss is reported to the game as hit by the player (run 8) ===');
+// Dragón, run 8: one bullet before bonding made the game record the defeat and
+// pay the first-kill reward; no bullet, no record. This is the same thing a
+// capture sphere reports when it lands, with no damage.
+e = run('package.preload["Capture"] = nil; package.loaded["Capture"] = nil; C = require("Capture")', 'capture');
+if (e) { console.log('LOAD Capture: ' + e); process.exit(1); }
+run([
+  'function __withDrc(name)',
+  '  local calls = {}',
+  '  local drc = { IsValid = function() return true end,',
+  '                ForceDamageDelegateForCaptureBall = function(self, who) calls[#calls + 1] = who end }',
+  '  return { IsValid = function() return true end, GetFullName = function() return name end, DamageReactionComponent = drc }, calls',
+  'end',
+  '__ME = { IsValid = function() return true end, GetFullName = function() return "BP_Player_Female_C /x.P" end }',
+  'B1, B1CALLS = __withDrc("BP_BerryGoat_Dark_BOSS_C /Game/Pal/Maps/X.BP_BerryGoat_Dark_BOSS_C_1")',
+  'N1, N1CALLS = __withDrc("BP_SheepBall_C /Game/Pal/Maps/X.BP_SheepBall_C_2")',
+  'R1 = { IsValid = function() return true end, GetFullName = function() return "BP_X_RAID_C /x.R" end }',
+  '__OK_BOSS = C.RegisterPlayerHitOnBoss(B1, __ME)',
+  '__OK_NORMAL = C.RegisterPlayerHitOnBoss(N1, __ME)',
+  '__OK_NODRC = C.RegisterPlayerHitOnBoss(R1, __ME)',
+].join('\n'), 'boss');
+expect('boss: reported once', str('#B1CALLS'), '1');
+expect('...naming the player as the attacker', str('B1CALLS[1] == __ME'), 'true');
+expect('...and it reports success', str('__OK_BOSS'), 'true');
+expect('a normal Pal is left alone', str('#N1CALLS .. "," .. tostring(__OK_NORMAL)'), '0,false');
+expect('a boss with no damage component: no error, reports failure', str('__OK_NODRC'), 'false');
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);

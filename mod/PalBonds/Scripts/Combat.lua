@@ -2822,6 +2822,7 @@ function Combat.StartActionChangeProbe()
     Logger.log("[PalBonds/Combat] [ACTION-TRACE] probe armed — logging every action change on bonded Pals at " ..
         ACTION_PROBE_INTERVAL_MS .. "ms (diagnostic only, no behaviour change)")
     local function tick()
+        Logger.trace("follower tick (combat)")
         safe_call(function()
             for key, isFollowing in pairs(BondingState) do
                 if isFollowing then
@@ -4333,33 +4334,15 @@ function Combat.StopFollowing(pal)
                     --   Trainer is null and Destination is frozen -> our action
                     --     is inert and something ELSE entirely is moving the
                     --     Pal, which would be a completely different search.
-                    pcall(function()
-                        ExecuteInGameThreadWithDelay(5000, function()
-                            safe_call(function()
-                                if dying == nil or not dying:IsValid() then
-                                    Logger.log("[PalBonds/Combat] [POST-BOND-DUMP] " .. tostring(key) ..
-                                        " — the action object is gone 5s after the bond broke, so it is NOT what is moving this Pal")
-                                    return
-                                end
-                                local function nm(v)
-                                    if v == nil then return "nil" end
-                                    if not safe_call(function() return v:IsValid() end) then return "invalid" end
-                                    return tostring(safe_call(function() return v:GetFullName() end))
-                                end
-                                local d = safe_call(function() return dying.Destination end)
-                                Logger.log(string.format(
-                                    "[PalBonds/Combat] [POST-BOND-DUMP] %s 5s after the bond broke: Trainer=%s | Destination=(%s, %s) | FollowState=%s | IsMoveMode=%s | FolowEndDistance=%s",
-                                    tostring(key),
-                                    nm(safe_call(function() return dying.Trainer end)),
-                                    tostring(d and safe_call(function() return d.X end)),
-                                    tostring(d and safe_call(function() return d.Y end)),
-                                    tostring(safe_call(function() return dying.FollowState end)),
-                                    tostring(safe_call(function() return dying.IsMoveMode end)),
-                                    tostring(safe_call(function() return dying.FolowEndDistance end))
-                                ))
-                            end)
-                        end)
-                    end)
+                    -- REMOVED 2026-09-20: the five-second [POST-BOND-DUMP] that
+                    -- used to read Trainer/Destination/FollowState off the dying
+                    -- action. Its question was answered long ago, its log tag has
+                    -- been filtered out since the 1.1.2 cleanup (so it could not
+                    -- even report), and it kept six native reads running on an
+                    -- object that may be gone by then -- the same shape as the
+                    -- crash Esaeon is hitting (GitHub #1; their reading of the
+                    -- logs pointed here, though the timing clears this block of
+                    -- their crash itself).
                 end
             end
         end)
