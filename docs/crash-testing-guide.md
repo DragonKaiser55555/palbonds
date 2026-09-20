@@ -40,8 +40,14 @@ Two warnings:
 - **The game may feel heavier than usual.** This build writes a lot to disk,
   several lines per second. That is expected and only happens in this build;
   it is not the bug and will not be in a release.
-- **The log grows quickly.** A few minutes of play can reach several MB. Delete
-  `palbonds-live.log` between runs so each run's file is clean and small.
+- **Save each run's log before starting the next one.** The mod opens
+  `palbonds-live.log` fresh at every game launch, so launching again
+  **overwrites the previous run's log**. After each run, copy the file
+  somewhere else and name it after the run (`run-A.log`, `run-B.log`, ...).
+  Every run's log is worth keeping, including the ones that did not crash:
+  a clean run is what proves a whole group of jobs innocent.
+- **The log grows quickly**, a few MB in a few minutes, which is another
+  reason to keep one file per run rather than one long session.
 
 ## Where the files are
 
@@ -104,7 +110,8 @@ five minutes. This is what the first crash report did.
 ## What to report per run
 
 1. Which run (A, B, C or D), and whether the game crashed.
-2. `palbonds-live.log` from that run.
+2. That run's saved log (`run-A.log` and so on) — please send the clean runs
+   too, not only the crash.
 3. The crash file, zipped, if it crashed.
 4. From the log, the part worth calling out explicitly:
    - the **last `[TRACE]` line** in the file;
