@@ -85,7 +85,22 @@ end
 -- Every log line here is written and flushed BEFORE the risky call
 -- itself (see Logger.lua) specifically so that even a hard crash still
 -- leaves a clear "here's the last thing that happened" trail on disk.
+-- See Session.lua. A guest in somebody else's world may not do any of this:
+-- asking the game to create a character from a client is a FATAL error in the
+-- game itself, which is how a guest's game died the first time a bond was
+-- completed on a dedicated server (2026-09-20).
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 function Capture.TryDirectCapture(pal, player)
+    if we_are_a_guest() then
+        Logger.log("[PalBonds/Capture] [GUEST] this world belongs to somebody else — the join is the server's to make, refusing (see Session.lua)")
+        return false
+    end
     local palName = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] TryDirectCapture starting on %s", tostring(palName)))
     if pal == nil or not pal:IsValid() then
@@ -735,6 +750,7 @@ end
 Capture.RegisterPlayerHitOnBoss = register_player_hit_on_boss
 
 function Capture.OnTrustMaxed(pal)
+    if we_are_a_guest() then return end
     local name = safe_call(function() return pal:GetFullName() end)
     Logger.log(string.format("[PalBonds/Capture] %s reached full trust — capturing for real (sphere-less)", tostring(name)))
     local player = safe_call(function() return require("PlayerRef").Get() end)

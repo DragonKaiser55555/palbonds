@@ -341,6 +341,18 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -857,7 +869,14 @@ function Trust.OnInteractionSucceeded(pal)
         key, st.interactionCount, point, tostring(threshold),
         ratio and string.format("%.0f%%", ratio * 100) or "unknown"
     ))
-    if not st.isFollowing and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
+    -- `not st.captureTriggered` (2026-09-20, from Dragón's Petallia): once the
+    -- capture is on its way, maybe_trigger_capture has already cleared
+    -- isFollowing so the follower tick lets go. An interaction landing during
+    -- those last 5 seconds then looked like a Pal crossing 50% for the first
+    -- time, and the player was told "X starts following you" a second time,
+    -- moments before the join message. The Pal is already ours; there is
+    -- nothing left to start.
+    if not st.isFollowing and not st.captureTriggered and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
         -- An interaction that jumps straight to 100% (a Kinship Peach) also
         -- starts the follow here, but the Pal is about to join: skip the
         -- "starts following you" message so only the join message shows
@@ -1382,6 +1401,9 @@ end
 -- order (Combat.lua), applies passive trust gain every few ticks, and
 -- checks distance from the player (leash break).
 local function tick_followers()
+    -- A guest owns nothing in this world (Session.lua): stand down.
+    if we_are_a_guest() then return end
+
 
     -- Two-hundred-and-seventy-second pass: this tick touches every follower's
     -- actor, so it stops dead once the world is going away. See Combat's
@@ -1783,7 +1805,7 @@ function Trust.Init()
         -- leaving another silent nothing.
         local okBetray, errBetray = pcall(function()
             RegisterHook("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", function(Context, Attacker, Defender, ActualDamage)
-                if world_is_closing() then return end
+                if world_is_closing() or we_are_a_guest() then return end
 
                 -- Dragón caught this before it shipped, and he was right:
                 -- "if you're tracking every hit of the player on pals, wouldnt
@@ -1838,7 +1860,7 @@ function Trust.Init()
         Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] RegisterHook(PalDamageReactionComponent:OnProcessedActualDamageDelegate) = " ..
             (okBetray and "OK" or ("FAILED: " .. tostring(errBetray) .. " — betrayal falls back to the hate hook, which misses followers whose Damaged_Player slot is Ignore")))
         RegisterHook("/Script/Pal.PalHate:DamageEvent", function(Context, DamageResult)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             local result = hook_get(DamageResult)
             if result == nil then return end
 

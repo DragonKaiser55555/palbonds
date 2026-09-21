@@ -2554,6 +2554,16 @@ function Combat.ResetForNewWorld(why)
         "[PalBonds/Combat] [WORLD-RESET] %s — dropped every reference to the old world (%d follower(s), %d follow action(s)). Nothing of ours points at destroyed actors any more.",
         tostring(why), followers, actions
     ))
+    -- The next world can be a different kind of session (singleplayer, hosting,
+    -- or joining somebody else's), so what we are is asked again from scratch.
+    safe_call(function()
+        local okS, SessionMod = pcall(require, "Session")
+        if okS and SessionMod and SessionMod.Reset then SessionMod.Reset() end
+    end)
+    safe_call(function()
+        local okCl, CombatClaims = pcall(function() return Combat.ForgetClaims end)
+        if okCl and CombatClaims then CombatClaims() end
+    end)
     safe_call(function()
         local okT, TrustMod = pcall(require, "Trust")
         if okT and TrustMod and TrustMod.ResetForNewWorld then TrustMod.ResetForNewWorld() end
@@ -4077,7 +4087,17 @@ local function try_real_follow_action(pal, key, playerActor)
     -- This is the standing rule about diagnostic hooks outliving their question,
     -- applied to this file.
 end
+-- See Session.lua: on a guest the server throws our follow action away as fast
+-- as we install it (25 rebuilds in one minute, measured), so we do not start.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 function Combat.StartFollowing(pal)
+    if we_are_a_guest() then return end
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
         BondingState[key] = true
@@ -4376,6 +4396,122 @@ function Combat.StopFollowing(pal)
     end)
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " no longer following")
 end
+-- ===================================================================
+-- CO-OP: IS THIS PAL ALREADY SOMEONE ELSE'S? (2026-09-20)
+-- ===================================================================
+-- Dragón's rule for multiplayer (docs/multiplayer-questions.md, R2/R4): a wild
+-- Pal that is already bonding with a player ignores everyone else and behaves
+-- like an ordinary wild Pal towards them, so nobody can take a bond somebody
+-- else is working on.
+--
+-- Each player's game runs its own copy of this mod and keeps its own records,
+-- so a claim is only worth anything if the OTHER machine can see it. The one
+-- thing both machines can see is the Pal itself: a bonded Pal carries our
+-- follow action, and that action names the player it follows. So the question
+-- "is this someone else's?" is answered by looking at the Pal, not at any
+-- shared state:
+--
+--   1. do we have a follow action of our own on it?      -> ours, not claimed
+--   2. does it have a follow action installed at all?    -> no: not claimed
+--   3. who does that action name as its trainer?
+--        - our own player character                      -> ours
+--        - another player character                      -> CLAIMED
+--        - itself, a Pal, or nothing readable            -> not claimed
+--
+-- Step 3 matters for singleplayer as much as for co-op: a Pal released from
+-- the 20% calm-down can be left following ITSELF (the log shows it happening),
+-- and after a world change we can have let go of a Pal that still carries the
+-- action. Neither is another player, and neither may ever block an interaction.
+-- Everything unreadable is treated as NOT claimed, deliberately: refusing a
+-- pet on a guess would be a worse bug than the one this prevents.
+--
+-- Whether a guest's game can read any of this is unmeasured (co-op has never
+-- been tested). `detail` is returned for the log so one session answers it.
+local claimCache = {}
+local CLAIM_CACHE_SECONDS = 5.0
+
+local function looks_like_a_player(actor)
+    local name = safe_call(function() return actor:GetFullName() end)
+    if type(name) ~= "string" then return false end
+    return name:find("PalPlayerCharacter") ~= nil or name:find("BP_Player_") ~= nil
+end
+
+-- The follow action installed on this Pal, whoever put it there.
+local function follow_action_on(pal)
+    local controller = safe_call(function() return pal.Controller end)
+    local actionComp = controller and safe_call(function() return controller:GetAIActionComponent() end)
+    local cls = get_follow_action_class()
+    if not (actionComp and safe_call(function() return actionComp:IsValid() end) and cls) then return nil, "no action component" end
+    local installed = safe_call(function() return actionComp:HasAction(cls, FOLLOW_ACTION_PRIORITY) end)
+    if installed ~= true then return nil, "no follow action" end
+    for _, getter in ipairs({ "GetCurrentAction_BP", "GetCurrentTopParentAction_BP" }) do
+        local action = safe_call(function() return actionComp[getter](actionComp) end)
+        if action ~= nil and safe_call(function() return action:IsValid() end) then
+            local actionName = safe_call(function() return action:GetFullName() end)
+            if type(actionName) == "string" and actionName:find("Follow") ~= nil then
+                return action, nil
+            end
+        end
+    end
+    return nil, "a follow action is installed but could not be read"
+end
+
+-- true when this Pal is bonding with a DIFFERENT player. Second return value is
+-- a short reason, for the log and the tests.
+function Combat.ClaimedByAnotherPlayer(pal)
+    if pal == nil or not safe_call(function() return pal:IsValid() end) then return false, "no Pal" end
+    local key = safe_call(function() return pal:GetFullName() end)
+    if key == nil then return false, "no key" end
+
+    if BondingState[key] == true then return false, "ours" end
+    local ourAction = followActionObjects[key]
+    if ourAction ~= nil and safe_call(function() return ourAction:IsValid() end) then return false, "ours" end
+
+    local now = os.clock()
+    local cached = claimCache[key]
+    if cached ~= nil and (now - cached.at) < CLAIM_CACHE_SECONDS then
+        return cached.claimed, cached.detail
+    end
+
+    local claimed, detail = false, nil
+    local action, why = follow_action_on(pal)
+    if action == nil then
+        detail = why
+    else
+        local trainer = safe_call(function() return action.Trainer end)
+        if trainer == nil or not safe_call(function() return trainer:IsValid() end) then
+            detail = "a follow action with no readable trainer"
+        elseif not looks_like_a_player(trainer) then
+            detail = "it follows something that is not a player"
+        else
+            local me = nil
+            local okRef, PlayerRefMod = pcall(require, "PlayerRef")
+            if okRef and PlayerRefMod and PlayerRefMod.Get then me = safe_call(PlayerRefMod.Get) end
+            local mineAddr = me ~= nil and safe_call(function() return me:GetAddress() end) or nil
+            local theirAddr = safe_call(function() return trainer:GetAddress() end)
+            if mineAddr ~= nil and theirAddr ~= nil and mineAddr == theirAddr then
+                detail = "it follows us"
+            elseif me ~= nil and theirAddr == nil then
+                detail = "a player trainer we cannot compare (no address)"
+            else
+                claimed = true
+                detail = "it follows " .. tostring(safe_call(function() return trainer:GetFullName() end))
+            end
+        end
+    end
+
+    claimCache[key] = { at = now, claimed = claimed, detail = detail }
+    if claimed then
+        Logger.log("[PalBonds/Combat] [CLAIMED] " .. tostring(key) .. " belongs to another player — " .. tostring(detail))
+    end
+    return claimed, detail
+end
+
+-- Tests and the world reset.
+function Combat.ForgetClaims()
+    claimCache = {}
+end
+
 function Combat.IsFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     return key ~= nil and BondingState[key] == true

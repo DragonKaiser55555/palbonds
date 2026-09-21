@@ -252,6 +252,23 @@ console.log('\n=== P12. Crossing 50% during the 20% calm-down: told, and the nam
   expect('a later despawn names it (this path used to lose the name)', S.str('table.concat(__TOASTS2, ",")'), (v) => v === 'Lamball:abandoned:true');
 }
 
+console.log('\n=== P13. One "starts following you" per Pal, even while it is joining ===');
+{
+  // Dragon's second Petallia (2026-09-20): the capture was already pending,
+  // which clears isFollowing so the follower tick lets go, when one more
+  // interaction landed during the 5s wait -- and the follow message was shown
+  // all over again, moments before the join message.
+  const S = newState();
+  S.must('T.AddPoints(__PAL, 300, "x"); T.OnInteractionSucceeded(__PAL)', 'past50');
+  expect('crossing 50%: told once', S.str('table.concat(__FOLLOW_TOASTS, ",")'), (v) => v === 'Lamball:true');
+  S.must('T.AddPoints(__PAL, 300, "x"); T.OnInteractionSucceeded(__PAL)', 'capture');
+  expect('the capture is now pending', S.str('__has("trust threshold for sphere-less capture met")'), (v) => v === 'true');
+  S.must('T.AddPoints(__PAL, 50, "x"); T.OnInteractionSucceeded(__PAL)', 'one-more');
+  expect('an interaction during the join wait does NOT repeat it', S.str('table.concat(__FOLLOW_TOASTS, ",")'), (v) => v === 'Lamball:true');
+  expect('...nor announce it as crossing 50% a second time',
+    S.str('select(2, table.concat(__LOG, "|"):gsub("bonding bar crossed", ""))'), (v) => v === '1');
+}
+
 console.log('\n=== P11. Hitting a Pal that already fled for good changes nothing ===');
 {
   const S = newState();

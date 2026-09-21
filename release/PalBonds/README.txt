@@ -120,7 +120,8 @@ SETTINGS
 REQUIREMENTS
 ------------
 
-  Palworld, and UE4SS.
+  Palworld, and UE4SS - the September 2026 build or newer. Older builds have
+  crashes of their own that look exactly like a mod bug.
 
   If you installed this from the Steam Workshop, UE4SS is listed as a required
   item and Steam will have installed it for you.

@@ -363,6 +363,18 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -1619,7 +1631,7 @@ local function register_sensor_sense_hook(round)
     round = round or 1
     local ok, err = pcall(function()
         RegisterHook("/Script/Pal.PalAISensorComponent:SelectResponseBySenses", function(Context)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             safe_call(function() on_sensor_select_response(Context) end)
         end)
     end)
@@ -2365,6 +2377,9 @@ local PERSONALITY_UNSEEN_PRUNE_SECONDS = 600.0
 local PERSONALITY_SAFETY_SCAN_EVERY_N_SCANS = 8
 local personalityScanCount = 0
 local function scan_nearby_wild_pals_for_personality()
+    -- A guest owns nothing in this world (Session.lua): stand down.
+    if we_are_a_guest() then return end
+
     personalityScanCount = personalityScanCount + 1
     local now = os.clock()
 

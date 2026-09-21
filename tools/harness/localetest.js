@@ -114,7 +114,7 @@ console.log('\n=== B. Completeness ===');
     '  end',
     'end',
   ].join('\n'), 'scan');
-  expect('24 strings', S.str('__KEYS'), (v) => v === '24');
+  expect('25 strings', S.str('__KEYS'), (v) => v === '25');
   expect('16 language sets: English + 15 (one Spanish for Spain and Latin America)', S.str('#Loc.LANGUAGES'), (v) => v === '16');
   expect('no string missing in any language', S.str('table.concat(__MISSING, " ")'), (v) => v === '');
   expect('{name} kept everywhere English has it', S.str('table.concat(__NONAME, " ")'), (v) => v === '');

@@ -86,7 +86,7 @@ An in-game settings screen is planned for a future update.
 
 [size=5][b]Requirements[/b][/size]
 
-[url=https://www.nexusmods.com/palworld/mods/2237]UE4SS Experimental (Palworld)[/url] - install it first.
+[url=https://www.nexusmods.com/palworld/mods/2237]UE4SS Experimental (Palworld)[/url] - install it first, and it must be the September 2026 build or newer.
 
 
 [size=5][b]Installation[/b][/size]

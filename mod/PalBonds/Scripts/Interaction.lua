@@ -193,6 +193,19 @@ local function safe_call(fn, ...)
     return nil, result
 end
 
+-- Co-op (2026-09-20): a Pal that is already bonding with another player is
+-- left alone entirely — no substitution, no grant, no animation. Asked here
+-- rather than at the grant, so a Feed is refused BEFORE the game takes the
+-- food out of the player's inventory. In singleplayer this can never be true:
+-- it requires a follow action naming a player character that is not ours.
+local function claimed_by_another_player(pal)
+    local okC, CombatMod = pcall(require, "Combat")
+    if not (okC and CombatMod and CombatMod.ClaimedByAnotherPlayer) then return false end
+    local ok, claimed = pcall(CombatMod.ClaimedByAnotherPlayer, pal)
+    return ok and claimed == true
+end
+
+
 -- ===================================================================
 -- WORLD-CLOSING GATE (three-hundred-and-twenty-ninth pass, 2026-09-17)
 -- ===================================================================
@@ -211,6 +224,18 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -685,6 +710,13 @@ local function do_play()
     local param = get_individual_parameter(pal)
     if not param or not param:IsValid() then
         Logger.log("[PalBonds/Interaction] targeted Pal has no IndividualParameter — can't grant trust")
+        return
+    end
+
+    -- Co-op: this Pal is bonding with another player. Refused before any
+    -- animation plays, so from here it simply looks like an ordinary wild Pal.
+    if claimed_by_another_player(pal) then
+        Logger.log("[PalBonds/Interaction] [CLAIMED] the targeted Pal is bonding with another player — skipping Play")
         return
     end
     local actorName = safe_call(function() return pal:GetFullName() end)
@@ -1332,6 +1364,11 @@ end
 -- Writing `local function` here would create a second, shadowing local and
 -- leave do_play's earlier reference permanently nil.
 grant_wild_interaction = function(pal, amount, label)
+    if claimed_by_another_player(pal) then
+        Logger.log("[PalBonds/Interaction] [CLAIMED] " .. hook_describe(pal) ..
+            " is bonding with another player — no trust granted")
+        return false
+    end
     if pal == nil then
         Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": no target actor — nothing granted")
         return false
@@ -1862,10 +1899,19 @@ local function find_player_controller()
     end
     local list = safe_call(function() return FindAllOf("BP_PalPlayerController_C") end)
     if type(list) ~= "table" then return nil end
+    -- 2026-09-20: in a co-op world the host sees every player's controller, so
+    -- the first one in the list is not necessarily ours. Ask the engine which
+    -- one is local; only if nothing answers do we fall back to the first, which
+    -- is what singleplayer has always used.
+    local firstValid = nil
     for _, pc in ipairs(list) do
-        if pc ~= nil and safe_call(function() return pc:IsValid() end) then return pc end
+        if pc ~= nil and safe_call(function() return pc:IsValid() end) then
+            if firstValid == nil then firstValid = pc end
+            local ok, isLocal = pcall(function() return pc:IsLocalPlayerController() end)
+            if ok and isLocal == true then return pc end
+        end
     end
-    return nil
+    return firstValid
 end
 
 play_player_emote = function(n)
@@ -1997,10 +2043,13 @@ end
 function Interaction.Init()
     Logger.log(string.format("[PalBonds/Interaction] keys: %s = Play, %s = personality tags, %s = passive gain", PLAY_KEY, TAGS_KEY, PASSIVE_KEY))
     RegisterKeyBind(Key[PLAY_KEY], function()
+        if we_are_a_guest() then return end
         run_on_game_thread(do_play)
     end)
 
     RegisterKeyBind(Key[TAGS_KEY], function()
+        -- A guest has no tags to toggle (Session.lua), so the key says nothing.
+        if we_are_a_guest() then return end
         -- Same game-thread hop as Play (pass 333): this one touches live
         -- nameplate widgets and shows a toast, both engine work.
         run_on_game_thread(function()
@@ -2025,6 +2074,7 @@ function Interaction.Init()
     -- bare function keys; nothing has been bound to it since the radial menu
     -- took over, so it is free.
     RegisterKeyBind(Key[PASSIVE_KEY], function()
+        if we_are_a_guest() then return end
         -- Same game-thread hop as Play (pass 333): this one touches live
         -- nameplate widgets and shows a toast, both engine work.
         run_on_game_thread(function()
@@ -2401,7 +2451,7 @@ function Interaction.Init()
     local loggedHookFailureOnce = {}
     local function make_hook_handler(onFire)
         return function(Context, A, B, C)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             local self_ = hook_get(Context)
             if onFire then
 
@@ -2689,7 +2739,7 @@ function Interaction.Init()
     -- either way.
     local okOtomoGetter = pcall(function()
         RegisterHook("/Script/Pal.PalOtomoHolderComponentBase:TryGetSpawnedOtomo", function(Context) end, function(Context, ReturnValue)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
 
             -- Two-hundred-and-sixth pass (2026-09-06) — IDLE PATH MADE FREE.
             -- This hook is LOAD-BEARING and must stay: the substitution
@@ -2816,6 +2866,14 @@ function Interaction.Init()
                     local isWild = Capture.IsAlreadyOwned and (not Capture.IsAlreadyOwned(wildPal))
                     if not isWild then
                         redirect_idle_log("owned", "[PalBonds/Interaction] [RADIAL-REDIRECT] the aimed Pal is already owned — leaving the real Otomo in place (this system is for wild Pals only)")
+                        return
+                    end
+
+                    -- Co-op: somebody else is already bonding this one. Refused
+                    -- HERE, before the menu can act, so a Feed never costs the
+                    -- player the food (the game takes it when the Pal arrives).
+                    if claimed_by_another_player(wildPal) then
+                        redirect_idle_log("claimed", "[PalBonds/Interaction] [RADIAL-REDIRECT] the aimed Pal is already bonding with another player — leaving the real Otomo in place")
                         return
                     end
 
@@ -3175,7 +3233,7 @@ function Interaction.Init()
         local path = WORKER_MENU_OVERLAY_CLASS .. ":OnSetup"
         local ok = pcall(function()
             RegisterHook(path, function(Context)
-                if world_is_closing() then return end
+                if world_is_closing() or we_are_a_guest() then return end
                 local self_ = hook_get(Context)
                 if not self_ then return end
                 local parameter = safe_call(function() return self_.Parameter end)
@@ -3207,7 +3265,7 @@ function Interaction.Init()
     worker_onsetup_retry_runner()
     local okPushWidget = pcall(function()
         RegisterHook("/Script/Pal.PalHUDInGame:PushWidgetStackableUI", function(Context, WidgetClassParam, ParameterParam)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             try_fix_worker_menu_parameter("PalHUDInGame:PushWidgetStackableUI", Context, WidgetClassParam, ParameterParam)
         end)
     end)
@@ -3216,7 +3274,7 @@ function Interaction.Init()
     end
     local okServicePush = pcall(function()
         RegisterHook("/Script/Pal.PalHUDService:Push", function(Context, WidgetClassParam, ParameterParam)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             try_fix_worker_menu_parameter("PalHUDService:Push", Context, WidgetClassParam, ParameterParam)
         end)
     end)
@@ -3232,6 +3290,14 @@ function Interaction.Init()
 -- interaction-count state Trust.lua never acts on, since an owned Pal is
 -- already captured).
 end
+-- Exposed for the harness (like PairWatchStep and PlayPlayerEmote): the one
+-- place every trust grant for a wild Pal goes through, so a test can prove the
+-- co-op guard really refuses another player's Pal instead of only reading that
+-- the line is there.
+function Interaction.GrantWildInteraction(pal, amount, label)
+    return grant_wild_interaction(pal, amount, label)
+end
+
 function Interaction.OnWildPalPetted(palActor)
     Trust.OnInteractionSucceeded(palActor)
 

@@ -30,6 +30,49 @@ percentage stays as it was.
 
 ---
 
+## TOMORROW STARTS HERE (end of 2026-09-20)
+
+**Today shipped 1.1.6 to all three places and then spent the rest of the day on
+multiplayer.** Everything below is committed but NOT released: players still
+have 1.1.6.
+
+**State of the machine:** manual dev install ENABLED (`dwmapi.dll`,
+`enabled.txt`), Workshop mods unticked, the game copy carries `mod/` with
+`DEBUG_LOGGING = true` AND `SHOW_DIAGNOSTICS = true` (Dragón's standing rule:
+in dev mode use whatever logging the work needs; strip it at release). `mod/`
+itself has both false. A local Palworld **dedicated server** (Steam tool, free)
+is installed and is how a GUEST session is tested without a second person.
+
+**Built today, in order:**
+1. **Which player is ours** — every lookup prefers the locally controlled
+   character. Live-verified; the engine answers the question on this build.
+2. **A Pal bonding with another player is left alone** — detected from the Pal
+   (its follow action names a player who is not us), refused in the radial menu
+   (before any food is spent), in Play and in the grant; `tag_claimed` in all 16
+   languages. Harness-tested only: needs two real players.
+3. **A guest's copy does nothing** (`Scripts/Session.lua`, NEW FILE — it must
+   reach both release trees and the zip at the next release, the PlayerRef.lua
+   trap from 1.1.2). Three live runs to get right; the last one is clean.
+4. **Duplicate "starts following you"** fixed (pointstest P13).
+5. **Missing trust bar after a reload** fixed (worldchangetest I).
+
+**Verified by Dragón in game:** 1, 3, 4, 5 and the singleplayer regression of
+all of them. **Not verified:** 2 (needs a friend).
+
+**Next, in his stated order:** multiplayer, then the in-game settings screen,
+then releasing Pals back to the wild ("an extra out of scope from this
+project"). The immediate options are written up in
+`docs/multiplayer-questions.md`:
+- a two-player session with a friend (the only thing that can confirm the claim
+  system and answer what each player sees);
+- or investigate `ChallengeCapture_ToServer` and the other 335 `*_ToServer`
+  RPCs, which is how a guest could ever do anything — testable alone on the
+  dedicated server.
+
+**The rubric does not move today:** multiplayer is not one of its categories and
+nothing in the shipped feature set changed. Recalculate when the settings screen
+lands or when co-op becomes a real, released feature.
+
 ## Where we stand — read this first (2026-09-15, after the performance work)
 
 **v1.1.2 = the microstutter fix, committed and pushed to GitHub as the new
@@ -2131,6 +2174,129 @@ they fail against 1.1.3.
     change-note page instead. Descriptions untouched on both stores.
   - **Left:** GitHub (commit, release notes) and the merge of
     `test/join-cleanup` into `master`.
+- **ESAEON'S CRASH: SOLVED, AND IT WAS NOT OURS (2026-09-20).** Their own
+  investigation on GitHub #1: every crash in the thread — the preset builder,
+  the pet check, the nameplate sweep — had the identical native stack, all
+  frames inside UE4SS, none in the game. All of them ran on **UE4SS v3.0.1
+  Beta Git SHA `c838a8ac` (15 July 2026)**, a build that appears in UE4SS-RE's
+  own tracker for a separate native crash (UE4SS-RE/RE-UE4SS#1351). Updating
+  to **Okaetsu's `2281fa31` (3 Sept 2026)** fixed every one of them with **no
+  PalBonds change**, verified with the four-run protocol from
+  `docs/crash-testing-guide.md`: runs A–D clean, 426 nameplate scans all
+  paired, the session ending on a normal tick instead of a cutoff.
+  - **Verified here:** the Workshop UE4SS on Dragón's machine IS `2281fa31`,
+    so Workshop players get the good build with the dependency. The manual dev
+    install is `ba2efd55`, a different build again — worth remembering that we
+    develop on a build no player necessarily runs.
+  - **What this means for the mod:** three of our defensive fixes (join
+    cleanup, sensor checks, the pose release) were built while chasing this and
+    are good in their own right, but none of them was the cause. The remaining
+    crash report to watch is Toxik's, on Windows with ~40 mods, which is NOT
+    assumed to be the same thing (Dragón's ruling).
+  - **Open question for Dragón:** whether the mod page should carry a line
+    telling manual-install players to update UE4SS if theirs predates
+    September 2026. That is a requirement fact, not a feature blurb, so it is
+    worth asking even under the "descriptions are not part of a release" rule.
+  - Left: reply on Nexus (drafted), then a comment on GitHub #1 and closing
+    it — his call, and nothing posted without it.
+- **MULTIPLAYER, STEP 1 — WHICH PLAYER IS OURS (2026-09-20, built, tests pass,
+  deployed, NOT yet seen in game).** Dragón chose multiplayer as the next work
+  and agreed with starting here: "first check which player is doing the things
+  so cross player's captures or join dont get mess up". Releasing Pals back to
+  the wild stays AFTER multiplayer and the settings screen — "its an extra out
+  of scope from this project".
+  - **The bug:** every player lookup took the FIRST valid `PalPlayerCharacter`
+    in the object list. One player in singleplayer, so always right; in co-op
+    every player's character is loaded on every machine, which is how
+    LuWicki97 (Workshop, 2026-09-15) watched the Digtoise HE befriended join
+    his friend's party.
+  - **The fix:** `PlayerRef.pick_local` prefers the character this machine
+    controls (`APawn::IsLocallyControlled`, Engine.hpp 8884; the controller
+    twin `IsLocalPlayerController` is 8289). `search()` and
+    `ProbeForNewPlayer` both use it, so another player's character can no
+    longer be mistaken for "a new world loaded" either.
+    `Interaction.find_player_controller`'s fallback list prefers the local
+    controller the same way (UEHelpers' own GetPlayerController is NOT
+    co-op-safe: it accepts any `IsPlayerController()`).
+  - **What happens when the question is not answered** (the part that matters):
+    somebody says true → that one, wherever it sits; nobody says true, exactly
+    one character, and nothing has ever answered true this session → that one,
+    so a build that cannot answer keeps singleplayer working exactly as before;
+    nobody says true with several characters and the call never worked → the
+    first one plus one log line, rather than going blind; otherwise → nil, and
+    the caller retries (it never latches). Once anything HAS answered true the
+    answer is believed, so a lone character that says "not yours" is not
+    adopted.
+  - **One `[PLAYER-LIFE]` line per session says HOW our character was
+    recognised** — that is the only way to learn from a player's log whether
+    this build answers the question at all, which decides whether co-op can
+    work.
+  - **Tests:** `tools/harness/multiplayertest.js` (A–E, 30 checks). Verified
+    against the shipped 1.1.6 code: the four behavioural checks fail there
+    (Get picks the wrong player, a foreign character reads as a new world, the
+    emote plays on the wrong pawn) while the no-regression check still passes.
+    23 suites pass on `mod/`.
+  - **Deployed to the manual install only**, with `DEBUG_LOGGING = true` in the
+    game copy's Logger.lua (mod/ stays false). The NativeMods copy is left at
+    the released 1.1.6.
+  - **RUN 1 (2026-09-20, 16:19-16:26): the engine ANSWERS.** `[PLAYER-LIFE] our
+    player character is the one this machine controls (IsLocallyControlled),
+    out of 1 in this world`. Singleplayer played normally, no Lua errors, and
+    the second line of the run is a bonus: at the world change the remaining
+    character stopped being locally controlled, which is now another way the
+    mod notices the world going away (the reset fired in the same second).
+    So co-op can be built on this call.
+  - **Next:** a co-op reconnaissance session with a friend, both with the mod,
+    to see what already works before any further co-op code.
+- **DUPLICATE "starts following you" MESSAGE — FOUND AND FIXED (2026-09-20).**
+  Dragón, on his second Petallia: "i think i saw the follow toast twice". The
+  log proves it: interaction #2 crossed 50% (told), the passive tick then hit
+  the capture threshold — and `maybe_trigger_capture` clears `isFollowing` so
+  the follower tick lets go — and interaction #3, landing inside the 5 s wait
+  before the join, looked like a fresh 50% crossing. `OnInteractionSucceeded`
+  now also requires `not st.captureTriggered` before starting a follow. Test
+  `pointstest.js` P13 replays that exact sequence and fails on the shipped
+  1.1.6 code (two toasts, "bonding bar crossed" twice).
+- **MISSING TRUST BAR — ROOT CAUSE FOUND AND FIXED (2026-09-20, second
+  occurrence: Lullu / `BP_LeafPrincess_C`).** Dragón reproduced it in a
+  singleplayer run with full diagnostics on. Lullu was fed 13 s after a world
+  reload, bonded, followed him, sat on screen for 17 s (AIM-FREEZE lines) — and
+  Indicator never once created widgets for her gauge; only 3 gauges were ever
+  built in that world.
+  - **Mechanism, certain from the code:** a nameplate can find its Pal ONLY
+    through the handle the `BindFromHandle` hook hands us (`gaugeHandleByKey`);
+    the widget's own `bindedHandle` field is unreadable in this UE4SS build
+    (fifty-ninth pass). So a nameplate whose bind we lost can never show a tag
+    or bar, and no sweep can recover it, until the game rebinds that widget.
+  - **Where the binds were lost:** `Indicator.ResetForNewWorld` wiped
+    `gaugeHandleByKey`. The reload is noticed by polling a moment AFTER the new
+    world starts loading — both logs show the new world's Pals being rolled a
+    second before the reset line — so the new world's nameplates were already
+    bound and the reset threw those binds away with the old world's.
+  - Both cases (Petallia 16:25, Lullu 20:46) were bonded within ~20 s of a
+    reload; the run that did not reproduce it waited longer. NOT caused by the
+    guest gate: the Petallia case predates `Session.lua`.
+  - **Fix:** the bind hook records when each nameplate was bound
+    (`gaugeBoundAt`); the reset keeps binds from the last 20 s
+    (`NEW_WORLD_BIND_GRACE_SECONDS`) and re-queues them, and drops older ones as
+    before. A kept handle that proves to be the old world's simply fails to
+    resolve. `worldchangetest.js` section I.
+- **(superseded) MISSING TRUST BAR ON THAT SAME PETALLIA — open, needs one run.** He saw no
+  friendship bar on her at all, having started with a Play interaction. The
+  log cannot answer it: every Indicator install/scan line is diagnostic-tagged
+  and was filtered out of that run. Two candidates, and they are distinguished
+  by whether a world reload happened first:
+    a) something about installing NEW nameplate bars breaks after a world
+       reload (that world was the reloaded one, and only 2 nameplate bars were
+       ever tracked in it, against 35 in the first);
+    b) nothing is broken: he played her from 804 units (the Play limit is 900),
+       where the game shows no nameplate at all, and once he got close she was
+       ~5 s from joining.
+  **Set up for it (2026-09-20):** the game copy now has `DEBUG_LOGGING = true`
+  AND `SHOW_DIAGNOSTICS = true` (mod/ stays false on both). Protocol given to
+  Dragón: fresh launch, walk CLOSE to a wild Pal so its nameplate is on
+  screen, pet once, look for the bar; then quit to title, load again, and do
+  exactly the same with another Pal. Report which of the two showed a bar.
 - **1.1.5 PLAN (Dragón, 2026-09-18): ship TOMORROW (09-19), not today, with the
   own-points rework plus the settings file ("either if we finish the settings
   file or not"). Two uploads a few hours apart made no sense, and the 1.1.4

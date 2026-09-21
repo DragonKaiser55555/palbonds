@@ -52,6 +52,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Tag | Scarred | A Pal the player betrayed (hit it while it trusted them). An EMOTIONAL wound, not a physical one: the player should feel bad. |
 | `tag_abandoned` | Tag | Abandoned | A Pal the player left behind (walked too far away from it). It gave up on them. |
 | `tag_wary` | Tag | Wary | Rare fallback for a Pal that lost its trust for an unrecorded reason: distrustful, on guard. |
+| `tag_claimed` | Tag | Claimed | MULTIPLAYER ONLY, and new: shown to OTHER players over a wild Pal that is already bonding with somebody else, so they know it will not respond to them. That Pal's own player never sees this word. The sense is taken / already has someone, not reserved in a technical or legal sense. Must be SHORT: it sits under the health bar where the personality tag normally is. |
 | `a_pal` | Name | A Pal | Used in place of {name} when the Pal's name cannot be read. Means "a Pal" (some Pal). |
 | `following` | Message | {name} seems to like you and starts following you. | The Pal reached 50% trust: it has taken a liking to the player and now follows them around. |
 | `joined` | Message | {name} has chosen to go with you. It trusts you completely. | The Pal reached 100% trust and joins the player's team on its own, without a sphere. |
@@ -81,6 +82,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Resentido | Resentida |
 | `tag_abandoned` | Abandoned | Abandonado | Abandonada |
 | `tag_wary` | Wary | Receloso | Recelosa |
+| `tag_claimed` | Claimed | Ocupado | Ocupada |
 | `a_pal` | A Pal | Un Pal | (same) |
 | `following` | {name} seems to like you and starts following you. | {name} parece tenerte cariño y empieza a seguirte. | (same) |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} decidió irse contigo. Confía plenamente en ti. | (same) |
@@ -110,6 +112,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Magoado | Magoada |
 | `tag_abandoned` | Abandoned | Abandonado | Abandonada |
 | `tag_wary` | Wary | Desconfiado | Desconfiada |
+| `tag_claimed` | Claimed | Ocupado | Ocupada |
 | `a_pal` | A Pal | Um Pal | (same) |
 | `following` | {name} seems to like you and starts following you. | {name} parece gostar de você e começa a te seguir. | (same) |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} escolheu seguir com você. Ele confia completamente em você. | {name} escolheu seguir com você. Ela confia completamente em você. |
@@ -139,6 +142,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Trahi | Trahie |
 | `tag_abandoned` | Abandoned | Abandonné | Abandonnée |
 | `tag_wary` | Wary | Méfiant | Méfiante |
+| `tag_claimed` | Claimed | Pris | Prise |
 | `a_pal` | A Pal | Un Pal | (same) |
 | `following` | {name} seems to like you and starts following you. | {name} semble t'apprécier et commence à te suivre. | (same) |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} a choisi de partir avec toi. Il te fait entièrement confiance. | {name} a choisi de partir avec toi. Elle te fait entièrement confiance. |
@@ -168,6 +172,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Rancoroso | Rancorosa |
 | `tag_abandoned` | Abandoned | Abbandonato | Abbandonata |
 | `tag_wary` | Wary | Diffidente | (same) |
+| `tag_claimed` | Claimed | Occupato | Occupata |
 | `a_pal` | A Pal | Un Pal | (same) |
 | `following` | {name} seems to like you and starts following you. | {name} sembra essersi affezionato a te e inizia a seguirti. | {name} sembra essersi affezionata a te e inizia a seguirti. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} ha scelto di venire con te. Si fida completamente di te. | (same) |
@@ -197,6 +202,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Verbittert |
 | `tag_abandoned` | Abandoned | Verlassen |
 | `tag_wary` | Wary | Misstrauisch |
+| `tag_claimed` | Claimed | Vergeben |
 | `a_pal` | A Pal | Ein Pal |
 | `following` | {name} seems to like you and starts following you. | {name} scheint dich zu mögen und folgt dir jetzt. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} hat sich entschieden, mit dir zu gehen. Es vertraut dir vollkommen. |
@@ -226,6 +232,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Urażony | Urażona |
 | `tag_abandoned` | Abandoned | Porzucony | Porzucona |
 | `tag_wary` | Wary | Nieufny | Nieufna |
+| `tag_claimed` | Claimed | Zajęty | Zajęta |
 | `a_pal` | A Pal | Pal | (same) |
 | `following` | {name} seems to like you and starts following you. | {name} chyba cię polubił i zaczyna za tobą chodzić. | {name} chyba cię polubiła i zaczyna za tobą chodzić. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} postanowił pójść z tobą. Ufa ci całkowicie. | {name} postanowiła pójść z tobą. Ufa ci całkowicie. |
@@ -255,6 +262,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Обиженный | Обиженная |
 | `tag_abandoned` | Abandoned | Брошенный | Брошенная |
 | `tag_wary` | Wary | Настороженный | Настороженная |
+| `tag_claimed` | Claimed | Занят | Занята |
 | `a_pal` | A Pal | Pal | (same) |
 | `following` | {name} seems to like you and starts following you. | {name}, похоже, привязался к тебе и теперь следует за тобой. | {name}, похоже, привязалась к тебе и теперь следует за тобой. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} решил пойти с тобой. Он полностью тебе доверяет. | {name} решила пойти с тобой. Она полностью тебе доверяет. |
@@ -284,6 +292,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Kırgın |
 | `tag_abandoned` | Abandoned | Terk edilmiş |
 | `tag_wary` | Wary | Temkinli |
+| `tag_claimed` | Claimed | Sahipli |
 | `a_pal` | A Pal | Bir Pal |
 | `following` | {name} seems to like you and starts following you. | {name} senden hoşlanmış gibi görünüyor ve seni takip etmeye başladı. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} seninle gelmeye karar verdi. Sana tamamen güveniyor. |
@@ -313,6 +322,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Tổn thương |
 | `tag_abandoned` | Abandoned | Bị bỏ rơi |
 | `tag_wary` | Wary | Dè chừng |
+| `tag_claimed` | Claimed | Đã có chủ |
 | `a_pal` | A Pal | Một Pal |
 | `following` | {name} seems to like you and starts following you. | {name} có vẻ quý bạn và bắt đầu đi theo bạn. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} đã chọn đi cùng bạn. Nó hoàn toàn tin tưởng bạn. |
@@ -342,6 +352,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | เจ็บใจ |
 | `tag_abandoned` | Abandoned | ถูกทิ้ง |
 | `tag_wary` | Wary | ระแวง |
+| `tag_claimed` | Claimed | ถูกจอง |
 | `a_pal` | A Pal | Pal ตัวหนึ่ง |
 | `following` | {name} seems to like you and starts following you. | {name} ดูเหมือนจะชอบคุณ และเริ่มเดินตามคุณ |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} เลือกที่จะไปกับคุณ มันไว้ใจคุณอย่างเต็มที่ |
@@ -371,6 +382,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | Sakit hati |
 | `tag_abandoned` | Abandoned | Ditinggalkan |
 | `tag_wary` | Wary | Waspada |
+| `tag_claimed` | Claimed | Sudah diklaim |
 | `a_pal` | A Pal | Seekor Pal |
 | `following` | {name} seems to like you and starts following you. | {name} sepertinya menyukaimu dan mulai mengikutimu. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name} memilih untuk ikut bersamamu. Dia sepenuhnya mempercayaimu. |
@@ -400,6 +412,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | 傷心 |
 | `tag_abandoned` | Abandoned | 置き去り |
 | `tag_wary` | Wary | 警戒 |
+| `tag_claimed` | Claimed | 先約 |
 | `a_pal` | A Pal | Pal |
 | `following` | {name} seems to like you and starts following you. | {name}はあなたを気に入ったようです。あなたについて来ます。 |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name}はあなたと一緒に行くことを選びました。あなたを完全に信頼しています。 |
@@ -429,6 +442,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | 상처받음 |
 | `tag_abandoned` | Abandoned | 버려짐 |
 | `tag_wary` | Wary | 경계 |
+| `tag_claimed` | Claimed | 선점됨 |
 | `a_pal` | A Pal | Pal |
 | `following` | {name} seems to like you and starts following you. | {name}이(가) 당신을 마음에 들어 하는 것 같습니다. 이제 당신을 따라옵니다. |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name}이(가) 당신과 함께하기로 했습니다. 당신을 완전히 믿습니다. |
@@ -458,6 +472,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | 心寒 |
 | `tag_abandoned` | Abandoned | 被抛弃 |
 | `tag_wary` | Wary | 警惕 |
+| `tag_claimed` | Claimed | 已有主 |
 | `a_pal` | A Pal | 一只 Pal |
 | `following` | {name} seems to like you and starts following you. | {name}似乎喜欢上你了，开始跟着你。 |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name}选择与你同行。它完全信任你。 |
@@ -487,6 +502,7 @@ The tone is warm and a little playful, like the mod's store page. It addresses t
 | `tag_scarred` | Scarred | 心寒 |
 | `tag_abandoned` | Abandoned | 被拋棄 |
 | `tag_wary` | Wary | 警惕 |
+| `tag_claimed` | Claimed | 已有主 |
 | `a_pal` | A Pal | 一隻 Pal |
 | `following` | {name} seems to like you and starts following you. | {name}似乎喜歡上你了，開始跟著你。 |
 | `joined` | {name} has chosen to go with you. It trusts you completely. | {name}選擇與你同行。牠完全信任你。 |

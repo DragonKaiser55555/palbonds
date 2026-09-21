@@ -63,10 +63,15 @@ before installing, not after.
 ## Requirements
 
 - **Palworld**
-- **UE4SS** (the experimental Palworld build) — installed automatically if you
-  use the Steam Workshop version; otherwise grab it from
-  [Nexus Mods](https://www.nexusmods.com/palworld/mods/2237) or the
+- **UE4SS** (the experimental Palworld build), **September 2026 build or
+  newer** — installed automatically if you use the Steam Workshop version;
+  otherwise grab it from
+  [Nexus Mods](https://www.nexusmods.com/palworld/mods/2237), the
+  [current releases](https://github.com/Okaetsu/RE-UE4SS/releases) or the
   [Palworld Modding Docs](https://pwmodding.wiki/docs/category/ue4ss) first.
+  Older builds have native crashes of their own: every crash in
+  [issue #1](https://github.com/DragonKaiser55555/palbonds/issues/1) came from
+  a July 2026 build and went away on the September one, with no mod change.
 
 Use only **one** UE4SS install (manual or Workshop) at a time — running both
 together crashes the game.

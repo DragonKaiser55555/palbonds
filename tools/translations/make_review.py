@@ -15,6 +15,7 @@ ORDER = [
     ('tag_scarred', 'Tag', 'A Pal the player betrayed (hit it while it trusted them). An EMOTIONAL wound, not a physical one: the player should feel bad.'),
     ('tag_abandoned', 'Tag', 'A Pal the player left behind (walked too far away from it). It gave up on them.'),
     ('tag_wary', 'Tag', 'Rare fallback for a Pal that lost its trust for an unrecorded reason: distrustful, on guard.'),
+    ('tag_claimed', 'Tag', "MULTIPLAYER ONLY, and new: shown to OTHER players over a wild Pal that is already bonding with somebody else, so they know it will not respond to them. That Pal's own player never sees this word. The sense is taken / already has someone, not reserved in a technical or legal sense. Must be SHORT: it sits under the health bar where the personality tag normally is."),
     ('a_pal', 'Name', 'Used in place of {name} when the Pal\'s name cannot be read. Means "a Pal" (some Pal).'),
     ('following', 'Message', 'The Pal reached 50% trust: it has taken a liking to the player and now follows them around.'),
     ('joined', 'Message', 'The Pal reached 100% trust and joins the player\'s team on its own, without a sphere.'),

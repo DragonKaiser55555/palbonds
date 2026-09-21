@@ -234,5 +234,35 @@ console.log('\n=== H. While the world closes, every hook goes quiet ===');
   expect('and says so', S.str('__has("giving up waiting")'), (v) => v === 'true');
 }
 
+console.log('\n=== I. A reload keeps the nameplate binds the NEW world already made ===');
+{
+  // Dragon's Lullu and Petallia (2026-09-20): both bonded within 20 s of a
+  // reload, neither ever got a tag or a trust bar. A nameplate can only find its
+  // Pal through the handle BindFromHandle gave us, and the reset -- which runs a
+  // moment AFTER the new world has started loading -- was wiping the new world's
+  // binds together with the old world's.
+  const S = newState();
+  S.must([
+    'I = require("Indicator"); I.Init()',
+    '__BIND = "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle"',
+    'function __gauge(n) return __obj("WBP_PalNPCHPGauge_C_" .. n) end',
+    'function __handle() local h = __obj("PalIndividualCharacterHandle"); h.TryGetIndividualActor = function() return __PAL end; return h end',
+  ].join('\n'), 'setup');
+  expect('(setup) the bind hook is registered', S.str('__HOOKS[__BIND] ~= nil'), (v) => v === 'true');
+  S.must('__FIRE(__BIND, __arg(__gauge("OLD")), __arg(__handle()))', 'old-bind');
+  S.must('__CLOCK = __CLOCK + 60', 'time-passes');
+  S.must('__FIRE(__BIND, __arg(__gauge("NEW")), __arg(__handle()))', 'new-bind');
+  S.must('__CLOCK = __CLOCK + 1', 'polling-lag');
+  expect('(setup) both binds are known before the reset', S.str('select(1, I.BindCounts())'), (v) => v === '2');
+  S.must('I.ResetForNewWorld()', 'reset');
+  expect('the old world\'s bind is dropped, the new world\'s is kept',
+    S.str('select(1, I.BindCounts())'), (v) => v === '1');
+  expect('...and it is queued so its tag and bar get built',
+    S.str('select(2, I.BindCounts())'), (v) => v === '1');
+  expect('the reset says what it kept', S.str('__has("kept 1 nameplate bind(s) the new world had already made")'), (v) => v === 'true');
+  S.must('__CLOCK = __CLOCK + 60; I.ResetForNewWorld()', 'second-reset');
+  expect('a later reset drops it like any other old bind', S.str('select(1, I.BindCounts())'), (v) => v === '0');
+}
+
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));
 process.exit(failures === 0 ? 0 : 1);
