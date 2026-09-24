@@ -397,8 +397,12 @@ console.log('\n=== I. As a guest, the mod does nothing ===');
   };
   expect('the personality scan stands down',
     String(guarded(peo, 'local function scan_nearby_wild_pals_for_personality()')), 'true');
-  expect('the nameplate scan stands down',
-    String(guarded(ind2, 'local function scan_for_gauge_widgets()')), 'true');
+  // Co-op stage 3: the nameplate scan no longer stands down for good on a
+  // guest -- it waits until the HOST's PalBonds has sent its numbers
+  // (HostView.lua), and draws from those. Until then it does nothing.
+  expect('the nameplate scan waits for the host view',
+    String((() => { const i = ind2.indexOf('local function scan_for_gauge_widgets()');
+      return i >= 0 && /if guest_without_host_view\(\) then return end/.test(ind2.slice(i, i + 400)); })()), 'true');
   expect('the follower tick stands down',
     String(guarded(tru, 'local function tick_followers()')), 'true');
 }
@@ -411,8 +415,10 @@ console.log('\n=== I. As a guest, the mod does nothing ===');
   S.must(CAPTURE_LOG, 'log');
   expect('(setup) the keys are bound', S.str('tostring(next(__BINDS) ~= nil)'), 'true');
   S.must('for _, fn in pairs(__BINDS) do pcall(fn) end', 'press');
-  expect('as a guest every key does nothing',
-    S.str('tostring(__said("[TAG-TOGGLE]")) .. "," .. tostring(__said("pressed"))'), 'false,false');
+  // Co-op run 3 (2026-09-21): F8 now aims on the guest and the host plays the
+  // Pal; F10 is asked of the host. Nothing is switched locally on a guest.
+  expect('as a guest F8 starts Play and F10 switches nothing locally',
+    S.str('tostring(__said("pressed")) .. "," .. tostring(__said("[PASSIVE-TOGGLE]"))'), 'true,false');
 }
 {
   const S = newState('prelude_emote.lua', [
@@ -436,6 +442,64 @@ console.log('\n=== I. As a guest, the mod does nothing ===');
     S.str('tostring(__said("the join is the server\'s to make"))'), 'false');
   S.must('C.StartFollowing(__PAL)', 'follow');
   expect('...and the follow still starts', S.str('tostring(C.IsFollowing(__PAL))'), 'true');
+}
+
+console.log('\n=== J. The guest-input switch: a guest keeps ONLY the radial-menu input ===');
+{
+  const sess = fs.readFileSync(path.join(scriptsDir, 'Session.lua'), 'utf8');
+  expect('guest input ships ON (1.1.7)', String(/Session\.ALLOW_GUEST_INPUT = true/.test(sess)), 'true');
+  const S = newState('prelude_323.lua', 'Sess = require("Session")');
+  expect('on by default', S.str('tostring(Sess.GuestInputAllowed())'), 'true');
+  S.must('Sess.ALLOW_GUEST_INPUT = false', 'switch');
+  expect('off when switched back (1.1.6 behaviour for a guest)', S.str('tostring(Sess.GuestInputAllowed())'), 'false');
+  S.must('Sess.ALLOW_GUEST_INPUT = true', 'switch-back');
+
+  const inter = fs.readFileSync(path.join(scriptsDir, 'Interaction.lua'), 'utf8');
+  expect('the five radial-menu input hooks ask guest_blocks_input',
+    String((inter.match(/if world_is_closing\(\) or guest_blocks_input\(\) then return end/g) || []).length), '5');
+  expect('...and none of them still asks we_are_a_guest directly',
+    String(/world_is_closing\(\) or we_are_a_guest\(\)/.test(inter)), 'false');
+  const i = inter.indexOf('local function guest_blocks_input()');
+  expect('guest_blocks_input consults the switch',
+    String(i >= 0 && /GuestInputAllowed/.test(inter.slice(i, i + 500))), 'true');
+}
+{
+  // With the switch ON, a guest must still never follow or join -- the join is
+  // the game's own FATAL error on a client.
+  const S = newState('prelude_323.lua', [
+    'Sess = require("Session"); Cap = require("Capture"); C = require("Combat")',
+    'Sess.SetModeForTest("client"); Sess.ALLOW_GUEST_INPUT = true',
+  ].join('\n'));
+  S.must(CAPTURE_LOG, 'log');
+  expect('probe on: the join is still refused', S.str('tostring(Cap.TryDirectCapture(__PAL, __PLAYER))'), 'false');
+  S.must('C.StartFollowing(__PAL)', 'follow');
+  expect('probe on: no follow is started', S.str('tostring(C.IsFollowing(__PAL))'), 'false');
+}
+{
+  const S = newState('prelude_emote.lua', [
+    'Sess = require("Session"); Sess.SetModeForTest("client"); Sess.ALLOW_GUEST_INPUT = true',
+    'I = require("Interaction"); I.Init()',
+  ].join('\n'));
+  S.must(CAPTURE_LOG, 'log');
+  S.must('for _, fn in pairs(__BINDS) do pcall(fn) end', 'press');
+  expect('probe on: F10 still switches nothing locally on a guest',
+    S.str('tostring(__said("[PASSIVE-TOGGLE]"))'), 'false');
+}
+
+console.log('\n=== K. A guest never runs the stuck-pose watchdog (net probe run 1) ===');
+{
+  // It cannot see the Pal's AI on a guest, so it cancelled every guest pet/feed.
+  const inter = fs.readFileSync(path.join(scriptsDir, 'Interaction.lua'), 'utf8');
+  const i = inter.indexOf('local function watch_player_pair(pal, label)');
+  expect('watch_player_pair returns first thing on a guest',
+    String(i >= 0 && /if we_are_a_guest\(\) then return end/.test(inter.slice(i, i + 700))), 'true');
+  const S = newState('prelude_emote.lua', [
+    'Sess = require("Session"); Sess.SetModeForTest("client"); Sess.ALLOW_GUEST_INPUT = true',
+    'I = require("Interaction"); I.Init()',
+  ].join('\n'));
+  S.must(CAPTURE_LOG, 'log');
+  S.must('I.WatchPlayerPair(__PAL, "Pet")', 'watch');
+  expect('on a guest the watchdog releases nothing', S.str('tostring(__said("[PAIR-RELEASE]"))'), 'false');
 }
 
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : '\n' + failures + ' CHECK(S) FAILED');

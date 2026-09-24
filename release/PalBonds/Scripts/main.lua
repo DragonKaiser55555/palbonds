@@ -29,6 +29,13 @@ function PalBonds.Init()
     -- buffered output does not.
     Logger.Init()
 
+    -- Co-op (2026-09-21): the private line between the machine that owns the
+    -- world and each guest. Two native hooks, registered at load like every
+    -- /Script/ hook. Before the other modules, which add their handlers to it.
+    pcall(function() require("Net").Init() end)
+    -- Co-op stage 3: what a guest sees comes from the host's numbers.
+    pcall(function() require("HostView").Init() end)
+
     -- Indicator before the rest: a wild Pal's health gauge can already be
     -- on-screen and bound before our class-level BindFromHandle hook
     -- registers, and a gauge missed that way stays on the "?" placeholder

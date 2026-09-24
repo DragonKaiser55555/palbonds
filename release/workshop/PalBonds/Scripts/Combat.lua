@@ -177,7 +177,6 @@ local FollowerActors = {}
 
 -- Throttles the [HATE-ASSIST] line to one per target change — a real fight
 -- produces a damage event many times a second.
-local lastHateTargetName = nil
 local loggedRetargetOnce = false
 
 -- Two-hundred-and-fifteenth pass: how often a follower is nudged to re-sense
@@ -189,8 +188,84 @@ local resenseTickCounter = 0
 -- Two-hundred-and-thirteenth pass: is the player currently in a fight? While
 -- true, companions are allowed to engage on discovery; when it lapses they go
 -- back to never starting fights.
-local playerCombatActive = false
-local combatWindowGeneration = 0
+-- ---------------------------------------------------------------------
+-- ONE FIGHT STATE PER PLAYER (co-op stage 2, 2026-09-21)
+-- ---------------------------------------------------------------------
+-- These used to be single values: "the player is fighting", "which combat
+-- window is current", "who the player is hitting". With a host and a guest
+-- each fighting their own fights, one global would let the host's fight
+-- suspend the guest's followers and the guest's fight end the host's window.
+-- They are now kept per OWNER KEY (PlayerRef.OwnerKey: "local" for the player
+-- at this machine, which is all of singleplayer) and read for whoever this
+-- machine is working for right now -- the hooks and loops run as that player.
+local combatActiveBy = {}
+local combatWindowGenBy = {}
+local lastHateTargetNameBy = {}
+
+local function owner_key_now()
+    local ok, P = pcall(require, "PlayerRef")
+    if ok and P and P.CurrentOwnerKey then
+        local okK, k = pcall(P.CurrentOwnerKey)
+        if okK and k ~= nil then return k end
+    end
+    return "local"
+end
+
+local function player_combat_active()
+    return combatActiveBy[owner_key_now()] == true
+end
+local function set_player_combat_active(on)
+    combatActiveBy[owner_key_now()] = on and true or nil
+end
+local function any_player_combat_active()
+    return next(combatActiveBy) ~= nil
+end
+
+-- Whose follower each Pal is: its owner key, and that player's controller (a
+-- remote player's character is found through it; it survives their death).
+local followerOwnerKey = {}
+local followerOwnerCtrl = {}
+
+-- The part of a follower table that belongs to the player this machine is
+-- working for right now. Iteration only: the loops still read and write the
+-- real tables by key. In singleplayer every key is "local", so this returns
+-- everything and nothing changes.
+local function mine(t)
+    local k = owner_key_now()
+    local out = {}
+    for key, v in pairs(t) do
+        if (followerOwnerKey[key] or "local") == k then out[key] = v end
+    end
+    return out
+end
+
+local function on_dedicated()
+    local ok, Session = pcall(require, "Session")
+    if not ok or Session == nil or Session.IsDedicated == nil then return false end
+    local okAsk, yes = pcall(Session.IsDedicated)
+    return okAsk and yes == true
+end
+
+-- Runs fn once per player who has followers, as that player: the local
+-- player (if any) directly with `localPlayer`, a remote owner inside
+-- PlayerRef.WithPlayer with their current character. An owner whose character
+-- is not there right now (dead, respawning, left) is skipped this pass.
+local function for_each_owner(fn, localPlayer)
+    local owners = {}
+    for key in pairs(BondingState) do
+        owners[followerOwnerKey[key] or "local"] = followerOwnerCtrl[key] or false
+    end
+    for ownerKey, ctrl in pairs(owners) do
+        if ownerKey == "local" then
+            if localPlayer ~= nil then safe_call(fn, localPlayer) end
+        elseif ctrl then
+            local pawn = safe_call(function() return ctrl:IsValid() and ctrl.Pawn or nil end)
+            if pawn ~= nil and safe_call(function() return pawn:IsValid() end) then
+                safe_call(function() require("PlayerRef").WithPlayer(pawn, fn, pawn) end)
+            end
+        end
+    end
+end
 local COMBAT_WINDOW_MS = 12000 
 
 -- Hundred-and-ninety-seventh pass (2026-09-05): Dragón asked to reopen the
@@ -367,7 +442,7 @@ end
 -- happening, so it can tell a deliberate punch from a follower catching a stray
 -- hit in a brawl. Read-only accessor over the window this file already keeps.
 function Combat.IsPlayerInCombat()
-    return playerCombatActive == true
+    return player_combat_active()
 end
 function Combat.HasAnyFollower()
     for _, isFollowing in pairs(BondingState) do
@@ -796,7 +871,7 @@ local function enforce_target_discipline(pal, key)
             reason = "its own trainer"
         elseif BondingState[tname] == true then
             reason = "another bonded companion"
-        elseif playerCombatActive and enemyName ~= nil then
+        elseif player_combat_active() and enemyName ~= nil then
             reason = "a different fight while you were in one"
         end
         if reason == nil then return end
@@ -940,7 +1015,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
     -- no-followers case (which is most of the time) now costs essentially
     -- nothing. Same reasoning applies one level up in Trust.lua's damage hook.
     local anyFollowers = false
-    for _, isFollowing in pairs(BondingState) do
+    for _, isFollowing in pairs(mine(BondingState)) do
         if isFollowing then anyFollowers = true break end
     end
     if not anyFollowers then return end
@@ -1050,7 +1125,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
     -- thus i had to capture them to save them".
     --
     -- The guard itself now lives above, before currentPlayerEnemy is written.
-    for key, isFollowing in pairs(BondingState) do
+    for key, isFollowing in pairs(mine(BondingState)) do
         if isFollowing then
             local entry = FollowerActors[key]
             local pal = entry
@@ -1062,7 +1137,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
                     safe_call(function()
                         local controller = pal.Controller
                         if not (controller and controller:IsValid()) then return end
-                        if not playerCombatActive then
+                        if not player_combat_active() then
                             local okP, Personality = pcall(require, "Personality")
                             if okP and Personality and Personality.ApplyCompanionPreset then
                                 local palId = Personality.GetOrInitState and Personality.GetOrInitState(pal)
@@ -1129,7 +1204,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
                                 Logger.log("[PalBonds/Combat] [RETARGET] SetTargetAndNextAction accepted — companions are being pointed directly at the player's enemy (logged once)")
                             end
                         end)
-                        if lastHateTargetName ~= enemyName then
+                        if lastHateTargetNameBy[owner_key_now()] ~= enemyName then
                             Logger.log(string.format(
                                 "[PalBonds/Combat] [HATE-ASSIST] pushed hate toward the player's current enemy %s onto following companions (only logged when the target changes)",
                                 tostring(enemyName)
@@ -1140,7 +1215,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
             end
         end
     end
-    lastHateTargetName = enemyName
+    lastHateTargetNameBy[owner_key_now()] = enemyName
 
 
     -- Two-hundred-and-thirteenth pass: open (or extend) the combat window, and
@@ -1148,15 +1223,16 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
     -- would keep Discover_* = Battle forever after the first fight and drift
     -- straight back into the "attacks everything, including each other"
     -- problem from two passes ago.
-    playerCombatActive = true
-    combatWindowGeneration = combatWindowGeneration + 1
-    local myGen = combatWindowGeneration
+    set_player_combat_active(true)
+    local ownerKeyForWindow = owner_key_now()
+    combatWindowGenBy[ownerKeyForWindow] = (combatWindowGenBy[ownerKeyForWindow] or 0) + 1
+    local myGen = combatWindowGenBy[ownerKeyForWindow]
 
     -- Named rather than anonymous so the "a companion is still fighting" branch
     -- below can re-arm the SAME check instead of needing a separate entry point.
     local close_combat_window
     close_combat_window = function()
-            if myGen ~= combatWindowGeneration then return end
+            if myGen ~= combatWindowGenBy[ownerKeyForWindow] then return end
 
             -- ===========================================================
             -- DO NOT CLOSE THE WINDOW WHILE A COMPANION IS STILL FIGHTING
@@ -1197,7 +1273,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
             local HOLD_WINDOW_WHILE_FIGHTING = true
             local someoneStillFighting = false
             if HOLD_WINDOW_WHILE_FIGHTING then
-                for key, isFollowing in pairs(BondingState) do
+                for key, isFollowing in pairs(mine(BondingState)) do
                     if isFollowing then
                         local pal = FollowerActors[key]
                         if pal ~= nil and safe_call(function() return pal:IsValid() end) then
@@ -1220,7 +1296,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
                 return
             end
             combatWindowExtendLogged = false
-            playerCombatActive = false
+            set_player_combat_active(false)
             Logger.log("[PalBonds/Combat] [HATE-ASSIST] player combat window closed — companions return to not starting fights")
             local followInstalls, combatInstalls = Combat.ReportInstallCounts()
             if followInstalls > 0 or combatInstalls > 0 then
@@ -1251,7 +1327,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
             -- to the game; TerminateCurrentActionByClass on a finished fight is
             -- not something this project has any evidence about, and following
             -- is restored either way because HasAction will read false.
-            for ckey in pairs(combatActionObjects) do
+            for ckey in pairs(mine(combatActionObjects)) do
                 clear_combat_action(ckey)
             end
 
@@ -1261,14 +1337,14 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
             -- side".
             currentPlayerEnemy = nil
             offTargetLogged = {}
-            for skey in pairs(followSuspendedForCombat) do
+            for skey in pairs(mine(followSuspendedForCombat)) do
                 resume_follow_after_combat(skey, "player combat window closed")
             end
             -- DISABLED (pass 322): release_assist_hate subtracts hate, which
             -- [HATE-VERIFY] proved is a no-op. It walked every assist target and
             -- every companion pair on each combat-window close for no effect.
             -- release_assist_hate()
-            for key, isFollowing in pairs(BondingState) do
+            for key, isFollowing in pairs(mine(BondingState)) do
                 if isFollowing then
                     local pal = FollowerActors[key]
                     if pal ~= nil and safe_call(function() return pal:IsValid() end) then
@@ -1300,7 +1376,7 @@ local function get_or_build_otomo_composite(pal, key)
         if actionCompValid and compositeValid then
             return cached.actionComp, cached.composite
         end
-        OtomoCompositeCache[key] = nil 
+        OtomoCompositeCache[key] = nil
     end
     local controller = safe_call(function() return pal.Controller end)
     local controllerValid = controller ~= nil and safe_call(function() return controller:IsValid() end)
@@ -1352,7 +1428,7 @@ end
 function Combat.OnFollowerAttacked(pal, attacker)
     if not (ENABLE_COMBAT_ASSIST and SELF_DEFENCE_ENABLED) then return end
     -- A player fight already frees and aims every companion.
-    if playerCombatActive then return end
+    if player_combat_active() then return end
     if pal == nil or attacker == nil then return end
     local key = safe_call(function() return pal:GetFullName() end)
     if key == nil or BondingState[key] ~= true then return end
@@ -2095,7 +2171,7 @@ local function recall_strayed_followers(followers, originLoc, playerActor)
             local dist = math.sqrt(vx * vx + vy * vy + vz * vz)
 
             local limit = COMBAT_RECALL_DISTANCE
-            if not playerCombatActive and selfDefenceEnemy[key] ~= nil and not recallActive[key] then
+            if not player_combat_active() and selfDefenceEnemy[key] ~= nil and not recallActive[key] then
                 limit = self_defence_limit()
             end
             if dist <= limit then
@@ -2546,7 +2622,8 @@ function Combat.ResetForNewWorld(why)
     LeashByKey = {}
     lastKnownPlayerActor = nil
     playerCacheAgePasses = 9999
-    playerCombatActive = false
+    combatActiveBy, combatWindowGenBy, lastHateTargetNameBy = {}, {}, {}
+    followerOwnerKey, followerOwnerCtrl = {}, {}
     shuttingDown = false
     -- 2026-09-15: the shared player reference belongs to the old world too.
     pcall(function() require("PlayerRef").Invalidate() end)
@@ -2554,9 +2631,19 @@ function Combat.ResetForNewWorld(why)
         "[PalBonds/Combat] [WORLD-RESET] %s — dropped every reference to the old world (%d follower(s), %d follow action(s)). Nothing of ours points at destroyed actors any more.",
         tostring(why), followers, actions
     ))
+    -- The next world can be a different kind of session (singleplayer, hosting,
+    -- or joining somebody else's), so what we are is asked again from scratch.
+    safe_call(function()
+        local okS, SessionMod = pcall(require, "Session")
+        if okS and SessionMod and SessionMod.Reset then SessionMod.Reset() end
+    end)
+    safe_call(function()
+        local okCl, CombatClaims = pcall(function() return Combat.ForgetClaims end)
+        if okCl and CombatClaims then CombatClaims() end
+    end)
     safe_call(function()
         local okT, TrustMod = pcall(require, "Trust")
-        if okT and TrustMod and TrustMod.ResetForNewWorld then TrustMod.ResetForNewWorld() end
+        if okT and TrustMod and TrustMod.ResetForNewWorld then TrustMod.ResetForNewWorld(why) end
     end)
     safe_call(function()
         local okC, CaptureMod = pcall(require, "Capture")
@@ -2582,12 +2669,23 @@ function Combat.ResetForNewWorld(why)
         local okX, InteractionMod = pcall(require, "Interaction")
         if okX and InteractionMod and InteractionMod.ResetForNewWorld then InteractionMod.ResetForNewWorld() end
     end)
+    safe_call(function()
+        -- Co-op stage 3: what a guest was shown, and what was sent to whom.
+        local okH, HostViewMod = pcall(require, "HostView")
+        if okH and HostViewMod then
+            if HostViewMod.Reset then HostViewMod.Reset() end
+            if HostViewMod.ResetSent then HostViewMod.ResetSent() end
+        end
+    end)
 end
 
 -- The world-change watch itself: see the constants above for the cadence and
 -- why this cannot live below the follower early-out. Returns nothing; its whole
 -- job is to notice that the player we know about is gone and let everything go.
 local function world_change_watch()
+    -- A dedicated server has no player of its own: "nobody here" is normal,
+    -- not a world ending. Players leaving are handled per bond (Trust).
+    if on_dedicated() then return end
 
     -- The world is closing (the player confirmed a quit and everything was
     -- released then and there). Nothing to detect any more; the only question
@@ -2640,6 +2738,15 @@ local function world_change_watch()
     if worldResetLatched then
         worldResetLatched = false
         Logger.log("[PalBonds/Combat] [WORLD-RESET] a player is readable again — a new world is up, watching from scratch")
+
+        -- Followers the loading screen left behind: the player hears it now
+        -- (Trust.lua, "A LOADING SCREEN LEAVES YOUR FOLLOWERS BEHIND").
+        safe_call(function()
+            local okT, TrustMod = pcall(require, "Trust")
+            if okT and TrustMod and TrustMod.FlushWorldChangeAbandonments then
+                TrustMod.FlushWorldChangeAbandonments()
+            end
+        end)
     end
 end
 
@@ -2865,11 +2972,11 @@ function Combat.StartActionChangeProbe()
             end
         end)
         pcall(function() ExecuteInGameThreadWithDelay(
-            playerCombatActive and ACTION_PROBE_INTERVAL_MS or ACTION_PROBE_IDLE_INTERVAL_MS,
+            any_player_combat_active() and ACTION_PROBE_INTERVAL_MS or ACTION_PROBE_IDLE_INTERVAL_MS,
             tick) end)
     end
     pcall(function() ExecuteInGameThreadWithDelay(
-            playerCombatActive and ACTION_PROBE_INTERVAL_MS or ACTION_PROBE_IDLE_INTERVAL_MS,
+            any_player_combat_active() and ACTION_PROBE_INTERVAL_MS or ACTION_PROBE_IDLE_INTERVAL_MS,
             tick) end)
 end
 
@@ -2949,14 +3056,17 @@ function Combat.StartTrainerReassertLoop()
             -- 1.5s follow tick, without paying for it ten times a second.
             denyTargetCounter = denyTargetCounter + 1
             if denyTargetCounter % DENY_TARGET_EVERY_N_PASSES == 0 then
-                for key, isFollowing in pairs(BondingState) do
-                    if isFollowing then
-                        local fp = FollowerActors[key]
-                        if fp ~= nil and safe_call(function() return fp:IsValid() end) then
-                            enforce_target_discipline(fp, key)
+                -- Co-op stage 2: each owner's followers, as that owner.
+                for_each_owner(function()
+                    for key, isFollowing in pairs(mine(BondingState)) do
+                        if isFollowing then
+                            local fp = FollowerActors[key]
+                            if fp ~= nil and safe_call(function() return fp:IsValid() end) then
+                                enforce_target_discipline(fp, key)
+                            end
                         end
                     end
-                end
+                end, find_player())
                 didWork = true
             end
 
@@ -3044,7 +3154,12 @@ function Combat.StartTrainerReassertLoop()
             -- Now the array is walked at most once every PLAYER_CACHE_MAX_AGE_PASSES
             -- (40 passes, ~4s) instead of ten times a second, and IsValid() --
             -- a cheap direct call, not a scan -- catches a dead actor in between.
-            local player = lastKnownPlayerActor
+            -- Co-op stage 2: a dedicated server has no player of its own, so
+            -- there is no "our player" to resolve and nothing below may read
+            -- its absence as the world ending.
+            local player = nil
+            if not on_dedicated() then
+            player = lastKnownPlayerActor
             if player == nil
                or playerCacheAgePasses > PLAYER_CACHE_MAX_AGE_PASSES
                or not safe_call(function() return player:IsValid() end) then
@@ -3091,6 +3206,7 @@ function Combat.StartTrainerReassertLoop()
                 end
                 return
             end
+            end -- not a dedicated server
 
             -- Two-hundred-and-eighty-eighth pass: a GetFullName() on every
             -- pass -- ten full path-string builds a second -- purely to compare
@@ -3100,6 +3216,12 @@ function Combat.StartTrainerReassertLoop()
             -- so re-assigning it here would only defeat its max-age refresh.
 
             didWork = true
+
+            -- Co-op stage 2: everything below serves one player's followers
+            -- -- recall, trainer re-assert, aim freeze -- so it runs once per
+            -- owner, as that owner (for_each_owner). Singleplayer: once, for
+            -- the local player, exactly as before.
+            local function service(player)
 
             -- Read the player's eye/facing ONCE for the whole pass, then reuse
             -- it for every follower.
@@ -3114,7 +3236,7 @@ function Combat.StartTrainerReassertLoop()
             if recallCounter % RECALL_EVERY_N_PASSES == 0 then
                 local followers = {}
                 local n = 0
-                for key, isFollowing in pairs(BondingState) do
+                for key, isFollowing in pairs(mine(BondingState)) do
                     if isFollowing then
                         local fp = FollowerActors[key]
                         if fp ~= nil and safe_call(function() return fp:IsValid() end) then
@@ -3135,7 +3257,7 @@ function Combat.StartTrainerReassertLoop()
                     safe_call(function() recall_strayed_followers(followers, playerLoc, player) end)
                 end
             end
-            for key, action in pairs(followActionObjects) do
+            for key, action in pairs(mine(followActionObjects)) do
                 reassert_follow_trainer(nil, key, player)
 
                 -- reassert may have dropped a dead action; re-read before use.
@@ -3145,6 +3267,8 @@ function Combat.StartTrainerReassertLoop()
                     safe_call(function() update_aim_freeze(live, key, palActor, originLoc, forward) end)
                 end
             end
+            end -- service
+            for_each_owner(service, player)
         end)
 
         -- Idle backoff. Scheduling itself is not free, and lag has been a real,
@@ -3680,7 +3804,7 @@ local function try_real_follow_action(pal, key, playerActor)
             if currentPlayerEnemy ~= nil
                 and safe_call(function() return currentPlayerEnemy:IsValid() end) then
                 fightTarget = currentPlayerEnemy
-            elseif not playerCombatActive and selfDefenceEnemy[key] ~= nil then
+            elseif not player_combat_active() and selfDefenceEnemy[key] ~= nil then
                 -- Its own self-defence fight (Combat.OnFollowerAttacked).
                 local sdEnemy = selfDefenceEnemy[key]
                 local enemyAlive = safe_call(function() return sdEnemy:IsValid() end) == true
@@ -3699,7 +3823,7 @@ local function try_real_follow_action(pal, key, playerActor)
                 -- can only reach past the recall distance, or while recalled.
                 local reach = actor_distance(fightTarget, playerActor)
                 local reachLimit = COMBAT_RECALL_DISTANCE
-                if not playerCombatActive and fightTarget == selfDefenceEnemy[key] then
+                if not player_combat_active() and fightTarget == selfDefenceEnemy[key] then
                     reachLimit = self_defence_limit()
                 end
                 if recallActive[key] or (reach ~= nil and reach > reachLimit) then
@@ -4077,11 +4201,26 @@ local function try_real_follow_action(pal, key, playerActor)
     -- This is the standing rule about diagnostic hooks outliving their question,
     -- applied to this file.
 end
+-- See Session.lua: on a guest the server throws our follow action away as fast
+-- as we install it (25 rebuilds in one minute, measured), so we do not start.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 function Combat.StartFollowing(pal)
+    if we_are_a_guest() then return end
     local key = safe_call(function() return pal:GetFullName() end)
     if key then
         BondingState[key] = true
-        FollowerActors[key] = pal 
+        FollowerActors[key] = pal
+        -- Co-op stage 2: whose follower this is -- the player this machine is
+        -- working for right now (the guest who bonded it, or "local").
+        followerOwnerKey[key] = owner_key_now()
+        local acting = safe_call(function() return require("PlayerRef").Acting() end)
+        followerOwnerCtrl[key] = acting and safe_call(function() return acting.Controller end) or nil
     end
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " marked as following (bonding)")
 
@@ -4119,7 +4258,9 @@ local function forget_follower_tables(key)
     release_leash(key)
     BondingState[key] = nil
     FollowerActors[key] = nil
-    OtomoCompositeCache[key] = nil 
+    followerOwnerKey[key] = nil
+    followerOwnerCtrl[key] = nil
+    OtomoCompositeCache[key] = nil
     loggedFollowTickOnce[key] = nil
 
     -- Two-hundred-and-thirty-first pass: drop the follow-action reference and
@@ -4376,6 +4517,140 @@ function Combat.StopFollowing(pal)
     end)
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " no longer following")
 end
+-- ===================================================================
+-- CO-OP: IS THIS PAL ALREADY SOMEONE ELSE'S? (2026-09-20)
+-- ===================================================================
+-- Dragón's rule for multiplayer (docs/multiplayer-questions.md, R2/R4): a wild
+-- Pal that is already bonding with a player ignores everyone else and behaves
+-- like an ordinary wild Pal towards them, so nobody can take a bond somebody
+-- else is working on.
+--
+-- Each player's game runs its own copy of this mod and keeps its own records,
+-- so a claim is only worth anything if the OTHER machine can see it. The one
+-- thing both machines can see is the Pal itself: a bonded Pal carries our
+-- follow action, and that action names the player it follows. So the question
+-- "is this someone else's?" is answered by looking at the Pal, not at any
+-- shared state:
+--
+--   1. do we have a follow action of our own on it?      -> ours, not claimed
+--   2. does it have a follow action installed at all?    -> no: not claimed
+--   3. who does that action name as its trainer?
+--        - our own player character                      -> ours
+--        - another player character                      -> CLAIMED
+--        - itself, a Pal, or nothing readable            -> not claimed
+--
+-- Step 3 matters for singleplayer as much as for co-op: a Pal released from
+-- the 20% calm-down can be left following ITSELF (the log shows it happening),
+-- and after a world change we can have let go of a Pal that still carries the
+-- action. Neither is another player, and neither may ever block an interaction.
+-- Everything unreadable is treated as NOT claimed, deliberately: refusing a
+-- pet on a guess would be a worse bug than the one this prevents.
+--
+-- Whether a guest's game can read any of this is unmeasured (co-op has never
+-- been tested). `detail` is returned for the log so one session answers it.
+local claimCache = {}
+local CLAIM_CACHE_SECONDS = 5.0
+
+local function looks_like_a_player(actor)
+    local name = safe_call(function() return actor:GetFullName() end)
+    if type(name) ~= "string" then return false end
+    return name:find("PalPlayerCharacter") ~= nil or name:find("BP_Player_") ~= nil
+end
+
+-- The follow action installed on this Pal, whoever put it there.
+local function follow_action_on(pal)
+    local controller = safe_call(function() return pal.Controller end)
+    local actionComp = controller and safe_call(function() return controller:GetAIActionComponent() end)
+    local cls = get_follow_action_class()
+    if not (actionComp and safe_call(function() return actionComp:IsValid() end) and cls) then return nil, "no action component" end
+    local installed = safe_call(function() return actionComp:HasAction(cls, FOLLOW_ACTION_PRIORITY) end)
+    if installed ~= true then return nil, "no follow action" end
+    for _, getter in ipairs({ "GetCurrentAction_BP", "GetCurrentTopParentAction_BP" }) do
+        local action = safe_call(function() return actionComp[getter](actionComp) end)
+        if action ~= nil and safe_call(function() return action:IsValid() end) then
+            local actionName = safe_call(function() return action:GetFullName() end)
+            if type(actionName) == "string" and actionName:find("Follow") ~= nil then
+                return action, nil
+            end
+        end
+    end
+    return nil, "a follow action is installed but could not be read"
+end
+
+-- true when this Pal is bonding with a DIFFERENT player. Second return value is
+-- a short reason, for the log and the tests.
+-- Co-op stage 3: on a guest, the nameplate reads the HOST's numbers
+-- (HostView.lua) -- a guest has no trust records or personalities of its own.
+local function guest_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return nil end
+    return HostView
+end
+
+function Combat.ClaimedByAnotherPlayer(pal)
+    local view = guest_view()
+    if view then return view.ClaimedByOther(pal) end
+    if pal == nil or not safe_call(function() return pal:IsValid() end) then return false, "no Pal" end
+    local key = safe_call(function() return pal:GetFullName() end)
+    if key == nil then return false, "no key" end
+
+    if BondingState[key] == true then return false, "ours" end
+    local ourAction = followActionObjects[key]
+    if ourAction ~= nil and safe_call(function() return ourAction:IsValid() end) then return false, "ours" end
+
+    local now = os.clock()
+    local cached = claimCache[key]
+    if cached ~= nil and (now - cached.at) < CLAIM_CACHE_SECONDS then
+        return cached.claimed, cached.detail
+    end
+
+    local claimed, detail = false, nil
+    local action, why = follow_action_on(pal)
+    if action == nil then
+        detail = why
+    else
+        local trainer = safe_call(function() return action.Trainer end)
+        if trainer == nil or not safe_call(function() return trainer:IsValid() end) then
+            detail = "a follow action with no readable trainer"
+        elseif not looks_like_a_player(trainer) then
+            detail = "it follows something that is not a player"
+        else
+            local me = nil
+            local okRef, PlayerRefMod = pcall(require, "PlayerRef")
+            if okRef and PlayerRefMod and PlayerRefMod.Get then me = safe_call(PlayerRefMod.Get) end
+            local mineAddr = me ~= nil and safe_call(function() return me:GetAddress() end) or nil
+            local theirAddr = safe_call(function() return trainer:GetAddress() end)
+            if mineAddr ~= nil and theirAddr ~= nil and mineAddr == theirAddr then
+                detail = "it follows us"
+            elseif me ~= nil and theirAddr == nil then
+                detail = "a player trainer we cannot compare (no address)"
+            else
+                claimed = true
+                detail = "it follows " .. tostring(safe_call(function() return trainer:GetFullName() end))
+            end
+        end
+    end
+
+    claimCache[key] = { at = now, claimed = claimed, detail = detail }
+    if claimed then
+        Logger.log("[PalBonds/Combat] [CLAIMED] " .. tostring(key) .. " belongs to another player — " .. tostring(detail))
+    end
+    return claimed, detail
+end
+
+-- Tests and the world reset.
+function Combat.ForgetClaims()
+    claimCache = {}
+end
+
+-- Co-op stage 2: whose follower this Pal is ("local" = the player at this
+-- machine; nil when it is not following).
+function Combat.FollowerOwnerKey(pal)
+    local key = safe_call(function() return pal:GetFullName() end)
+    if key == nil or not BondingState[key] then return nil end
+    return followerOwnerKey[key] or "local"
+end
+
 function Combat.IsFollowing(pal)
     local key = safe_call(function() return pal:GetFullName() end)
     return key ~= nil and BondingState[key] == true

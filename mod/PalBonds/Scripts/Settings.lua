@@ -21,9 +21,12 @@
 --     default, and the UE4SS console says which one and why;
 --   * a file that does not even parse is left untouched (so the player can fix
 --     it) and every default applies;
---   * the mod never rewrites an existing file. Settings added by a later version
---     simply use their default until the player adds the line (or deletes the
---     file to get a fresh one with everything in it).
+--   * the mod never rewrites or reformats an existing file. The one change it
+--     makes is to add a setting introduced by a later version, inserted before
+--     the file's last "}" with the player's own values untouched, and only
+--     after the result has been read back and checked (see "SETTINGS ADDED BY
+--     A LATER VERSION" below). If that check fails, the file is left alone and
+--     the new setting uses its default.
 --
 -- Every value is a plain number, Dragón's call: the level and boss multipliers
 -- scale the bar, so a percentage would fight them.

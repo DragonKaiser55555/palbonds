@@ -60,6 +60,9 @@ WHAT IT ADDS
 
   * A settings file lets you tune the mod to your liking (see SETTINGS below).
 
+  * Co-op, new in 1.1.7 (see MULTIPLAYER below). Play together on a shared
+    world and each of you can befriend your own Pals.
+
 
 CONTROLS
 --------
@@ -145,6 +148,37 @@ REQUIREMENTS
       PalBonds : 1
 
   to mods.txt in that same Mods folder.
+
+
+MULTIPLAYER
+-----------
+
+  New in 1.1.7. PalBonds works in a shared world - a hosted co-op game or a
+  dedicated server.
+
+  EVERY PLAYER WHO WANTS IT NEEDS THE MOD, and so does the machine running the
+  world. On a dedicated server that means UE4SS and PalBonds installed on the
+  server itself. A player without the mod is unaffected and sees nothing
+  unusual; they simply cannot befriend wild Pals.
+
+  What each player gets, on their own screen and for their own Pals:
+
+    - petting and feeding wild Pals, with the trust bar and personality tag;
+    - Pals that follow them, fight for them and join THEIR party;
+    - the join light, and messages in THEIR OWN language, whatever language
+      the host plays in;
+    - their own F8, F9 and F10.
+
+  A wild Pal belongs to whoever befriends it first. While one player is
+  winning a Pal over, it shows as taken for everyone else, and it is released
+  again if that player gives up on it or leaves.
+
+  A Pal you leave behind is a Pal you lose. Going through a dungeon or any
+  loading screen leaves your followers in the world you left, exactly as
+  walking too far away does.
+
+  Co-op is new, and a lot of it can only be tested by people actually playing
+  together. Reports are welcome - see TROUBLESHOOTING.
 
 
 THINGS WORTH KNOWING

@@ -193,6 +193,19 @@ local function safe_call(fn, ...)
     return nil, result
 end
 
+-- Co-op (2026-09-20): a Pal that is already bonding with another player is
+-- left alone entirely — no substitution, no grant, no animation. Asked here
+-- rather than at the grant, so a Feed is refused BEFORE the game takes the
+-- food out of the player's inventory. In singleplayer this can never be true:
+-- it requires a follow action naming a player character that is not ours.
+local function claimed_by_another_player(pal)
+    local okC, CombatMod = pcall(require, "Combat")
+    if not (okC and CombatMod and CombatMod.ClaimedByAnotherPlayer) then return false end
+    local ok, claimed = pcall(CombatMod.ClaimedByAnotherPlayer, pal)
+    return ok and claimed == true
+end
+
+
 -- ===================================================================
 -- WORLD-CLOSING GATE (three-hundred-and-twenty-ninth pass, 2026-09-17)
 -- ===================================================================
@@ -211,6 +224,41 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
+-- A dedicated server has nobody sitting at it: no screen to draw on, no
+-- keyboard of its own (co-op run 1: a key pressed in the game on the same PC
+-- ALSO reached the server's copy, which then messaged the only player).
+local function on_dedicated_server()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsDedicated) then return false end
+    local okAsk, yes = pcall(Session.IsDedicated)
+    return okAsk and yes == true
+end
+
+-- The radial-menu hooks are a guest's INPUT, the one part of the mod a guest
+-- may keep once co-op is host-authoritative. Until then they stand down with
+-- everything else, unless the net-probe switch is on (Session.lua).
+local function guest_blocks_input()
+    if not we_are_a_guest() then return false end
+    local ok, Session = pcall(require, "Session")
+    if ok and Session and Session.GuestInputAllowed then
+        local okAsk, allowed = pcall(Session.GuestInputAllowed)
+        if okAsk and allowed == true then return false end
+    end
+    return true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -631,115 +679,27 @@ function Interaction.PlayPlayerEmote(n)
     return play_player_emote(n)
 end
 
-local function do_play()
-    Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting Play", PLAY_KEY))
-    local player = require("PlayerRef").Get()
-    if not player or not player:IsValid() then
-        Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
-        return
-    end
-
-    local playerActionComp = player.ActionComponent
-    if playerActionComp and playerActionComp:IsValid() then
-        local playerIdle = safe_call(function() return playerActionComp:ActionIsEmpty() end)
-        if playerIdle == false then
-            Logger.log("[PalBonds/Interaction] player is already mid-action — ignoring Play press")
-            return
-        end
-    end
-    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
-    if not originLoc then
-        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
-    end
-    if not originLoc then
-        Logger.log("[PalBonds/Interaction] could not read player/camera location")
-        return
-    end
-    local controlRot = safe_call(function() return player:GetControlRotation() end)
-    if not controlRot then
-        Logger.log("[PalBonds/Interaction] could not read player control rotation")
-        return
-    end
-    local forward = rotator_to_forward(controlRot)
-    local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
-    if not pal then
-        Logger.log(string.format(
-            "[PalBonds/Interaction] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
-            PET_RANGE, PET_MAX_ANGLE_DEG
-        ))
-        return
-    end
-    if Capture.HasPermanentlyFled(pal) then
-        Logger.log("[PalBonds/Interaction] this Pal already lost all its trust and fled permanently — refusing Play")
-        return
-    end
-    local actionComp = pal.ActionComponent
+-- The Pal's half of Play: its idle animation, then Happy and the trust a few
+-- seconds later. Split out of do_play for co-op (2026-09-21) so the machine
+-- that owns the world can run it for a guest's press. `stopCheerHere` ends
+-- the player's cheer with the Pal's animation; a guest's copy does that
+-- itself, since the cheer is its own character.
+-- Why the Pal cannot play right now, or nil when it can. Shared by the
+-- local press and the host's handling of a guest's PLAY.
+local function play_refusal(pal, actionComp)
     local targetIdle = nil
-    if actionComp and actionComp:IsValid() then
+    if actionComp and safe_call(function() return actionComp:IsValid() end) then
         targetIdle = safe_call(function() return actionComp:ActionIsEmpty() end)
     end
-    if targetIdle ~= true then
-        Logger.log("[PalBonds/Interaction] target is busy or its action state couldn't be read — skipping Play")
-        return
-    end
+    if targetIdle ~= true then return "target is busy or its action state couldn't be read" end
     local param = get_individual_parameter(pal)
-    if not param or not param:IsValid() then
-        Logger.log("[PalBonds/Interaction] targeted Pal has no IndividualParameter — can't grant trust")
-        return
+    if not param or not safe_call(function() return param:IsValid() end) then
+        return "targeted Pal has no IndividualParameter — can't grant trust"
     end
-    local actorName = safe_call(function() return pal:GetFullName() end)
-    Logger.log(string.format(
-        "[PalBonds/Interaction] Play targeting %s at %.0f units (%.1f deg off-center)",
-        tostring(actorName), dist, angle
-    ))
+    return nil
+end
 
-    -- Hundred-and-forty-fifth pass (2026-09-04) REMOVED: the player-Cheer
-    -- attempt (PlayAction + :GetClass() on a CDO) that lived here across
-    -- the hundred-and-forty-first through hundred-and-forty-fourth
-    -- passes. Dragón's real test showed do_play() was dying silently
-    -- right after this point every single time — no idle animation, no
-    -- Happy follow-up, nothing — meaning something in this block was
-    -- throwing an uncaught error that killed the rest of the function
-    -- (swallowed by the outer safe_call(do_play) in the keybind handler,
-    -- which explains why nothing crashed but Play also did nothing at
-    -- all). The leading suspect: `:GetClass()` on a CDO obtained via
-    -- StaticFindObject is likely a second instance of the same danger
-    -- class as the fortieth pass's real crash (a method call on an
-    -- object gotten through an unusual channel, not proven safe just
-    -- because a DIFFERENT method — GetClass() — works fine on ordinary
-    -- live actors elsewhere in this file). Rather than keep pushing on
-    -- an increasingly risky mechanism that was actively breaking the
-    -- two things that DO work, pulled it out entirely. The player-emote
-    -- half goes back to being deferred to its own separate, later
-    -- investigation (matching the original hundred-and-thirty-eighth
-    -- pass decision, before this thread's real dump made it look closer
-    -- than it turned out to be) — the read-only [EMOTE-DIAG] scan and
-    -- the [EMOTE-WATCH] live hooks in Interaction.Init() are left
-    -- running (harmless, read-only/hook-registration only) for whenever
-    -- that research resumes.
-    -- ===============================================================
-    -- THE PLAYER CHEERS TOO (2026-09-12)
-    -- ===============================================================
-    -- Play has always been able to make the PAL react and never the player, and
-    -- the player-emote half was deferred for many passes because the call was
-    -- unproven and this file has a crash history. The Kick Keybind reference
-    -- mod Dragón supplied settled it: that mod ships this exact call and works.
-    --
-    -- Which emote was still unknown, because the assets are numbered rather
-    -- than named. The F7 probe answered it from his own run: cheer is index 0.
-    --
-    -- ORDERING, AND IT IS THE WHOLE SAFETY ARGUMENT. The cheer fires at the
-    -- very END of this function, not here. Read the hundred-and-forty-fifth
-    -- pass note directly above: the previous player-Cheer attempt sat at this
-    -- exact spot and killed do_play silently every single time -- no idle
-    -- animation, no Happy follow-up, no trust -- because an uncaught error here
-    -- takes the whole rest of the function with it, swallowed by the outer
-    -- safe_call in the keybind handler.
-    --
-    -- Putting it last makes that failure mode structurally impossible: by the
-    -- time the cheer runs, the Pal has already played its animation and the
-    -- trust has already been granted or scheduled. The worst case is a missing
-    -- player emote, not a dead interaction.
+local function play_pal_half(pal, actionComp, player, stopCheerHere)
     Logger.log(string.format("[PalBonds/Interaction] target playing: PlayActionByType(pal, PalRandomRest=%d) NOW", ACTION_TYPE_PAL_RANDOM_REST))
     local actionOk, actionErr = pcall(function()
         actionComp:PlayActionByType(pal, ACTION_TYPE_PAL_RANDOM_REST)
@@ -770,7 +730,7 @@ local function do_play()
         ExecuteInGameThreadWithDelay(PLAY_HAPPY_FOLLOWUP_DELAY_MS, function()
             -- First, and independent of the Pal still existing: the player's
             -- cheer ends when the Pal's animation does.
-            safe_call(function() stop_player_cheer(player) end)
+            if stopCheerHere then safe_call(function() stop_player_cheer(player) end) end
             safe_call(function()
                 local palStillValid = pal ~= nil and pal:IsValid()
                 local actionCompStillValid = actionComp ~= nil and actionComp:IsValid()
@@ -853,6 +813,139 @@ local function do_play()
         -- give the game 25 directly and skip the permanently-fled check).
         Logger.log("[PalBonds/Interaction] Play: could not schedule the Happy follow-up (ExecuteInGameThreadWithDelay failed) — granting trust immediately as a fallback so the interaction isn't silently lost")
         safe_call(function() grant_wild_interaction(pal, PLAY_FRIENDSHIP_GAIN, "Play (fallback)") end)
+    end
+
+end
+
+local function do_play()
+    Logger.log(string.format("[PalBonds/Interaction] %s pressed — starting Play", PLAY_KEY))
+    local player = require("PlayerRef").Get()
+    if not player or not player:IsValid() then
+        Logger.log("[PalBonds/Interaction] no local PalPlayerCharacter found — are you in-world?")
+        return
+    end
+
+    local playerActionComp = player.ActionComponent
+    if playerActionComp and playerActionComp:IsValid() then
+        local playerIdle = safe_call(function() return playerActionComp:ActionIsEmpty() end)
+        if playerIdle == false then
+            Logger.log("[PalBonds/Interaction] player is already mid-action — ignoring Play press")
+            return
+        end
+    end
+    local originLoc = safe_call(function() return player.FollowCamera:K2_GetComponentLocation() end)
+    if not originLoc then
+        originLoc = safe_call(function() return player:K2_GetActorLocation() end)
+    end
+    if not originLoc then
+        Logger.log("[PalBonds/Interaction] could not read player/camera location")
+        return
+    end
+    local controlRot = safe_call(function() return player:GetControlRotation() end)
+    if not controlRot then
+        Logger.log("[PalBonds/Interaction] could not read player control rotation")
+        return
+    end
+    local forward = rotator_to_forward(controlRot)
+    local pal, dist, angle = find_targeted_pal(originLoc, forward, player)
+    if not pal then
+        Logger.log(string.format(
+            "[PalBonds/Interaction] not looking at any Pal (need within %.0f units and %.0f degrees of center)",
+            PET_RANGE, PET_MAX_ANGLE_DEG
+        ))
+        return
+    end
+    if Capture.HasPermanentlyFled(pal) then
+        Logger.log("[PalBonds/Interaction] this Pal already lost all its trust and fled permanently — refusing Play")
+        return
+    end
+    -- A guest's copy of a wild Pal does not carry its live action state or
+    -- its parameters; the host checks both when the PLAY message arrives.
+    local actionComp = pal.ActionComponent
+    if not we_are_a_guest() then
+        local refusal = play_refusal(pal, actionComp)
+        if refusal ~= nil then
+            Logger.log("[PalBonds/Interaction] " .. refusal .. " — skipping Play")
+            return
+        end
+    end
+
+    -- Co-op: this Pal is bonding with another player. Refused before any
+    -- animation plays, so from here it simply looks like an ordinary wild Pal.
+    if claimed_by_another_player(pal) then
+        Logger.log("[PalBonds/Interaction] [CLAIMED] the targeted Pal is bonding with another player — skipping Play")
+        return
+    end
+    local actorName = safe_call(function() return pal:GetFullName() end)
+    Logger.log(string.format(
+        "[PalBonds/Interaction] Play targeting %s at %.0f units (%.1f deg off-center)",
+        tostring(actorName), dist, angle
+    ))
+
+    -- Hundred-and-forty-fifth pass (2026-09-04) REMOVED: the player-Cheer
+    -- attempt (PlayAction + :GetClass() on a CDO) that lived here across
+    -- the hundred-and-forty-first through hundred-and-forty-fourth
+    -- passes. Dragón's real test showed do_play() was dying silently
+    -- right after this point every single time — no idle animation, no
+    -- Happy follow-up, nothing — meaning something in this block was
+    -- throwing an uncaught error that killed the rest of the function
+    -- (swallowed by the outer safe_call(do_play) in the keybind handler,
+    -- which explains why nothing crashed but Play also did nothing at
+    -- all). The leading suspect: `:GetClass()` on a CDO obtained via
+    -- StaticFindObject is likely a second instance of the same danger
+    -- class as the fortieth pass's real crash (a method call on an
+    -- object gotten through an unusual channel, not proven safe just
+    -- because a DIFFERENT method — GetClass() — works fine on ordinary
+    -- live actors elsewhere in this file). Rather than keep pushing on
+    -- an increasingly risky mechanism that was actively breaking the
+    -- two things that DO work, pulled it out entirely. The player-emote
+    -- half goes back to being deferred to its own separate, later
+    -- investigation (matching the original hundred-and-thirty-eighth
+    -- pass decision, before this thread's real dump made it look closer
+    -- than it turned out to be) — the read-only [EMOTE-DIAG] scan and
+    -- the [EMOTE-WATCH] live hooks in Interaction.Init() are left
+    -- running (harmless, read-only/hook-registration only) for whenever
+    -- that research resumes.
+    -- ===============================================================
+    -- THE PLAYER CHEERS TOO (2026-09-12)
+    -- ===============================================================
+    -- Play has always been able to make the PAL react and never the player, and
+    -- the player-emote half was deferred for many passes because the call was
+    -- unproven and this file has a crash history. The Kick Keybind reference
+    -- mod Dragón supplied settled it: that mod ships this exact call and works.
+    --
+    -- Which emote was still unknown, because the assets are numbered rather
+    -- than named. The F7 probe answered it from his own run: cheer is index 0.
+    --
+    -- ORDERING, AND IT IS THE WHOLE SAFETY ARGUMENT. The cheer fires at the
+    -- very END of this function, not here. Read the hundred-and-forty-fifth
+    -- pass note directly above: the previous player-Cheer attempt sat at this
+    -- exact spot and killed do_play silently every single time -- no idle
+    -- animation, no Happy follow-up, no trust -- because an uncaught error here
+    -- takes the whole rest of the function with it, swallowed by the outer
+    -- safe_call in the keybind handler.
+    --
+    -- Putting it last makes that failure mode structurally impossible: by the
+    -- time the cheer runs, the Pal has already played its animation and the
+    -- trust has already been granted or scheduled. The worst case is a missing
+    -- player emote, not a dead interaction.
+    -- Co-op (run 3, 2026-09-21): on a guest the Pal is the host's to move and
+    -- to grant for, so the host's copy runs play_pal_half for this player (the
+    -- PLAY message, register_coop_handlers). The cheer stays here: it is this
+    -- player's own character.
+    if we_are_a_guest() then
+        local palId = safe_call(function() return Personality.GetStableId(pal) end)
+        if palId == nil or require("Net").SendToServer("PLAY", palId) ~= true then
+            Logger.log("[PalBonds/Interaction] [COOP] Play could not be sent to the host — nothing happens")
+            return
+        end
+        pcall(function()
+            ExecuteInGameThreadWithDelay(PLAY_HAPPY_FOLLOWUP_DELAY_MS, function()
+                safe_call(function() stop_player_cheer(player) end)
+            end)
+        end)
+    else
+        play_pal_half(pal, actionComp, player, true)
     end
 
     -- ===============================================================
@@ -1332,6 +1425,19 @@ end
 -- Writing `local function` here would create a second, shadowing local and
 -- leave do_play's earlier reference permanently nil.
 grant_wild_interaction = function(pal, amount, label)
+    if claimed_by_another_player(pal) then
+        Logger.log("[PalBonds/Interaction] [CLAIMED] " .. hook_describe(pal) ..
+            " is bonding with another player — no trust granted")
+        return false
+    end
+    -- Co-op stage 2 (R2/R4), on the machine that owns the world: the first
+    -- player who earned this Pal points keeps it; nobody else's interaction
+    -- counts until that bond ends (bar at 0, or that player leaves).
+    if pal ~= nil and Trust.MayBond and not Trust.MayBond(pal) then
+        Logger.log("[PalBonds/Interaction] [CLAIMED] " .. hook_describe(pal) ..
+            " is claimed by another player's bond — no trust granted")
+        return false
+    end
     if pal == nil then
         Logger.log("[PalBonds/Interaction] [GRANT] " .. tostring(label) .. ": no target actor — nothing granted")
         return false
@@ -1451,16 +1557,68 @@ local function is_pet_action(name)
     return name ~= nil and tostring(name):find(PET_ACTION_MARKER, 1, true) ~= nil
 end
 
-local function grant_pet_when_it_happens(pal)
+-- The trust side of a wild feed: the local feed hook and the host's handler
+-- for a guest's feed (co-op) both end here. Refuses a Pal that permanently
+-- lost its trust, exactly as before.
+local function grant_feed(wildTarget, grantAmount, itemId)
+    -- Co-op stage 2 (R2/R4): another player's claimed Pal earns nothing.
+    if Trust.MayBond and not Trust.MayBond(wildTarget) then
+        Logger.log("[PalBonds/Interaction] [CLAIMED] this Pal is claimed by another player's bond — the feed grants nothing")
+        return
+    end
+    if safe_call(function() return Capture.HasPermanentlyFled(wildTarget) end) then
+        Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] this Pal permanently lost its trust — the food is consumed but no friendship is granted")
+        return
+    end
+    -- PalBonds' own points (2026-09-18), not the game's friendship.
+    local before, after = Trust.AddPoints(wildTarget, grantAmount, "Feed")
+    if before == nil then
+        Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] no points granted for this feed (item=" .. tostring(itemId) .. ")")
+        return
+    end
+    Logger.log(string.format(
+        "[PalBonds/Interaction] [FEED-FRIENDSHIP] wild Feed +%d, trust %d -> %d (item=%s)",
+        grantAmount, before, after, tostring(itemId)
+    ))
+    if Interaction.OnWildPalPetted then
+        Interaction.OnWildPalPetted(wildTarget)
+    end
+end
+Interaction.GrantFeed = grant_feed
+
+-- `acceptCurrent` (co-op, 2026-09-21): a guest's pet reaches this machine as
+-- a message that can arrive AFTER the Pal has already started its petting
+-- animation -- the game's own pet request and ours travel separately. So for a
+-- guest a pet already playing counts, unless it was already paid (the Lyleen
+-- double-pay guard below still applies).
+--
+-- The player the check is done FOR (PlayerRef.Acting, set by the co-op
+-- handler) is carried into every later poll: those run on a timer, outside the
+-- scope that set it, and "is the player really petting" must look at that
+-- guest, not at whoever sits at this machine.
+local function grant_pet_when_it_happens(pal, acceptCurrent)
     if pal == nil then return end
+    local actingFor = safe_call(function() return require("PlayerRef").Acting() end)
     local palKey = safe_call(function() return pal:GetFullName() end) or tostring(pal)
     local startedAt = os.clock()
     local lastSeen = nil
     local startName, startAddr = current_action(pal)
     local oldAddr = is_pet_action(startName) and startAddr or nil
     local sawGap = not is_pet_action(startName)
+    if acceptCurrent then
+        oldAddr = nil
+        sawGap = true
+    end
     local acceptedNotArrived = false
-    local function check()
+    local check
+    local function run_check()
+        if actingFor ~= nil then
+            safe_call(function() require("PlayerRef").WithPlayer(actingFor, check) end)
+        else
+            safe_call(check)
+        end
+    end
+    check = function()
         if not safe_call(function() return pal:IsValid() end) then
             Logger.log("[PalBonds/Interaction] [PET-CHECK] the Pal is gone before the pet happened — nothing granted")
             return
@@ -1502,16 +1660,221 @@ local function grant_pet_when_it_happens(pal)
             return
         end
         local ok = pcall(function()
-            ExecuteInGameThreadWithDelay(PET_VERIFY_POLL_MS, function() safe_call(check) end)
+            ExecuteInGameThreadWithDelay(PET_VERIFY_POLL_MS, run_check)
         end)
         if not ok then
             Logger.log("[PalBonds/Interaction] [PET-CHECK] could not schedule the check — nothing granted")
         end
     end
-    check()
+    run_check()
 end
 -- Exported for tools/harness/bosstest.js, like FeedGrantAmount.
 Interaction.GrantPetWhenItHappens = grant_pet_when_it_happens
+
+-- =====================================================================
+-- CO-OP: A GUEST'S PET AND FEED GO TO THE MACHINE THAT OWNS THE WORLD
+-- (2026-09-21)
+-- =====================================================================
+-- Measured in net probe run 1: a guest's radial-menu pet or feed on a wild Pal
+-- already reaches the owner through the game's own request, and the owner runs
+-- the real animation on that Pal. What the owner does not learn from the game
+-- is which Pal, and for a feed, which food. The guest's copy says so over the
+-- private line (Net.lua); the owner's copy then does exactly what singleplayer
+-- does -- confirm the pet on the Pal, grant the trust -- for THAT player.
+--
+-- The Pal is named by its stable id (the individual's instance GUID, see
+-- Personality.GetStableId): the same individual on every machine, where actor
+-- addresses and names are not.
+local COOP_FIND_RADIUS = 2500       -- the Pal is next to the guest who petted it
+local COOP_MAX_FEED_GRANT = 500     -- the largest feed in the game (a Kinship Peach)
+
+local function send_pet_to_host(pal)
+    local palId = safe_call(function() return Personality.GetStableId(pal) end)
+    if palId == nil then
+        Logger.log("[PalBonds/Interaction] [COOP] could not read this Pal's id — the pet is not reported to the host")
+        return false
+    end
+    return require("Net").SendToServer("PET", palId) == true
+end
+
+-- A GUID as 32 hex digits (the same masking as Personality.GetStableId).
+local function guid_hex(g)
+    if g == nil then return nil end
+    return safe_call(function()
+        -- 4294967296 written in decimal: the offline harness (fengari) has 32-bit
+        -- integers, where 0x100000000 is 0; in the game both are the same.
+        local function mask32(n) return math.floor((n or 0)) % 4294967296 end
+        return string.format("%08X%08X%08X%08X", mask32(g.A), mask32(g.B), mask32(g.C), mask32(g.D))
+    end)
+end
+
+-- `food` (optional) = { container = hex id, slot = index, num = used }: the
+-- guest's own inventory slot the food came from, for the host to charge.
+local function send_feed_to_host(pal, amount, itemId, food)
+    local palId = safe_call(function() return Personality.GetStableId(pal) end)
+    food = food or {}
+    return require("Net").SendToServer("FEED", palId or "", tostring(amount or 0), tostring(itemId or ""),
+        food.container or "", tostring(food.slot or ""), tostring(food.num or "")) == true
+end
+
+-- ===================================================================
+-- CHARGING A GUEST FOR THE FOOD (co-op run 3, 2026-09-21)
+-- ===================================================================
+-- The game never takes the food for a wild Pal (measured, pass 177), so
+-- singleplayer takes it itself by lowering the slot's StackCount. A guest's
+-- inventory lives on the machine that owns the world: the guest's copy only
+-- mirrors it, so the guest skipped the write and run 3's Berries were free.
+-- The owner now makes the same write on its own copy of that guest's slot
+-- (named by container id + slot index, checked to still hold that item).
+-- StackCount is a replicated property, so the guest's count should follow;
+-- co-op run 4 checks that on screen. One container search per guest feed.
+local COOP_MAX_FOOD_USE = 5
+
+-- The containers that belong to ONE player (their own inventory data), as hex
+-- ids. A guest names the slot to charge, so without this the owner would take
+-- the item out of whatever container that guest asked for, including somebody
+-- else's. Nobody can hit another player's by accident -- a container id is a
+-- GUID the game never hands to other clients -- but on a public server this is
+-- the door to close before it is someone's job to find it.
+local function own_container_ids(pawn)
+    local ids = {}
+    local info = safe_call(function()
+        local state = pawn.PlayerState
+        if state == nil or not state:IsValid() then return nil end
+        local inv = state.InventoryData
+        if inv == nil or not inv:IsValid() then return nil end
+        return inv.MyInventoryInfo
+    end)
+    if info == nil then return ids end
+    for _, field in ipairs({ "CommonContainerId", "DropSlotContainerId", "EssentialContainerId",
+        "WeaponLoadOutContainerId", "PlayerEquipArmorContainerId", "FoodEquipContainerId" }) do
+        local hex = guid_hex(safe_call(function() return info[field].ID end))
+        if hex ~= nil then ids[hex] = true end
+    end
+    return ids
+end
+
+-- `owned` (optional) = the set above: the charge is refused for anything else.
+local function charge_guest_food(containerHex, slotIndex, itemId, useNum, owned)
+    slotIndex = tonumber(slotIndex)
+    useNum = math.floor(tonumber(useNum) or 1)
+    if useNum < 1 then useNum = 1 end
+    if useNum > COOP_MAX_FOOD_USE then useNum = COOP_MAX_FOOD_USE end
+    if containerHex == nil or containerHex == "" or slotIndex == nil then return false, "no slot named" end
+    if owned ~= nil and not owned[containerHex] then return false, "not that player's own container" end
+    local containers = safe_call(function() return FindAllOf("PalItemContainer") end) or {}
+    for _, container in ipairs(containers) do
+        if safe_call(function() return container:IsValid() end)
+            and guid_hex(safe_call(function() return container.ID.ID end)) == containerHex then
+            local slot = safe_call(function() return container.ItemSlotArray[slotIndex + 1] end)
+            if slot == nil or not safe_call(function() return slot:IsValid() end) then return false, "slot missing" end
+            local held = safe_call(function() return slot.ItemId.StaticId:ToString() end)
+            if itemId ~= nil and itemId ~= "" and held ~= itemId then
+                return false, "slot now holds " .. tostring(held)
+            end
+            local before = safe_call(function() return slot.StackCount end)
+            if type(before) ~= "number" then return false, "count unreadable" end
+            local after = before - useNum
+            if after < 0 then after = 0 end
+            local ok = pcall(function() slot.StackCount = after end)
+            return ok, string.format("%d -> %d", before, after)
+        end
+    end
+    return false, "container not found"
+end
+Interaction.ChargeGuestFood = charge_guest_food
+
+-- On the owner: the wild Pal with this stable id near that player, or nil.
+-- One world search per guest interaction -- the same cost as one radial scan.
+local function find_wild_pal_near(pawn, palId)
+    if pawn == nil or palId == nil or palId == "" then return nil end
+    local origin = safe_call(function() return pawn:K2_GetActorLocation() end)
+    if origin == nil then return nil end
+    local pals = safe_call(function() return FindAllOf("PalCharacter") end)
+    if not pals then return nil end
+    for _, pal in ipairs(pals) do
+        if safe_call(function() return pal:IsValid() end) then
+            local loc = safe_call(function() return pal:K2_GetActorLocation() end)
+            if loc and vec_length(vec_sub(loc, origin)) <= COOP_FIND_RADIUS then
+                if safe_call(function() return Personality.GetStableId(pal) end) == palId then
+                    return pal
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function register_coop_handlers()
+    local ok, Net = pcall(require, "Net")
+    if not ok or Net == nil or Net.OnServer == nil then return end
+    local PlayerRef = require("PlayerRef")
+
+    Net.OnServer("PET", function(ctrl, pawn, fields)
+        local pal = find_wild_pal_near(pawn, fields[1])
+        if pal == nil then
+            Logger.log("[PalBonds/Interaction] [COOP] a guest petted a Pal this machine cannot find near them (id " ..
+                tostring(fields[1]) .. ") — nothing granted")
+            return
+        end
+        PlayerRef.WithPlayer(pawn, grant_pet_when_it_happens, pal, true)
+    end)
+
+    -- F10 from a guest: switch passive gain for THAT player's followers.
+    Net.OnServer("PASSIVE", function(ctrl, pawn, fields)
+        local nowOn = require("Trust").TogglePassiveFriendshipGain(PlayerRef.OwnerKey(pawn))
+        local key = nowOn and "passive_on" or "passive_off"
+        Capture.ShowLogFor(pawn, require("Locale").T(key), 1, key)
+    end)
+
+    Net.OnServer("PLAY", function(ctrl, pawn, fields)
+        local pal = find_wild_pal_near(pawn, fields[1])
+        if pal == nil then
+            Logger.log("[PalBonds/Interaction] [COOP] a guest played with a Pal this machine cannot find near them (id " ..
+                tostring(fields[1]) .. ") — nothing happens")
+            return
+        end
+        PlayerRef.WithPlayer(pawn, function()
+            if Capture.HasPermanentlyFled(pal) then
+                Logger.log("[PalBonds/Interaction] [COOP] a guest's Play: this Pal fled for good — refused")
+                return
+            end
+            if claimed_by_another_player(pal) then
+                Logger.log("[PalBonds/Interaction] [COOP] [CLAIMED] a guest's Play: the Pal is bonding with another player — refused")
+                return
+            end
+            local actionComp = safe_call(function() return pal.ActionComponent end)
+            local refusal = play_refusal(pal, actionComp)
+            if refusal ~= nil then
+                Logger.log("[PalBonds/Interaction] [COOP] a guest's Play: " .. refusal .. " — refused")
+                return
+            end
+            play_pal_half(pal, actionComp, pawn, false)
+        end)
+    end)
+
+    Net.OnServer("FEED", function(ctrl, pawn, fields)
+        -- The food is gone whatever happens to the trust, as in singleplayer
+        -- (the write there comes before any grant check).
+        if fields[4] ~= nil and fields[4] ~= "" then
+            local charged, how = charge_guest_food(fields[4], fields[5], fields[3], fields[6], own_container_ids(pawn))
+            Logger.log("[PalBonds/Interaction] [COOP] [FOOD] guest's " .. tostring(fields[3]) ..
+                (charged and " charged: " or " NOT charged: ") .. tostring(how))
+        end
+        local pal = find_wild_pal_near(pawn, fields[1])
+        if pal == nil then
+            Logger.log("[PalBonds/Interaction] [COOP] a guest fed a Pal this machine cannot find near them (id " ..
+                tostring(fields[1]) .. ") — nothing granted")
+            return
+        end
+        local amount = math.floor(tonumber(fields[2]) or 0)
+        if amount < 0 then amount = 0 end
+        if amount > COOP_MAX_FEED_GRANT then amount = COOP_MAX_FEED_GRANT end
+        local itemId = fields[3]
+        PlayerRef.WithPlayer(pawn, grant_feed, pal, amount, itemId)
+    end)
+end
+
 
 -- ===================================================================
 -- STUCK IN THE WAITING POSE (2026-09-19)
@@ -1727,6 +2090,13 @@ end
 local pairWatchToken = 0
 local pairWatchPalAddr = nil
 local function watch_player_pair(pal, label)
+    -- A guest cannot see a Pal's AI at all -- it exists only on the machine that
+    -- owns the world -- so to this watchdog every Pal looks as if it "stopped
+    -- coming", and it cancelled every pet and feed a guest made after one or
+    -- two seconds (net probe run 1, 2026-09-21: the server showed the Lamball
+    -- still in its petting animation for 5-10 s after our cancel). On a guest
+    -- the game itself decides when the pose ends.
+    if we_are_a_guest() then return end
     pairWatchToken = pairWatchToken + 1
     pairWatchPalAddr = safe_call(function() return pal:GetAddress() end)
     local token = pairWatchToken
@@ -1780,8 +2150,13 @@ local function closeRadialMenuActionWindow()
             -- worse, would be swallowed by its own anti-spam gate.
             -- 2026-09-16: granted only once the pet is seen happening.
             local petTarget = lastRedirectedWildPalActor
-            safe_call(function() grant_pet_when_it_happens(petTarget) end)
-            safe_call(function() watch_player_pair(petTarget, "Pet") end)
+            if we_are_a_guest() then
+                -- Co-op: the host's copy confirms the pet and grants it.
+                safe_call(function() send_pet_to_host(petTarget) end)
+            else
+                safe_call(function() grant_pet_when_it_happens(petTarget) end)
+                safe_call(function() watch_player_pair(petTarget, "Pet") end)
+            end
         elseif lastDecidedInstruction == "feed" then
             local feedTarget = cachedRedirectWildPal
             local realFeedOk = safe_call(do_real_wild_feed_via_worker_menu)
@@ -1862,10 +2237,19 @@ local function find_player_controller()
     end
     local list = safe_call(function() return FindAllOf("BP_PalPlayerController_C") end)
     if type(list) ~= "table" then return nil end
+    -- 2026-09-20: in a co-op world the host sees every player's controller, so
+    -- the first one in the list is not necessarily ours. Ask the engine which
+    -- one is local; only if nothing answers do we fall back to the first, which
+    -- is what singleplayer has always used.
+    local firstValid = nil
     for _, pc in ipairs(list) do
-        if pc ~= nil and safe_call(function() return pc:IsValid() end) then return pc end
+        if pc ~= nil and safe_call(function() return pc:IsValid() end) then
+            if firstValid == nil then firstValid = pc end
+            local ok, isLocal = pcall(function() return pc:IsLocalPlayerController() end)
+            if ok and isLocal == true then return pc end
+        end
     end
-    return nil
+    return firstValid
 end
 
 play_player_emote = function(n)
@@ -1995,12 +2379,21 @@ local function run_on_game_thread(fn)
 end
 
 function Interaction.Init()
+    -- Co-op: what this machine does for a guest's pet or feed (Net.lua).
+    safe_call(register_coop_handlers)
     Logger.log(string.format("[PalBonds/Interaction] keys: %s = Play, %s = personality tags, %s = passive gain", PLAY_KEY, TAGS_KEY, PASSIVE_KEY))
     RegisterKeyBind(Key[PLAY_KEY], function()
+        -- Co-op (2026-09-21): a guest aims here and the host plays the Pal
+        -- (do_play / the PLAY message). A dedicated server has no keyboard.
+        if on_dedicated_server() then return end
         run_on_game_thread(do_play)
     end)
 
     RegisterKeyBind(Key[TAGS_KEY], function()
+        -- Co-op stage 3: a guest has tags now (HostView.lua), and this key only
+        -- shows or hides them on this screen, so it works for a guest too. A
+        -- dedicated server has no screen.
+        if on_dedicated_server() then return end
         -- Same game-thread hop as Play (pass 333): this one touches live
         -- nameplate widgets and shows a toast, both engine work.
         run_on_game_thread(function()
@@ -2014,7 +2407,8 @@ function Interaction.Init()
                 local okC, CaptureMod = pcall(require, "Capture")
                 if okC and CaptureMod and CaptureMod.ShowToast then
                     local Locale = require("Locale")
-                    CaptureMod.ShowToast(Locale.T(nowVisible and "tags_on" or "tags_off"))
+                    local key = nowVisible and "tags_on" or "tags_off"
+                    CaptureMod.ShowToast(Locale.T(key), key)
                 end
             end)
         end)
@@ -2025,6 +2419,14 @@ function Interaction.Init()
     -- bare function keys; nothing has been bound to it since the radial menu
     -- took over, so it is free.
     RegisterKeyBind(Key[PASSIVE_KEY], function()
+        if on_dedicated_server() then return end
+        -- Co-op (2026-09-21): per player -- it decides whether THIS player
+        -- keeps their followers (Dragón). A guest's followers live on the
+        -- host, so the host switches it for them and answers with the toast.
+        if we_are_a_guest() then
+            run_on_game_thread(function() require("Net").SendToServer("PASSIVE") end)
+            return
+        end
         -- Same game-thread hop as Play (pass 333): this one touches live
         -- nameplate widgets and shows a toast, both engine work.
         run_on_game_thread(function()
@@ -2043,7 +2445,8 @@ function Interaction.Init()
                     -- because "OFF" alone does not tell a player whether they
                     -- just lost the trust their followers had already earned.
                     local Locale = require("Locale")
-                    CaptureMod.ShowToast(Locale.T(nowOn and "passive_on" or "passive_off"))
+                    local key = nowOn and "passive_on" or "passive_off"
+                    CaptureMod.ShowToast(Locale.T(key), key)
                 end
             end)
         end)
@@ -2129,18 +2532,26 @@ function Interaction.Init()
                 Logger.log("[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] pending wild feed but slot/useNum unreadable — skipping")
                 return
             end
+            -- Co-op (2026-09-21): a guest's inventory belongs to the machine
+            -- that owns the world, so writing this slot here would only make the
+            -- guest's screen disagree with it. Charging a guest for the food is
+            -- the host's job (charge_guest_food); the guest skips the write.
+            local guestFeed = we_are_a_guest()
             local beforeCount = safe_call(function() return slot.StackCount end)
-            if type(beforeCount) ~= "number" then
+            if guestFeed then
+                Logger.log("[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] guest: the food is the host's to charge — no local write")
+            elseif type(beforeCount) ~= "number" then
                 Logger.log("[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] could not read StackCount — skipping")
                 return
+            else
+                local newCount = beforeCount - useNum
+                if newCount < 0 then newCount = 0 end
+                local writeOk, writeErr = pcall(function() slot.StackCount = newCount end)
+                Logger.log(string.format(
+                    "[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] wild target confirmed — real decrement never applies for a wild Pal, applying it ourselves: %d -> %d (write %s)",
+                    beforeCount, newCount, writeOk and "ok" or ("FAILED: " .. tostring(writeErr))
+                ))
             end
-            local newCount = beforeCount - useNum
-            if newCount < 0 then newCount = 0 end
-            local writeOk, writeErr = pcall(function() slot.StackCount = newCount end)
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [SLOT-USE-DIAG] [MANUAL-DECREMENT] wild target confirmed — real decrement never applies for a wild Pal, applying it ourselves: %d -> %d (write %s)",
-                beforeCount, newCount, writeOk and "ok" or ("FAILED: " .. tostring(writeErr))
-            ))
 
             -- Hundred-and-eighty-fifth pass (2026-09-05): real Feed for
             -- wild Pals grants ZERO trust today (this exact function is
@@ -2170,23 +2581,18 @@ function Interaction.Init()
             -- so it never saw the guard added there. Every other way of giving a
             -- Pal friendship now checks; this one did not, which made the
             -- permanence of betrayal a fiction as long as the player had berries.
-            if safe_call(function() return Capture.HasPermanentlyFled(wildTarget) end) then
-                Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] this Pal permanently lost its trust — the food is consumed but no friendship is granted")
+            -- Co-op: on a guest the trust is the host's to give -- it gets the
+            -- Pal, the amount and the item over the private line (Net.lua).
+            if guestFeed then
+                send_feed_to_host(wildTarget, grantAmount, itemId, {
+                    container = guid_hex(safe_call(function() return slot.ContainerId.ID end)),
+                    slot = safe_call(function() return slot.SlotIndex end),
+                    num = useNum,
+                })
                 return
             end
-            -- PalBonds' own points (2026-09-18), not the game's friendship.
-            local before, after = Trust.AddPoints(wildTarget, grantAmount, "Feed")
-            if before == nil then
-                Logger.log("[PalBonds/Interaction] [FEED-FRIENDSHIP] no points granted for this feed (item=" .. tostring(itemId) .. ")")
-                return
-            end
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [FEED-FRIENDSHIP] wild Feed +%d, trust %d -> %d (item=%s)",
-                grantAmount, before, after, tostring(itemId)
-            ))
-            if Interaction.OnWildPalPetted then
-                Interaction.OnWildPalPetted(wildTarget)
-            end
+            grant_feed(wildTarget, grantAmount, itemId)
+
         end)
     end)
     if not okWatchUseSlot then
@@ -2401,7 +2807,7 @@ function Interaction.Init()
     local loggedHookFailureOnce = {}
     local function make_hook_handler(onFire)
         return function(Context, A, B, C)
-            if world_is_closing() then return end
+            if world_is_closing() or guest_blocks_input() then return end
             local self_ = hook_get(Context)
             if onFire then
 
@@ -2689,7 +3095,7 @@ function Interaction.Init()
     -- either way.
     local okOtomoGetter = pcall(function()
         RegisterHook("/Script/Pal.PalOtomoHolderComponentBase:TryGetSpawnedOtomo", function(Context) end, function(Context, ReturnValue)
-            if world_is_closing() then return end
+            if world_is_closing() or guest_blocks_input() then return end
 
             -- Two-hundred-and-sixth pass (2026-09-06) — IDLE PATH MADE FREE.
             -- This hook is LOAD-BEARING and must stay: the substitution
@@ -2816,6 +3222,14 @@ function Interaction.Init()
                     local isWild = Capture.IsAlreadyOwned and (not Capture.IsAlreadyOwned(wildPal))
                     if not isWild then
                         redirect_idle_log("owned", "[PalBonds/Interaction] [RADIAL-REDIRECT] the aimed Pal is already owned — leaving the real Otomo in place (this system is for wild Pals only)")
+                        return
+                    end
+
+                    -- Co-op: somebody else is already bonding this one. Refused
+                    -- HERE, before the menu can act, so a Feed never costs the
+                    -- player the food (the game takes it when the Pal arrives).
+                    if claimed_by_another_player(wildPal) then
+                        redirect_idle_log("claimed", "[PalBonds/Interaction] [RADIAL-REDIRECT] the aimed Pal is already bonding with another player — leaving the real Otomo in place")
                         return
                     end
 
@@ -3175,7 +3589,7 @@ function Interaction.Init()
         local path = WORKER_MENU_OVERLAY_CLASS .. ":OnSetup"
         local ok = pcall(function()
             RegisterHook(path, function(Context)
-                if world_is_closing() then return end
+                if world_is_closing() or guest_blocks_input() then return end
                 local self_ = hook_get(Context)
                 if not self_ then return end
                 local parameter = safe_call(function() return self_.Parameter end)
@@ -3207,7 +3621,7 @@ function Interaction.Init()
     worker_onsetup_retry_runner()
     local okPushWidget = pcall(function()
         RegisterHook("/Script/Pal.PalHUDInGame:PushWidgetStackableUI", function(Context, WidgetClassParam, ParameterParam)
-            if world_is_closing() then return end
+            if world_is_closing() or guest_blocks_input() then return end
             try_fix_worker_menu_parameter("PalHUDInGame:PushWidgetStackableUI", Context, WidgetClassParam, ParameterParam)
         end)
     end)
@@ -3216,7 +3630,7 @@ function Interaction.Init()
     end
     local okServicePush = pcall(function()
         RegisterHook("/Script/Pal.PalHUDService:Push", function(Context, WidgetClassParam, ParameterParam)
-            if world_is_closing() then return end
+            if world_is_closing() or guest_blocks_input() then return end
             try_fix_worker_menu_parameter("PalHUDService:Push", Context, WidgetClassParam, ParameterParam)
         end)
     end)
@@ -3232,6 +3646,14 @@ function Interaction.Init()
 -- interaction-count state Trust.lua never acts on, since an owned Pal is
 -- already captured).
 end
+-- Exposed for the harness (like PairWatchStep and PlayPlayerEmote): the one
+-- place every trust grant for a wild Pal goes through, so a test can prove the
+-- co-op guard really refuses another player's Pal instead of only reading that
+-- the line is there.
+function Interaction.GrantWildInteraction(pal, amount, label)
+    return grant_wild_interaction(pal, amount, label)
+end
+
 function Interaction.OnWildPalPetted(palActor)
     Trust.OnInteractionSucceeded(palActor)
 

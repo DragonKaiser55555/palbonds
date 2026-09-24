@@ -106,6 +106,16 @@ local S = {
         ja = "警戒", ko = "경계", ["zh-hans"] = "警惕", ["zh-hant"] = "警惕",
     },
 
+    -- Co-op (2026-09-20): shown to OTHER players over a wild Pal that is
+    -- already bonding with someone, so they understand it will not respond to
+    -- them. The Pal's own player never sees this word. Short by necessity, and
+    -- the idea is "taken / already has someone", not "reserved by the system".
+    tag_claimed = {
+        en = "Claimed", es = { m = "Ocupado", f = "Ocupada" }, fr = { m = "Pris", f = "Prise" }, de = "Vergeben", it = { m = "Occupato", f = "Occupata" }, pl = { m = "Zajęty", f = "Zajęta" },
+        pt = { m = "Ocupado", f = "Ocupada" }, ru = { m = "Занят", f = "Занята" }, tr = "Sahipli", vi = "Đã có chủ", th = "ถูกจอง", id = "Sudah diklaim",
+        ja = "先約", ko = "선점됨", ["zh-hans"] = "已有主", ["zh-hant"] = "已有主",
+    },
+
     -- Messages
     a_pal = {
         en = "A Pal", es = "Un Pal", fr = "Un Pal", de = "Ein Pal", it = "Un Pal", pl = "Pal",

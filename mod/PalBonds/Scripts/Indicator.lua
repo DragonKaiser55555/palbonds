@@ -42,6 +42,26 @@ local playerRefForGate = nil
 -- asking for the join from a client is a FATAL error in the game itself
 -- (measured 2026-09-20). So the whole mod stands down there, the same way it
 -- goes blind while a world is closing -- see Session.lua.
+-- A dedicated server has nobody sitting at it: no screen to draw on, no
+-- keyboard of its own (co-op run 1: a key pressed in the game on the same PC
+-- ALSO reached the server's copy, which then messaged the only player).
+local function on_dedicated_server()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsDedicated) then return false end
+    local okAsk, yes = pcall(Session.IsDedicated)
+    return okAsk and yes == true
+end
+
+-- Co-op stage 3: a guest draws nameplates from the host's numbers
+-- (HostView.lua), but only once the host has actually sent some -- a host
+-- without PalBonds sends nothing, and then a guest shows nothing, rather
+-- than a field of "?" tags.
+local function guest_without_host_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return false end
+    return not HostView.HostHasPalBonds()
+end
+
 local function we_are_a_guest()
     local ok, Session = pcall(require, "Session")
     if not (ok and Session and Session.IsGuest) then return false end
@@ -201,7 +221,12 @@ local function register_bind_hook_immediate(round)
     local hookPath = "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle"
     local hookOk, hookErr = pcall(function()
         RegisterHook(hookPath, function(Context, TargetHandle)
-            if world_is_closing() or we_are_a_guest() then return end
+            -- Co-op run 2 (2026-09-21): NOT gated on the host view. A nameplate
+            -- learns its Pal only here, when the game binds it; the guest's
+            -- binds made before the host's first message were lost for good,
+            -- which is why the first Cattiva never showed a tag. Recording is
+            -- bookkeeping only -- the drawing (the tick) still waits.
+            if world_is_closing() then return end
             local self = hook_get(Context)
             local handle = hook_get(TargetHandle)
             if self == nil or handle == nil then return end
@@ -217,7 +242,7 @@ local function register_bind_hook_immediate(round)
         local unbindPath = hookPath:gsub(":BindFromHandle$", ":Unbind")
         local unbindOk, unbindErr = pcall(function()
             RegisterHook(unbindPath, function(Context)
-                if world_is_closing() or we_are_a_guest() then return end
+                if world_is_closing() then return end
                 local self = hook_get(Context)
                 if self == nil then return end
                 local key = describe_widget(self)
@@ -1681,7 +1706,7 @@ local function register_boss_hook(round)
     if hasRegisteredBossHook then return end
     local ok, err = pcall(function()
         RegisterHook(BOSS_GAUGE_HOOK_PATH, function(Context, TargetCharacter)
-            if world_is_closing() or we_are_a_guest() then return end
+            if world_is_closing() then return end
             queue_boss_gauge(hook_get(Context), hook_get(TargetCharacter))
         end)
     end)
@@ -1714,8 +1739,11 @@ end
 local GAUGE_FLAG_PRUNE_EVERY_N_SCANS = 30   -- ~60s at SCAN_INTERVAL_MS
 local gaugeFlagScanCount = 0
 local function scan_for_gauge_widgets()
-    -- A guest owns nothing in this world (Session.lua): stand down.
-    if we_are_a_guest() then return end
+    -- A guest draws only from the host's numbers (HostView.lua).
+    if guest_without_host_view() then return end
+    -- A dedicated server has no screen: no nameplates will ever exist, and
+    -- this sweep is a whole-world search every tick (co-op stage 2).
+    if on_dedicated_server() then return end
 
     -- Every wild Pal that ever showed an HP gauge left an entry here for the
     -- whole session (2026-09-12 growth audit). Prune the destroyed ones.

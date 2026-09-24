@@ -90,7 +90,13 @@ local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = false
 -- Session-only and starts ON, matching how the F9 tag toggle already behaves --
 -- nothing about it is written to the save, so a player who forgets they left it
 -- off just gets the normal behaviour back on the next launch.
-local passiveGainEnabled = true
+--
+-- Co-op (2026-09-21): PER PLAYER. It decides whether that player keeps
+-- followers around, so each player switches it for their own followers only
+-- (Dragón). Keyed by owner key (PlayerRef.OwnerKey; "local" for the player
+-- at this machine); a key present here means OFF for that player's
+-- followers. One table read per follower per tick -- free.
+local passiveGainOffBy = {}
 local REAL_PASSIVE_FRIENDSHIP_PER_TICK = require("Settings").Get("PassivePerTick")  -- the player's settings file (2026-09-18)
 local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST and 0 or REAL_PASSIVE_FRIENDSHIP_PER_TICK
 
@@ -273,6 +279,14 @@ local function refresh_tracked_addresses()
         local paddr = address_of(player)
         if paddr ~= nil then fresh[paddr] = true end
     end
+    -- Co-op stage 2: a guest who owns a bond is tracked too, or their own
+    -- fights would never reach combat assist.
+    for _, st in pairs(State) do
+        if st and st.ownerPawn ~= nil and st.ownerKey ~= "local" then
+            local oaddr = address_of(st.ownerPawn)
+            if oaddr ~= nil then fresh[oaddr] = true end
+        end
+    end
 
     trackedAddresses = fresh
 
@@ -341,6 +355,18 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -419,6 +445,9 @@ local function hook_get(param)
     if ok then return value end
     return nil
 end
+-- Co-op stage 2 forward declarations (defined in "WHOSE BOND IS THIS").
+local remote_owner_pawn, owner_player, as_owner, find_fighter, as_player
+
 local function get_key(pal)
     return safe_call(function() return pal:GetFullName() end)
 end
@@ -442,7 +471,17 @@ end
 -- Indicator.lua needs to gate bar CONSTRUCTION on: a plain table lookup
 -- (no actor/component resolution of its own), safe to call every scan
 -- tick for every visible gauge without reintroducing any real cost.
+-- Co-op stage 3: on a guest, the nameplate reads the HOST's numbers
+-- (HostView.lua) -- a guest has no trust records or personalities of its own.
+local function guest_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return nil end
+    return HostView
+end
+
 function Trust.HasBondingState(palActor)
+    local view = guest_view()
+    if view then return view.HasBond(palActor) end
     local key = get_key(palActor)
     return key ~= nil and State[key] ~= nil
 end
@@ -749,7 +788,17 @@ local function finish_capture_now(pal, key, point)
     -- bonus. The raise to rank 3 that used to run here is removed (2026-09-18).
     local okReq, Capture = pcall(require, "Capture")
     if okReq and Capture.OnTrustMaxed then
-        Capture.OnTrustMaxed(pal)
+        -- Co-op (2026-09-21): this runs on a timer, so "the player" has to be
+        -- the one the Pal was bonding with, recorded at its first grant -- a
+        -- guest's Pal joins THAT guest's party and they get the message. No
+        -- owner recorded (all of singleplayer) = the player at this machine.
+        local st = key ~= nil and State[key] or nil
+        local owner = st and st.owner
+        if owner ~= nil and safe_call(function() return owner:IsValid() end) then
+            PlayerRef.WithPlayer(owner, Capture.OnTrustMaxed, pal)
+        else
+            Capture.OnTrustMaxed(pal)
+        end
     end
 end
 local function wait_for_animation_then_capture(pal, key, point)
@@ -857,7 +906,14 @@ function Trust.OnInteractionSucceeded(pal)
         key, st.interactionCount, point, tostring(threshold),
         ratio and string.format("%.0f%%", ratio * 100) or "unknown"
     ))
-    if not st.isFollowing and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
+    -- `not st.captureTriggered` (2026-09-20, from Dragón's Petallia): once the
+    -- capture is on its way, maybe_trigger_capture has already cleared
+    -- isFollowing so the follower tick lets go. An interaction landing during
+    -- those last 5 seconds then looked like a Pal crossing 50% for the first
+    -- time, and the player was told "X starts following you" a second time,
+    -- moments before the join message. The Pal is already ours; there is
+    -- nothing left to start.
+    if not st.isFollowing and not st.captureTriggered and ratio ~= nil and ratio >= FOLLOW_TRIGGER_RATIO then
         -- An interaction that jumps straight to 100% (a Kinship Peach) also
         -- starts the follow here, but the Pal is about to join: skip the
         -- "starts following you" message so only the join message shows
@@ -918,26 +974,70 @@ end
 
 -- Two-hundred-and-seventy-fifth pass: every entry in State points at an actor
 -- from the world that is going away. See Combat's WORLD CHANGE RESET comment.
-function Trust.ResetForNewWorld()
-    local n = 0
-    for _ in pairs(State) do n = n + 1 end
+-- ===================================================================
+-- A LOADING SCREEN LEAVES YOUR FOLLOWERS BEHIND (Dragón, 2026-09-22)
+-- ===================================================================
+-- A dungeon reads as a world change here (co-op run 3b): the character is
+-- briefly not ours, so everything below is dropped. Dragón's ruling on what
+-- SHOULD happen to a Pal that was following: "bonded pals shouldn't go into
+-- dungeons, because that would imply you despawning them on the overworld and
+-- spawning them inside the generated dungeon [...] just set them as abandoned,
+-- similar to the player teleporting to another location."
+--
+-- So the bond ends, exactly as it already did -- but the player is TOLD, the
+-- same message as walking out of range. It cannot be shown during the loading
+-- screen, so the names wait here and Combat's watch shows them once a world is
+-- up again. A quit to the title collects nothing: there is no world to say it
+-- in, and the next world's player must not hear about the old one's Pals.
+local pendingAbandoned = {}
+
+function Trust.ResetForNewWorld(why)
+    local quitting = type(why) == "string" and (why:find("Title") ~= nil or why:find("title") ~= nil)
+    local n, following = 0, 0
+    for _, st in pairs(State) do
+        n = n + 1
+        if st.isFollowing and not quitting and (st.ownerKey == nil or st.ownerKey == "local") then
+            following = following + 1
+            pendingAbandoned[#pendingAbandoned + 1] = { name = st.displayName, female = st.displayFemale }
+        end
+    end
+    if quitting then pendingAbandoned = {} end
     State = {}
     LevelMultiplierCache = {}
     BossActorsSeen = {}
     briefFollow = {}
-    Logger.log("[PalBonds/Trust] [WORLD-RESET] dropped " .. n .. " bonding record(s) from the old world")
+    Logger.log("[PalBonds/Trust] [WORLD-RESET] dropped " .. n .. " bonding record(s) from the old world" ..
+        (following > 0 and (" — " .. following .. " of them were following and are left behind (told when the world is back)") or ""))
+end
+
+-- Shown by Combat's watch once a world is readable again. Returns how many.
+function Trust.FlushWorldChangeAbandonments()
+    local list = pendingAbandoned
+    pendingAbandoned = {}
+    if #list == 0 then return 0 end
+    local okCap, Capture = pcall(require, "Capture")
+    if not (okCap and Capture and Capture.NotifyBondLostByName) then return 0 end
+    for _, e in ipairs(list) do
+        safe_call(Capture.NotifyBondLostByName, e.name, "abandoned", e.female)
+    end
+    Logger.log("[PalBonds/Trust] [WORLD-RESET] told the player about " .. #list ..
+        " follower(s) left behind by the loading screen")
+    return #list
 end
 
 -- Returns the new state so the caller can tell the player which way it went.
-function Trust.TogglePassiveFriendshipGain()
-    passiveGainEnabled = not passiveGainEnabled
+-- `ownerKey` defaults to the player at this machine ("local").
+function Trust.TogglePassiveFriendshipGain(ownerKey)
+    ownerKey = ownerKey or "local"
+    if passiveGainOffBy[ownerKey] then passiveGainOffBy[ownerKey] = nil else passiveGainOffBy[ownerKey] = true end
+    local nowOn = not passiveGainOffBy[ownerKey]
     Logger.log("[PalBonds/Trust] [PASSIVE-TOGGLE] passive friendship gain is now " ..
-        (passiveGainEnabled and "ON" or "OFF") ..
+        (nowOn and "ON" or "OFF") .. " for " .. (ownerKey == "local" and "this player" or "a remote player") ..
         " (" .. tostring(require("Settings").Get("KeyPassiveGain")) .. "; session-only, back to ON on the next launch)")
-    return passiveGainEnabled
+    return nowOn
 end
-function Trust.IsPassiveGainEnabled()
-    return passiveGainEnabled
+function Trust.IsPassiveGainEnabled(ownerKey)
+    return not passiveGainOffBy[ownerKey or "local"]
 end
 function Trust.GetFollowingSnapshot()
     local snapshot = {}
@@ -971,6 +1071,74 @@ end
 -- st.points directly. Nothing here calls into the engine except the ownership
 -- guard and the one GetFullName that finds the record.
 
+-- ---------------------------------------------------------------------
+-- WHOSE BOND IS THIS (co-op stage 2, 2026-09-21)
+-- ---------------------------------------------------------------------
+-- A record's owner is "local" (the player at this machine -- all of
+-- singleplayer), a remote player's key, or nil (nobody has earned it anything
+-- yet). For a remote owner the character is found through their controller,
+-- because the character is replaced at every respawn.
+
+-- The remote owner's character now; nil for a local or unclaimed record. The
+-- second value is "gone" when their controller no longer exists (they left the
+-- world) and "away" when it exists but has no character (dead, respawning).
+remote_owner_pawn = function(st)
+    if st == nil or st.ownerKey == nil or st.ownerKey == "local" then return nil end
+    local ctrl = st.ownerCtrl
+    if ctrl ~= nil then
+        if not safe_call(function() return ctrl:IsValid() end) then return nil, "gone" end
+        local pawn = safe_call(function() return ctrl.Pawn end)
+        if pawn ~= nil and safe_call(function() return pawn:IsValid() end) then
+            st.ownerPawn = pawn
+            return pawn
+        end
+        return nil, "away"
+    end
+    local pawn = st.ownerPawn
+    if pawn ~= nil and safe_call(function() return pawn:IsValid() end) then return pawn end
+    return nil, "gone"
+end
+
+-- The owner's character whoever they are: the remote owner's, or this
+-- machine's player for a local or unclaimed record.
+owner_player = function(st)
+    if st ~= nil and st.ownerKey ~= nil and st.ownerKey ~= "local" then
+        return (remote_owner_pawn(st))
+    end
+    return find_player and find_player() or nil
+end
+
+-- Runs fn as the record's owner: inside PlayerRef.WithPlayer for a remote
+-- owner, as-is for the local player.
+as_owner = function(st, fn)
+    local pawn = remote_owner_pawn(st)
+    if pawn ~= nil then return PlayerRef.WithPlayer(pawn, fn) end
+    return fn()
+end
+
+-- The remote owner's character (nil for a local or unclaimed bond).
+function Trust.GetOwner(palActor)
+    local key = get_key(palActor)
+    local st = key ~= nil and State[key] or nil
+    return (remote_owner_pawn(st))
+end
+
+function Trust.GetOwnerKey(palActor)
+    local key = get_key(palActor)
+    local st = key ~= nil and State[key] or nil
+    return st and st.ownerKey or nil
+end
+
+-- R2/R4 on the machine that owns the world: may the player this machine is
+-- working for right now earn this Pal's trust? Yes when nobody has a claim
+-- yet or the claim is theirs; no when another player's bond holds it.
+function Trust.MayBond(palActor)
+    local key = get_key(palActor)
+    local st = key ~= nil and State[key] or nil
+    if st == nil or st.ownerKey == nil then return true end
+    return st.ownerKey == (PlayerRef.CurrentOwnerKey and PlayerRef.CurrentOwnerKey() or "local")
+end
+
 function Trust.GetPoints(palActor)
     local key = get_key(palActor)
     local st = key ~= nil and State[key] or nil
@@ -989,10 +1157,28 @@ function Trust.AddPoints(palActor, amount, label)
     end
     local st, key = get_state(palActor)
     if not st then return nil end
+    -- Co-op (2026-09-21): whose bond this is -- the first player who earned
+    -- it points, Dragón's rule R4 ("the first player keeps the Pal"). Recorded
+    -- as an owner KEY (PlayerRef.OwnerKey: "local" for the player at this
+    -- machine, the controller's name for anyone else, which survives their
+    -- death) plus that player's controller and character. Grants from anyone
+    -- else are refused before they get here (Trust.MayBond).
+    if st.ownerKey == nil and amount > 0 then
+        local acting = PlayerRef.Acting and PlayerRef.Acting() or nil
+        st.ownerKey = PlayerRef.OwnerKey and PlayerRef.OwnerKey(acting) or "local"
+        if acting ~= nil then
+            st.ownerPawn = acting
+            st.ownerCtrl = safe_call(function() return acting.Controller end)
+        end
+    end
     local before = st.points or 0
     local after = before + amount
     if after < 0 then after = 0 end
     st.points = after
+    -- Q3 (Dragón): a claim is released whenever the bar reaches 0, by any route.
+    if after <= 0 then
+        st.ownerKey, st.ownerPawn, st.ownerCtrl = nil, nil, nil
+    end
     return before, after
 end
 
@@ -1000,6 +1186,8 @@ end
 -- level lookup (Dragón's rule from pass 189: compute nothing until a real
 -- interaction happens).
 function Trust.GetBarRatio(palActor)
+    local view = guest_view()
+    if view then return view.Ratio(palActor) end
     local key = get_key(palActor)
     local st = key ~= nil and State[key] or nil
     if st == nil then return 0 end
@@ -1381,7 +1569,35 @@ end
 -- Periodic tick for every currently-following Pal: issues a follow move
 -- order (Combat.lua), applies passive trust gain every few ticks, and
 -- checks distance from the player (leash break).
+local tick_follower_group   -- defined right after tick_followers
+
+-- Q3 (Dragón): "when the owning player leaves the world, the Pal becomes
+-- abandoned and another nearby player can claim it". A remote owner whose
+-- controller no longer exists has left: every bond and claim of theirs is
+-- released, quietly (there is nobody to tell). A player who is merely dead
+-- keeps everything -- their controller is still there.
+local function release_bonds_of_departed_players()
+    for key, st in pairs(State) do
+        if st.ownerKey ~= nil and st.ownerKey ~= "local" then
+            local pawn, why = remote_owner_pawn(st)
+            if pawn == nil and why == "gone" then
+                Logger.log("[PalBonds/Trust] [COOP] " .. tostring(key) ..
+                    " — its player left the world: bond released, the Pal is free again")
+                if st.isFollowing and st.pal and safe_call(function() return st.pal:IsValid() end) then
+                    safe_call(function() Trust.StopFollowing(st.pal, "its player left the world") end)
+                end
+                st.isFollowing = false
+                st.points = 0
+                st.ownerKey, st.ownerPawn, st.ownerCtrl = nil, nil, nil
+            end
+        end
+    end
+end
+
 local function tick_followers()
+    -- A guest owns nothing in this world (Session.lua): stand down.
+    if we_are_a_guest() then return end
+
 
     -- Two-hundred-and-seventy-second pass: this tick touches every follower's
     -- actor, so it stops dead once the world is going away. See Combat's
@@ -1391,11 +1607,35 @@ local function tick_followers()
         return
     end
     forget_despawned_pals()
+    release_bonds_of_departed_players()
+
+    -- Co-op stage 2 (2026-09-21): the tick below measures every follower
+    -- against "the player" -- distance, drift, passive gain, the follow move
+    -- order. It runs once per OWNER, as that owner (PlayerRef.WithPlayer), over
+    -- that owner's followers only. Singleplayer has one group, "local", run
+    -- exactly as before.
+    local groups = {}
+    for _, st in pairs(State) do
+        if st.isFollowing and st.pal then groups[st.ownerKey or "local"] = st end
+    end
+    for groupKey, sample in pairs(groups) do
+        if groupKey == "local" then
+            safe_call(tick_follower_group, "local")
+        else
+            local pawn = remote_owner_pawn(sample)
+            if pawn ~= nil then
+                safe_call(function() PlayerRef.WithPlayer(pawn, tick_follower_group, groupKey) end)
+            end
+        end
+    end
+end
+
+tick_follower_group = function(groupKey)
     local player = find_player()
     local playerLoc = player and safe_call(function() return player:K2_GetActorLocation() end)
     local okReq, Combat = pcall(require, "Combat")
     for key, st in pairs(State) do
-        if st.isFollowing and st.pal then
+        if st.isFollowing and st.pal and (st.ownerKey or "local") == groupKey then
             local stillValid = safe_call(function() return st.pal:IsValid() end)
             if stillValid then
                 st.tickCount = st.tickCount + 1
@@ -1661,7 +1901,7 @@ local function tick_followers()
                 end
                 if lostAllTrust then
                     on_follower_lost_all_trust(st.pal, "too far from player")
-                elseif not passiveGainEnabled then
+                elseif passiveGainOffBy[groupKey or "local"] then
 
                     -- Switched off with F10. Deliberately skips the capture
                     -- check as well as the gain: that check lives here to catch
@@ -1694,6 +1934,38 @@ local function tick_followers()
         end
     end
 end
+-- Co-op stage 2: which PLAYER is in a fight -- the one at this machine, or a
+-- guest who owns a bond here -- and who they are fighting. Returns
+-- player, enemy (both nil when no player is involved).
+find_fighter = function(anyFollowing, attackerName, defenderName, attacker, defender)
+    if not anyFollowing then return nil, nil end
+    local function is_player(name)
+        if name == nil then return nil end
+        local lp = find_player()
+        if lp ~= nil and find_player_name() == name then return lp end
+        for _, st in pairs(State) do
+            if st.ownerKey ~= nil and st.ownerKey ~= "local" then
+                local op = remote_owner_pawn(st)
+                if op ~= nil and safe_call(function() return op:GetFullName() end) == name then return op end
+            end
+        end
+        return nil
+    end
+    local a = is_player(attackerName)
+    if a ~= nil then return a, defender end
+    local d = is_player(defenderName)
+    if d ~= nil then return d, attacker end
+    return nil, nil
+end
+
+-- Runs fn(...) as `player` when that player is on another machine.
+as_player = function(player, fn, ...)
+    if PlayerRef.IsRemote and PlayerRef.IsRemote(player) then
+        return PlayerRef.WithPlayer(player, fn, ...)
+    end
+    return fn(...)
+end
+
 function Trust.Init()
     Logger.log("[PalBonds/Trust] real hooks active — tracking interaction counts, follow state and PalBonds' own trust points")
 
@@ -1783,7 +2055,7 @@ function Trust.Init()
         -- leaving another silent nothing.
         local okBetray, errBetray = pcall(function()
             RegisterHook("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", function(Context, Attacker, Defender, ActualDamage)
-                if world_is_closing() then return end
+                if world_is_closing() or we_are_a_guest() then return end
 
                 -- Dragón caught this before it shipped, and he was right:
                 -- "if you're tracking every hit of the player on pals, wouldnt
@@ -1817,8 +2089,10 @@ function Trust.Init()
                     -- reaching this delegate is an ordinary fight.
                     local hitter = hook_get(Attacker)
                     if hitter == nil or not hitter:IsValid() then return end
-                    local player = find_player()
-                    local playerName = player and find_player_name()
+                    -- Co-op stage 2 (R3): only the Pal's OWN player can betray
+                    -- it; anyone else hitting it is the Pal defending itself.
+                    local owner = owner_player(State[key])
+                    local playerName = owner and safe_call(function() return owner:GetFullName() end)
                     local hitterName = safe_call(function() return hitter:GetFullName() end)
                     if playerName == nil or hitterName ~= playerName then return end
                     if not loggedBetrayalHookFired then
@@ -1831,14 +2105,14 @@ function Trust.Init()
                     if key == lastBetrayalKey and (now - lastBetrayalAt) < 0.5 then return end
                     lastBetrayalKey, lastBetrayalAt = key, now
                     Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] the player damaged a Pal that is bonding with them — " .. tostring(key))
-                    Trust.OnFollowerDamaged(victim, true)
+                    as_owner(State[key], function() Trust.OnFollowerDamaged(victim, true) end)
                 end)
             end)
         end)
         Logger.log("[PalBonds/Trust] [BETRAYAL-HOOK] RegisterHook(PalDamageReactionComponent:OnProcessedActualDamageDelegate) = " ..
             (okBetray and "OK" or ("FAILED: " .. tostring(errBetray) .. " — betrayal falls back to the hate hook, which misses followers whose Damaged_Player slot is Ignore")))
         RegisterHook("/Script/Pal.PalHate:DamageEvent", function(Context, DamageResult)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             local result = hook_get(DamageResult)
             if result == nil then return end
 
@@ -1989,15 +2263,11 @@ function Trust.Init()
                 -- all. A player with no bonds anywhere still pays nothing.
                 local anyBonding = next(State) ~= nil
                 local anyFollowing = anyBonding or (okHas and CombatCheck and CombatCheck.HasAnyFollower and CombatCheck.HasAnyFollower())
-                local player = anyFollowing and find_player() or nil
-                local playerName = player and find_player_name()
-                if playerName then
-                    local enemy = nil
-                    if attackerName == playerName then
-                        enemy = defender          
-                    elseif defenderName == playerName then
-                        enemy = attacker          
-                    end
+                -- Co-op stage 2: the player in this fight may be the one at
+                -- this machine or a guest who owns a bond; their own followers
+                -- assist them (Combat filters by owner), run as that player.
+                local player, enemy = find_fighter(anyFollowing, attackerName, defenderName, attacker, defender)
+                if player then
                     if enemy ~= nil then
 
                         -- Two-hundred-and-eleventh pass (2026-09-06) — REAL
@@ -2018,7 +2288,7 @@ function Trust.Init()
                         -- assist has still never actually been exercised.
                         local okCombatReq, CombatMod = pcall(require, "Combat")
                         if okCombatReq and CombatMod and CombatMod.OnPlayerCombatTarget then
-                            safe_call(function() CombatMod.OnPlayerCombatTarget(enemy, player) end)
+                            safe_call(function() as_player(player, CombatMod.OnPlayerCombatTarget, enemy, player) end)
                         end
                     end
                 end
@@ -2060,8 +2330,10 @@ function Trust.Init()
                 -- already used throughout this project wherever reference
                 -- equality on actors wasn't trusted (e.g. find_targeted_pal
                 -- excluding the player by name, not by reference).
-                local player = find_player()
-                local playerName = player and find_player_name()
+                -- Co-op stage 2 (R3): "the player" is this Pal's OWN player.
+                local defSt = State[defenderName]
+                local owner = owner_player(defSt)
+                local playerName = owner and safe_call(function() return owner:GetFullName() end)
                 local attackerIsPlayer = (attackerName ~= nil and playerName ~= nil and attackerName == playerName)
 
                 -- Two-hundred-and-eleventh pass (2026-09-06) — Dragón's call,
@@ -2088,7 +2360,7 @@ function Trust.Init()
                 -- deliberate player choice, not something the world did to
                 -- them.
                 if attackerIsPlayer then
-                    Trust.OnFollowerDamaged(State[defenderName].pal, true)
+                    as_owner(defSt, function() Trust.OnFollowerDamaged(defSt.pal, true) end)
                 elseif defenderIsFollowing then
 
                     -- Something other than the player hit a companion: let it
@@ -2096,7 +2368,7 @@ function Trust.Init()
                     -- follow action held it out of the fight entirely.
                     local okSD, CombatSD = pcall(require, "Combat")
                     if okSD and CombatSD and CombatSD.OnFollowerAttacked then
-                        safe_call(function() CombatSD.OnFollowerAttacked(State[defenderName].pal, attacker) end)
+                        safe_call(function() as_owner(defSt, function() CombatSD.OnFollowerAttacked(defSt.pal, attacker) end) end)
                     end
 
                     -- Throttled and counted (two-hundred-and-ninety-eighth pass,

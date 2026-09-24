@@ -298,6 +298,27 @@ local function prettify_raw_id(rawId)
     return spaced
 end
 
+-- Co-op (2026-09-21, run 3): the id each resolved name came from, so a
+-- message for a guest can carry the Pal's id and the guest's own copy looks
+-- the name up in ITS language. Run 3 had a Spanish server writing Spanish
+-- sentences onto an English guest's screen.
+local charIdByName = {}
+
+-- The name for a CharacterID in this machine's language (the same lookup
+-- as below, without an actor). nil when nothing resolves.
+local function localized_name_for_id(rawId, player)
+    if type(rawId) ~= "string" or rawId == "" then return nil end
+    local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
+    local masterData = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalMasterDataTablesUtility") end)
+    if textLibrary ~= nil and masterData ~= nil then
+        for _, candidate in ipairs(name_lookup_candidates(rawId)) do
+            local found = lookup_localized_name(player, textLibrary, masterData, candidate)
+            if found ~= nil then return found end
+        end
+    end
+    return prettify_raw_id(rawId)
+end
+
 local function resolve_pal_display_name(pal, player)
     local palName = nil
     safe_call(function()
@@ -344,6 +365,7 @@ local function resolve_pal_display_name(pal, player)
                                 candidate .. "'")
                         end
                         palName = found
+                        charIdByName[found] = rawId
                         return
                     end
                 end
@@ -356,6 +378,7 @@ local function resolve_pal_display_name(pal, player)
         local raw = to_lua_string(safe_call(function() return charId:ToString() end))
         if raw ~= nil and raw ~= "" then
             palName = prettify_raw_id(raw)
+            charIdByName[palName] = raw
             Logger.log("[PalBonds/Capture] [NOTIFY] no localised name for '" .. raw ..
                 "' under any candidate id — using the prettified id '" .. tostring(palName) .. "'")
         end
@@ -363,16 +386,50 @@ local function resolve_pal_display_name(pal, player)
     Logger.log("[PalBonds/Capture] [NOTIFY] resolved display name BEFORE capture = " .. tostring(palName))
     return palName
 end
+-- =====================================================================
+-- ONE WAY TO PUT A MESSAGE ON A PLAYER'S SCREEN (co-op, 2026-09-21)
+-- =====================================================================
+-- Every PalBonds message ends in the same on-screen log line (the game's own
+-- log manager, AddLog). On the machine that owns a world other players have
+-- joined, a message about a guest's Pal is for THAT guest, and this machine
+-- cannot draw on their screen: it goes over the private line (Net.lua) and the
+-- guest's own copy shows it with the same call. For the player at this machine
+-- -- all of singleplayer -- nothing changes. Returns true when shown or sent.
+--
+-- `key`, `name` and `female` (optional) say WHICH message it is: a guest then
+-- gets the key, the Pal's id and gender instead of the finished sentence,
+-- and writes it in its own language (co-op run 3, 2026-09-21).
+local function show_log(player, message, tone, key, name, female)
+    if player == nil or not safe_call(function() return player:IsValid() end) then return false end
+    local okRef, PlayerRef = pcall(require, "PlayerRef")
+    if okRef and PlayerRef and PlayerRef.IsRemote and PlayerRef.IsRemote(player) then
+        local okNet, Net = pcall(require, "Net")
+        if okNet and Net and Net.SendToPlayer then
+            if key ~= nil then
+                return Net.SendToPlayer(player, "MSG", tostring(tone), key, name or "",
+                    female and "1" or "0", (name and charIdByName[name]) or "") == true
+            end
+            return Net.SendToPlayer(player, "TOAST", tostring(tone), tostring(message)) == true
+        end
+        return false
+    end
+    local utility = get_pal_utility()
+    if utility == nil then return false end
+    local manager = safe_call(function() return utility:GetLogManager(player) end)
+    if manager == nil then return false end
+    local widgetClass = resolve_toast_widget_class(manager)
+    if widgetClass == nil then return false end
+    local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
+    if textLibrary == nil then return false end
+    local text = safe_call(function() return textLibrary:Conv_StringToText(tostring(message)) end)
+    if text == nil then return false end
+    manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = tone })
+    return true
+end
+Capture.ShowLogFor = show_log
+
 function Capture.NotifyJoined(pal, player, preResolvedName, preResolvedFemale)
     local ok, err = pcall(function()
-        local utility = get_pal_utility()
-        if utility == nil then return end
-        local manager = safe_call(function() return utility:GetLogManager(player) end)
-        if manager == nil then return end
-        local widgetClass = resolve_toast_widget_class(manager)
-        if widgetClass == nil then return end
-        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
-        if textLibrary == nil then return end
 
         -- Two-hundred-and-tenth pass: the name is resolved BEFORE the
         -- capture (see resolve_pal_display_name above for why) and handed in
@@ -399,9 +456,7 @@ function Capture.NotifyJoined(pal, player, preResolvedName, preResolvedFemale)
             message = Locale.T("joined_unnamed")
         end
         Logger.log("[PalBonds/Capture] [NOTIFY] join message: " .. message)
-        local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
-        if text == nil then return end
-        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 2 })
+        show_log(player, message, 2, palName and "joined" or "joined_unnamed", palName, preResolvedFemale == true)
     end)
     if ok then
         Logger.log("[PalBonds/Capture] [NOTIFY] join toast shown")
@@ -609,7 +664,54 @@ local function spawn_niagara_at(pal, assetPath)
             " at the joining Pal — component=" .. tostring(comp ~= nil))
     end)
 end
+-- A MSG from the host (show_log above) as this player's own words: fields are
+-- tone, Locale key, the host's name for the Pal, "1" if female, the Pal's
+-- CharacterID. The name is looked up again here, in this player's language;
+-- the host's is the fallback. Returns tone, text -- or nil for no key.
+function Capture.RenderHostMessage(fields, player)
+    local tone = tonumber(fields[1])
+    if tone ~= 1 and tone ~= 2 then tone = 1 end
+    local key = fields[2]
+    if key == nil or key == "" then return nil end
+    local Locale = require("Locale")
+    local name = safe_call(function() return localized_name_for_id(fields[5], player) end)
+    if name == nil and fields[3] ~= nil and fields[3] ~= "" then name = fields[3] end
+    return tone, Locale.T(key, { name = name or Locale.T("a_pal"), female = fields[4] == "1" })
+end
+
+-- Defined further down, with the join celebration; used by Init's handler.
+local play_join_light_for_host
+
 function Capture.Init()
+
+    -- Co-op (2026-09-21): a message the host's copy sent this player over the
+    -- private line (show_log above) is shown here with the same call, so a
+    -- guest sees exactly what a singleplayer player would. Tone 2 is the
+    -- positive log line, 1 the warning one; anything else is shown as 1.
+    local okNet, Net = pcall(require, "Net")
+    if okNet and Net and Net.OnClient then
+        Net.OnClient("JOINFX", function(fields) play_join_light_for_host(fields[1]) end)
+        -- The same, sent as WHICH message rather than the words: written here
+        -- in this player's language, with the Pal's name looked up here too.
+        Net.OnClient("MSG", function(fields)
+            local player = safe_call(function() return require("PlayerRef").Get() end)
+            local tone, message = Capture.RenderHostMessage(fields, player)
+            if message == nil then return end
+            if show_log(player, message, tone) then
+                Logger.log("[PalBonds/Capture] [NOTIFY] from the host: " .. tostring(message))
+            end
+        end)
+        Net.OnClient("TOAST", function(fields)
+            local tone = tonumber(fields[1])
+            if tone ~= 1 and tone ~= 2 then tone = 1 end
+            local message = fields[2]
+            if message == nil or message == "" then return end
+            local player = safe_call(function() return require("PlayerRef").Get() end)
+            if show_log(player, message, tone) then
+                Logger.log("[PalBonds/Capture] [NOTIFY] from the host: " .. tostring(message))
+            end
+        end)
+    end
 
     -- Two-hundred-and-eighty-ninth pass (2026-09-09): the cage-VFX research is
     -- retired, and it was not free. probe_cage_vfx re-ran TWO FindAllOf world
@@ -657,6 +759,48 @@ end
 -- the capture threshold to actually joining is now ~5s + 2s, worth
 -- retuning live if it feels too long.
 local JOIN_CELEBRATION_DELAY_MS = 2000
+
+-- Co-op (2026-09-21, co-op run 1): the light is a spawned effect, and a
+-- spawned effect exists only on the machine that spawns it -- the guest never
+-- saw it, although everything else about the join reached them. So the owner
+-- of the world also tells a remote owner to spawn it on their own screen, at
+-- the same Pal (named by its stable id), just before the capture removes it.
+-- This runs on the celebration timer, which carries the Pal's owner as "the
+-- player" (PlayerRef's timer carry).
+local function show_join_light_to_remote_owner(pal)
+    local okRef, PlayerRef = pcall(require, "PlayerRef")
+    if not okRef or PlayerRef == nil then return end
+    local player = safe_call(function() return PlayerRef.Get() end)
+    if player == nil or not (PlayerRef.IsRemote and PlayerRef.IsRemote(player)) then return end
+    local palId = safe_call(function() return require("Personality").GetStableId(pal) end)
+    if palId == nil then return end
+    safe_call(function() require("Net").SendToPlayer(player, "JOINFX", palId) end)
+end
+
+-- The guest's side: find that Pal next to our player and play the light there.
+play_join_light_for_host = function(palId)
+    if palId == nil or palId == "" then return end
+    local player = safe_call(function() return require("PlayerRef").Get() end)
+    local origin = player and safe_call(function() return player:K2_GetActorLocation() end)
+    if origin == nil then return end
+    local pals = safe_call(function() return FindAllOf("PalCharacter") end)
+    if not pals then return end
+    for _, pal in ipairs(pals) do
+        if safe_call(function() return pal:IsValid() end) then
+            local loc = safe_call(function() return pal:K2_GetActorLocation() end)
+            if loc then
+                local dx, dy, dz = loc.X - origin.X, loc.Y - origin.Y, loc.Z - origin.Z
+                if (dx * dx + dy * dy + dz * dz) <= 3000 * 3000 and
+                   safe_call(function() return require("Personality").GetStableId(pal) end) == palId then
+                    spawn_niagara_at(pal, JOIN_VFX_ASSET_PATH)
+                    return
+                end
+            end
+        end
+    end
+    Logger.log("[PalBonds/Capture] [JOIN-VFX] the host asked for the join light, but that Pal is no longer here")
+end
+
 local function play_join_celebration_then(pal, continueFn)
     local actionComp = safe_call(function() return pal.ActionComponent end)
     local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
@@ -678,6 +822,7 @@ local function play_join_celebration_then(pal, continueFn)
     local scheduled = pcall(function()
         ExecuteInGameThreadWithDelay(JOIN_CELEBRATION_DELAY_MS, function()
             spawn_niagara_at(pal, JOIN_VFX_ASSET_PATH)
+            show_join_light_to_remote_owner(pal)
             continueFn()
         end)
     end)
@@ -856,14 +1001,6 @@ local function notify_bond_lost(pal, reason, knownName, knownFemale)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
-        local utility = get_pal_utility()
-        if utility == nil then return end
-        local manager = safe_call(function() return utility:GetLogManager(player) end)
-        if manager == nil then return end
-        local widgetClass = resolve_toast_widget_class(manager)
-        if widgetClass == nil then return end
-        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
-        if textLibrary == nil then return end
         local palName = knownName or resolve_pal_display_name(pal, player)
         local Locale = require("Locale")
         local who = palName or Locale.T("a_pal")
@@ -882,9 +1019,8 @@ local function notify_bond_lost(pal, reason, knownName, knownFemale)
         else
             message = Locale.T("abandoned", g)
         end
-        local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
-        if text == nil then return end
-        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 1 })
+        local key = (reason == "betrayed" and "betrayed") or (reason == "died" and "fell") or "abandoned"
+        show_log(player, message, 1, key, palName, g.female == true)
         Logger.log("[PalBonds/Capture] [NOTIFY] bond-lost message: " .. message)
     end)
 end
@@ -898,21 +1034,13 @@ end
 -- Written as its own function rather than by refactoring the notify helpers
 -- above -- those are working, shipped code and there is nothing to gain from
 -- reshaping them for a toggle.
-function Capture.ShowToast(message)
+-- `key` (optional) is the Locale key the message came from, so a guest gets it
+-- in its own language.
+function Capture.ShowToast(message, key)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
-        local utility = get_pal_utility()
-        if utility == nil then return end
-        local manager = safe_call(function() return utility:GetLogManager(player) end)
-        if manager == nil then return end
-        local widgetClass = resolve_toast_widget_class(manager)
-        if widgetClass == nil then return end
-        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
-        if textLibrary == nil then return end
-        local text = safe_call(function() return textLibrary:Conv_StringToText(tostring(message)) end)
-        if text == nil then return end
-        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 1 })
+        show_log(player, message, 1, key)
         Logger.log("[PalBonds/Capture] [NOTIFY] " .. tostring(message))
     end)
 end
@@ -923,19 +1051,9 @@ function Capture.NotifyStartedFollowing(name, female)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
-        local utility = get_pal_utility()
-        if utility == nil then return end
-        local manager = safe_call(function() return utility:GetLogManager(player) end)
-        if manager == nil then return end
-        local widgetClass = resolve_toast_widget_class(manager)
-        if widgetClass == nil then return end
-        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
-        if textLibrary == nil then return end
         local Locale = require("Locale")
         local message = Locale.T("following", { name = name or Locale.T("a_pal"), female = female == true })
-        local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
-        if text == nil then return end
-        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 2 })
+        show_log(player, message, 2, "following", name, female == true)
         Logger.log("[PalBonds/Capture] [NOTIFY] following message: " .. message)
     end)
 end
@@ -944,20 +1062,10 @@ function Capture.NotifyTrustShaken(pal)
     pcall(function()
         local player = safe_call(function() return require("PlayerRef").Get() end)
         if player == nil or not safe_call(function() return player:IsValid() end) then return end
-        local utility = get_pal_utility()
-        if utility == nil then return end
-        local manager = safe_call(function() return utility:GetLogManager(player) end)
-        if manager == nil then return end
-        local widgetClass = resolve_toast_widget_class(manager)
-        if widgetClass == nil then return end
-        local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
-        if textLibrary == nil then return end
         local palName = resolve_pal_display_name(pal, player)
         local Locale = require("Locale")
         local message = Locale.T("shaken", { name = palName or Locale.T("a_pal"), female = Capture.IsFemale(pal) })
-        local text = safe_call(function() return textLibrary:Conv_StringToText(message) end)
-        if text == nil then return end
-        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = 1 })
+        show_log(player, message, 1, "shaken", palName, Capture.IsFemale(pal))
         Logger.log("[PalBonds/Capture] [NOTIFY] trust-shaken message: " .. message)
     end)
 end
@@ -1060,7 +1168,17 @@ end
 -- lost its bond at all. Returns nil rather than a default for an unknown
 -- reason, so a caller can tell "no bond lost" from "bond lost, cause unrecorded"
 -- instead of quietly mislabelling one as the other.
+-- Co-op stage 3: on a guest, the nameplate reads the HOST's numbers
+-- (HostView.lua) -- a guest has no trust records or personalities of its own.
+local function guest_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return nil end
+    return HostView
+end
+
 function Capture.GetFledReason(pal)
+    local view = guest_view()
+    if view then return view.FledReason(pal) end
     local name = safe_call(function() return pal:GetFullName() end)
     if name == nil then return nil end
     local v = PermanentlyFled[name]
@@ -1091,6 +1209,8 @@ function Capture.ResetForNewWorld()
     Logger.log("[PalBonds/Capture] [WORLD-RESET] dropped " .. n .. " permanently-fled record(s) from the old world")
 end
 function Capture.HasPermanentlyFled(pal)
+    local view = guest_view()
+    if view then return view.FledReason(pal) ~= nil end
     local name = safe_call(function() return pal:GetFullName() end)
     return name ~= nil and PermanentlyFled[name] ~= nil
 end

@@ -37,6 +37,38 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+-- A dedicated server has nobody sitting at it: no screen to draw on, no
+-- keyboard of its own (co-op run 1: a key pressed in the game on the same PC
+-- ALSO reached the server's copy, which then messaged the only player).
+local function on_dedicated_server()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsDedicated) then return false end
+    local okAsk, yes = pcall(Session.IsDedicated)
+    return okAsk and yes == true
+end
+
+-- Co-op stage 3: a guest draws nameplates from the host's numbers
+-- (HostView.lua), but only once the host has actually sent some -- a host
+-- without PalBonds sends nothing, and then a guest shows nothing, rather
+-- than a field of "?" tags.
+local function guest_without_host_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return false end
+    return not HostView.HostHasPalBonds()
+end
+
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -122,6 +154,11 @@ local hasRegisteredBindHook = false
 --     a safety net, so a nameplate the hook somehow missed still gets its tag,
 --     just later instead of never.
 local pendingGauges = {}
+
+-- When each nameplate was last bound to a Pal (os.clock), keyed like
+-- gaugeHandleByKey. Only used by ResetForNewWorld -- see NEW-WORLD BINDS there.
+local gaugeBoundAt = {}
+local NEW_WORLD_BIND_GRACE_SECONDS = 20.0
 local NAMEPLATE_SWEEPS_AFTER_HOOK = 5
 local NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS = 15
 local nameplateSweepsSinceHook = 0
@@ -184,12 +221,18 @@ local function register_bind_hook_immediate(round)
     local hookPath = "/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle"
     local hookOk, hookErr = pcall(function()
         RegisterHook(hookPath, function(Context, TargetHandle)
+            -- Co-op run 2 (2026-09-21): NOT gated on the host view. A nameplate
+            -- learns its Pal only here, when the game binds it; the guest's
+            -- binds made before the host's first message were lost for good,
+            -- which is why the first Cattiva never showed a tag. Recording is
+            -- bookkeeping only -- the drawing (the tick) still waits.
             if world_is_closing() then return end
             local self = hook_get(Context)
             local handle = hook_get(TargetHandle)
             if self == nil or handle == nil then return end
             local key = describe_widget(self)
             gaugeHandleByKey[key] = handle
+            gaugeBoundAt[key] = os.clock()
             pendingGauges[key] = self
         end)
     end)
@@ -204,6 +247,7 @@ local function register_bind_hook_immediate(round)
                 if self == nil then return end
                 local key = describe_widget(self)
                 gaugeHandleByKey[key] = nil
+                gaugeBoundAt[key] = nil
                 pendingGauges[key] = nil
             end)
         end)
@@ -693,6 +737,18 @@ local function personality_display_text(actor, disposition, palId)
             return Locale.T(BROKEN_BOND_LABELS[why] or BROKEN_BOND_FALLBACK, g)
         end
     end
+    -- Co-op (2026-09-20, Dragón): a Pal that is bonding with ANOTHER player
+    -- says so, in the place the player is already looking, so nobody spends ten
+    -- minutes petting a Pal that will never answer them. Only ever true on the
+    -- other players' screens: the Pal's owner sees its normal tag, because this
+    -- asks whether it follows somebody who is not us.
+    local okCombat, CombatMod = pcall(require, "Combat")
+    if okCombat and CombatMod and CombatMod.ClaimedByAnotherPlayer then
+        if safe_call(function() return CombatMod.ClaimedByAnotherPlayer(actor) end) == true then
+            return Locale.T("tag_claimed", g)
+        end
+    end
+
     if not USE_PLAYER_FACING_PERSONALITY_NAMES then
         return disposition or "?"
     end
@@ -1683,6 +1739,12 @@ end
 local GAUGE_FLAG_PRUNE_EVERY_N_SCANS = 30   -- ~60s at SCAN_INTERVAL_MS
 local gaugeFlagScanCount = 0
 local function scan_for_gauge_widgets()
+    -- A guest draws only from the host's numbers (HostView.lua).
+    if guest_without_host_view() then return end
+    -- A dedicated server has no screen: no nameplates will ever exist, and
+    -- this sweep is a whole-world search every tick (co-op stage 2).
+    if on_dedicated_server() then return end
+
     -- Every wild Pal that ever showed an HP gauge left an entry here for the
     -- whole session (2026-09-12 growth audit). Prune the destroyed ones.
     gaugeFlagScanCount = gaugeFlagScanCount + 1
@@ -1963,19 +2025,64 @@ function Indicator.HeldReferencesFor(palId, actorAddr)
     return n
 end
 
+-- NEW-WORLD BINDS (2026-09-20, Dragón's Lullu and Petallia). The one way a
+-- nameplate finds its Pal is the handle BindFromHandle gave us: the widget's own
+-- bindedHandle field is unreadable in this UE4SS build (fifty-ninth pass). So a
+-- nameplate whose bind we lost can NEVER show a tag or a trust bar -- no sweep can
+-- recover it -- until the game happens to bind that widget again, which is why it
+-- looked random and never reproduced once you had walked around for a while.
+--
+-- And this reset was losing them. The log of both cases shows the new world's
+-- Pals already being rolled a second BEFORE the reset line: the world change is
+-- noticed by polling, a moment after the new world has started loading, and by
+-- then the game has already bound the new world's nameplates. Wiping every
+-- handle here threw those binds away with the old world's. Both Pals were bonded
+-- within 20 seconds of a reload; the one run that did not reproduce it waited
+-- longer.
+--
+-- So binds from the last NEW_WORLD_BIND_GRACE_SECONDS are kept and queued again.
+-- Anything older is the old world's and is dropped as before. A kept handle that
+-- turns out to be the old world's simply fails to resolve (every step of
+-- resolve_pal_actor_from_gauge is checked) and waits for its widget's next bind.
+local function keep_new_world_binds()
+    local now = os.clock()
+    local keptHandles, keptBoundAt, keptPending, kept = {}, {}, {}, 0
+    for key, handle in pairs(gaugeHandleByKey) do
+        local at = gaugeBoundAt[key]
+        if at ~= nil and (now - at) <= NEW_WORLD_BIND_GRACE_SECONDS then
+            keptHandles[key] = handle
+            keptBoundAt[key] = at
+            local widget = pendingGauges[key] or barInstalledForGauge[key]
+            if widget ~= nil and widget ~= true then keptPending[key] = widget end
+            kept = kept + 1
+        end
+    end
+    return keptHandles, keptBoundAt, keptPending, kept
+end
+
+-- Tests only: how many nameplates we know the Pal of, and how many are queued.
+function Indicator.BindCounts()
+    local h, p = 0, 0
+    for _ in pairs(gaugeHandleByKey) do h = h + 1 end
+    for _ in pairs(pendingGauges) do p = p + 1 end
+    return h, p
+end
+
 function Indicator.ResetForNewWorld()
     local bars, bosses = 0, 0
     for _ in pairs(trackedBars) do bars = bars + 1 end
     for _ in pairs(bossEntries) do bosses = bosses + 1 end
-    pendingGauges = {}
-    gaugeHandleByKey = {}
+    local keptHandles, keptBoundAt, keptPending, kept = keep_new_world_binds()
+    pendingGauges = keptPending
+    gaugeHandleByKey = keptHandles
+    gaugeBoundAt = keptBoundAt
     barInstalledForGauge = {}
     trackedBars = {}
     pendingBossGauges = {}
     bossEntries = {}
     nameplateSweepsSinceHook = 0
     Logger.log(string.format(
-        "[PalBonds/Indicator] [WORLD-RESET] dropped %d tracked nameplate bar(s) and %d boss bar(s) from the old world",
-        bars, bosses))
+        "[PalBonds/Indicator] [WORLD-RESET] dropped %d tracked nameplate bar(s) and %d boss bar(s) from the old world; kept %d nameplate bind(s) the new world had already made",
+        bars, bosses, kept))
 end
 return Indicator

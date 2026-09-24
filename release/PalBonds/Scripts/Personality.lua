@@ -5,6 +5,15 @@ local Personality = {}
 -- Shape: PersonalityState[palId] = { disposition = "friendly", speciesDefault = "friendly", presetClassName = "BP_AIResponsePreset_friendly_C" }
 local PersonalityState = {}
 
+-- Co-op stage 3: on a guest, the nameplate reads the HOST's numbers
+-- (HostView.lua) -- a guest has no trust records or personalities of its own.
+local function guest_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return nil end
+    return HostView
+end
+
+
 -- Hundred-and-fifty-third pass (2026-09-04): renamed from the old
 -- curious/skittish/hostile vocabulary to the REAL AIResponsePreset base
 -- names, at Dragón's explicit request — he originally used curious/
@@ -363,6 +372,18 @@ end
 -- Cost: one function call per hook invocation, no scan, no reflection -- and it
 -- is a plain boolean read the rest of the session.
 local playerRefForGate = nil
+-- A guest in somebody else's world owns nothing in it: the personalities, the
+-- follow actions and the join all belong to the machine hosting the world, and
+-- asking for the join from a client is a FATAL error in the game itself
+-- (measured 2026-09-20). So the whole mod stands down there, the same way it
+-- goes blind while a world is closing -- see Session.lua.
+local function we_are_a_guest()
+    local ok, Session = pcall(require, "Session")
+    if not (ok and Session and Session.IsGuest) then return false end
+    local okAsk, guest = pcall(Session.IsGuest)
+    return okAsk and guest == true
+end
+
 local function world_is_closing()
     if playerRefForGate == nil then
         local okReq, M = pcall(require, "PlayerRef")
@@ -764,6 +785,9 @@ end
 function Personality.GetOrInitState(palActor)
     local palId = Personality.GetStableId(palActor)
     if palId == nil then return nil end
+    -- Co-op stage 3: a guest never rolls a personality -- the host's copy did,
+    -- and the nameplate reads it from HostView. The id is all a caller needs.
+    if guest_view() then return palId end
     if PersonalityState[palId] == nil then
 
         -- THIRTY-SIXTH PASS (2026-09-02) FIX: this used to call
@@ -914,12 +938,16 @@ function Personality.SetDisposition(palId, disposition)
 end
 -- True for a Pal recorded as female (see GetOrInitState).
 function Personality.IsFemale(palId)
+    local view = guest_view()
+    if view then return view.Female(palId) end
     local st = palId ~= nil and PersonalityState[palId] or nil
     return st ~= nil and st.female == true
 end
 
 function Personality.GetDisposition(palId)
     if palId == nil then return nil end
+    local view = guest_view()
+    if view then return view.Disposition(palId) end
     local state = PersonalityState[palId]
     return state and state.disposition or nil
 end
@@ -1567,6 +1595,21 @@ local handledSensorAddresses = {}
 -- senseHookArmed tells the scan whether this list can be trusted: until the
 -- hook has registered, the scan keeps doing the world search exactly as before.
 local pawnByPalId = {}
+
+-- Co-op (HostView): a Pal a guest asked about, so the regular updates to
+-- guests keep including it from now on.
+function Personality.RememberPawn(palId, pawn)
+    if palId ~= nil and pawn ~= nil then pawnByPalId[palId] = pawn end
+end
+
+-- Co-op stage 3 (HostView): every Pal this machine knows, with its live
+-- character and its record, for the summaries sent to guests.
+function Personality.ForEachKnownPal(fn)
+    for palId, pawn in pairs(pawnByPalId) do
+        local okCall = pcall(fn, palId, pawn, PersonalityState[palId])
+        if not okCall then end
+    end
+end
 local senseHookArmed = false
 local function on_sensor_select_response(Context)
     local sensor = safe_call(function() return Context:get() end)
@@ -1619,7 +1662,7 @@ local function register_sensor_sense_hook(round)
     round = round or 1
     local ok, err = pcall(function()
         RegisterHook("/Script/Pal.PalAISensorComponent:SelectResponseBySenses", function(Context)
-            if world_is_closing() then return end
+            if world_is_closing() or we_are_a_guest() then return end
             safe_call(function() on_sensor_select_response(Context) end)
         end)
     end)
@@ -2365,6 +2408,9 @@ local PERSONALITY_UNSEEN_PRUNE_SECONDS = 600.0
 local PERSONALITY_SAFETY_SCAN_EVERY_N_SCANS = 8
 local personalityScanCount = 0
 local function scan_nearby_wild_pals_for_personality()
+    -- A guest owns nothing in this world (Session.lua): stand down.
+    if we_are_a_guest() then return end
+
     personalityScanCount = personalityScanCount + 1
     local now = os.clock()
 

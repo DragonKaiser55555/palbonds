@@ -5,6 +5,15 @@ local Personality = {}
 -- Shape: PersonalityState[palId] = { disposition = "friendly", speciesDefault = "friendly", presetClassName = "BP_AIResponsePreset_friendly_C" }
 local PersonalityState = {}
 
+-- Co-op stage 3: on a guest, the nameplate reads the HOST's numbers
+-- (HostView.lua) -- a guest has no trust records or personalities of its own.
+local function guest_view()
+    local ok, HostView = pcall(require, "HostView")
+    if not ok or HostView == nil or not HostView.IsGuest() then return nil end
+    return HostView
+end
+
+
 -- Hundred-and-fifty-third pass (2026-09-04): renamed from the old
 -- curious/skittish/hostile vocabulary to the REAL AIResponsePreset base
 -- names, at Dragón's explicit request — he originally used curious/
@@ -776,6 +785,9 @@ end
 function Personality.GetOrInitState(palActor)
     local palId = Personality.GetStableId(palActor)
     if palId == nil then return nil end
+    -- Co-op stage 3: a guest never rolls a personality -- the host's copy did,
+    -- and the nameplate reads it from HostView. The id is all a caller needs.
+    if guest_view() then return palId end
     if PersonalityState[palId] == nil then
 
         -- THIRTY-SIXTH PASS (2026-09-02) FIX: this used to call
@@ -926,12 +938,16 @@ function Personality.SetDisposition(palId, disposition)
 end
 -- True for a Pal recorded as female (see GetOrInitState).
 function Personality.IsFemale(palId)
+    local view = guest_view()
+    if view then return view.Female(palId) end
     local st = palId ~= nil and PersonalityState[palId] or nil
     return st ~= nil and st.female == true
 end
 
 function Personality.GetDisposition(palId)
     if palId == nil then return nil end
+    local view = guest_view()
+    if view then return view.Disposition(palId) end
     local state = PersonalityState[palId]
     return state and state.disposition or nil
 end
@@ -1579,6 +1595,21 @@ local handledSensorAddresses = {}
 -- senseHookArmed tells the scan whether this list can be trusted: until the
 -- hook has registered, the scan keeps doing the world search exactly as before.
 local pawnByPalId = {}
+
+-- Co-op (HostView): a Pal a guest asked about, so the regular updates to
+-- guests keep including it from now on.
+function Personality.RememberPawn(palId, pawn)
+    if palId ~= nil and pawn ~= nil then pawnByPalId[palId] = pawn end
+end
+
+-- Co-op stage 3 (HostView): every Pal this machine knows, with its live
+-- character and its record, for the summaries sent to guests.
+function Personality.ForEachKnownPal(fn)
+    for palId, pawn in pairs(pawnByPalId) do
+        local okCall = pcall(fn, palId, pawn, PersonalityState[palId])
+        if not okCall then end
+    end
+end
 local senseHookArmed = false
 local function on_sensor_select_response(Context)
     local sensor = safe_call(function() return Context:get() end)

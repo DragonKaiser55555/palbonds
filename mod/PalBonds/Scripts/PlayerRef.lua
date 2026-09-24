@@ -293,8 +293,116 @@ local function recheck(now, why)
 end
 
 -- The local player's PalPlayerCharacter, or nil if there is none right now.
+-- =====================================================================
+-- THE ACTING PLAYER (co-op, 2026-09-21)
+-- =====================================================================
+-- Everything in this mod asks PlayerRef.Get() for "the player", and in
+-- singleplayer that is always the one person at this machine. On a machine
+-- that owns a world other players have joined, work done FOR one of them --
+-- confirming their pet, starting their Pal's follow, putting a Pal in their
+-- party, telling them about it -- must see THAT player as "the player".
+--
+-- WithPlayer(player, fn, ...) runs fn with `player` as Get()'s answer and puts
+-- back whatever was there before, even when fn fails. A timer does not run
+-- inside this scope, so work that continues later must carry the player with
+-- it (Interaction's pet check, Trust's wait before a join). Singleplayer never
+-- sets it, so nothing there changes. See docs/multiplayer-questions.md.
+local actingStack = {}
+
+function PlayerRef.WithPlayer(player, fn, ...)
+    if player == nil then return fn(...) end
+    actingStack[#actingStack + 1] = player
+    local results = table.pack(pcall(fn, ...))
+    actingStack[#actingStack] = nil
+    if not results[1] then error(results[2], 0) end
+    return table.unpack(results, 2, results.n)
+end
+
+-- The player set by WithPlayer, or nil outside any such scope.
+function PlayerRef.Acting()
+    return actingStack[#actingStack]
+end
+
+-- ---------------------------------------------------------------------
+-- THE ACTING PLAYER RIDES ON TIMERS (stage 2, 2026-09-21)
+-- ---------------------------------------------------------------------
+-- A great deal of the work done for a player continues on a timer: the pet
+-- check's polls, the 20% calm-down's release checks, the wait before a join,
+-- a fight's combat window. Wrapping each call site by hand means that one
+-- forgotten timer silently acts for whoever sits at the host instead -- and
+-- nothing in the log would show it. So the timer itself carries the player: a
+-- delay scheduled while working for someone runs for that same someone. Every
+-- module looks the global up when it schedules (checked: none keeps a copy),
+-- so replacing it once here covers them all. A timer scheduled outside any
+-- such scope -- every recurring loop, all of singleplayer -- is untouched.
+local function install_timer_carry()
+    if rawget(_G, "__PalBondsTimerCarry") then return end
+    local original = rawget(_G, "ExecuteInGameThreadWithDelay")
+    if type(original) ~= "function" then return end
+    rawset(_G, "__PalBondsTimerCarry", true)
+    rawset(_G, "ExecuteInGameThreadWithDelay", function(ms, fn)
+        local acting = actingStack[#actingStack]
+        if acting == nil or type(fn) ~= "function" then return original(ms, fn) end
+        return original(ms, function() return PlayerRef.WithPlayer(acting, fn) end)
+    end)
+end
+install_timer_carry()
+
+-- A name for "whose bond is this" that survives the player dying: "local" for
+-- the player at this machine (all of singleplayer), and for a player on
+-- another machine the full name of their player CONTROLLER, which the engine
+-- keeps for as long as they stay connected, while their character is replaced
+-- at every respawn.
+function PlayerRef.OwnerKey(player)
+    if player == nil then return "local" end
+    if locally_controlled(player) ~= false then return "local" end
+    local ctrlName = nil
+    local ok = pcall(function()
+        local c = player.Controller
+        if c ~= nil and c:IsValid() then ctrlName = c:GetFullName() end
+    end)
+    if ok and ctrlName ~= nil then return tostring(ctrlName) end
+    local okN, n = pcall(function() return player:GetFullName() end)
+    return okN and tostring(n) or "remote"
+end
+
+-- The owner key of whoever this machine is working for right now.
+function PlayerRef.CurrentOwnerKey()
+    return PlayerRef.OwnerKey(actingStack[#actingStack])
+end
+
+-- A dedicated server has nobody sitting at it (Session.lua). Asked lazily:
+-- Session needs PlayerRef too.
+local function on_dedicated_server()
+    local ok, Session = pcall(require, "Session")
+    if not ok or Session == nil or Session.IsDedicated == nil then return false end
+    local okAsk, yes = pcall(Session.IsDedicated)
+    return okAsk and yes == true
+end
+
+-- True only for a player character another machine controls: a guest, seen
+-- from the machine that owns the world. Unreadable counts as local, which is
+-- what every build before co-op assumed.
+function PlayerRef.IsRemote(player)
+    if player == nil then return false end
+    return locally_controlled(player) == false
+end
+
 function PlayerRef.Get()
     local now = os.clock()
+
+    -- Work being done for a particular player (see WithPlayer above).
+    local acting = actingStack[#actingStack]
+    if acting ~= nil then
+        if is_valid(acting) then return acting end
+        return nil
+    end
+
+    -- Nobody sits at a dedicated server. Without this the "only one character
+    -- in the world" fallback below adopts the one guest as if it were ours --
+    -- and with two guests finds nobody, which the fast loop reads as the world
+    -- ending and resets every bond.
+    if on_dedicated_server() then return nil end
 
     -- The world is on its way out: hand nobody the player, so nothing the mod
     -- does can build a fresh reference into a world that is about to die. See

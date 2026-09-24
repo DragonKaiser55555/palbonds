@@ -54,6 +54,14 @@
     Always FindAllOf, never FindFirstOf: UE4SS issue #1328 (FindFirstOf
     dereferences before its null check), the crash-on-respawn investigation in
     Trust.lua/Combat.lua.
+
+    WHICH PLAYER IS OURS (2026-09-20, the first step towards co-op). Until now
+    every lookup here took the FIRST valid PalPlayerCharacter in the object
+    list. In singleplayer there is only ever one, so that was always right. In
+    a co-op world every player's character is loaded on every machine, and
+    "first in the list" is whoever the engine happens to list first -- which is
+    how a Workshop player watched the Digtoise HE befriended join his friend's
+    party instead (LuWicki97, 2026-09-15). See pick_local below.
 ]]
 
 local PlayerRef = {}
@@ -127,17 +135,119 @@ local function is_dead(player)
     return ok and dead == true
 end
 
+local function log_line(msg)
+    local ok, L = pcall(require, "Logger")
+    if ok and L and L.log then L.log("[PalBonds/PlayerRef] [PLAYER-LIFE] " .. msg) end
+end
+
+-- APawn::IsLocallyControlled(): true only for the character THIS machine
+-- controls, on the host and on a guest alike. Returns nil when the call is not
+-- available, which is a different answer from false and is treated as one.
+local function locally_controlled(p)
+    local ok, v = pcall(function() return p:IsLocallyControlled() end)
+    if not ok or type(v) ~= "boolean" then return nil end
+    return v
+end
+
+local unknownLogged = false
+local sawLocalTrue = false
+-- One line per session saying HOW our character was recognised. It is the only
+-- way to tell, from a player's log, whether this build answers the question at
+-- all -- which decides whether co-op can ever work.
+local resolvedLogged = false
+local lastNoLocalLogAt = -1e9
+local NO_LOCAL_LOG_SECONDS = 30.0
+
+-- Picks OUR player character out of everything the search returned.
+--
+-- Three outcomes, and each one is deliberate:
+--   * somebody answers true -> that is ours, wherever it sat in the list;
+--   * nobody answers true, there is exactly ONE character, and no character
+--     has ever answered true this session -> that one. A singleplayer world
+--     can never hold more, so if this build ever stopped answering the
+--     question, singleplayer keeps working exactly as it does today. This is
+--     the fail-open that matters most. Once some character HAS answered true
+--     we know the question works, so a lone character saying "not yours" is
+--     believed -- otherwise, in co-op, our character unloading for a moment
+--     would hand the mod the other player's;
+--   * nobody answers true, several characters, and the call never worked at
+--     all -> the first one (the old behaviour) plus one log line, because
+--     going blind would be worse than the bug we are fixing;
+--   * nobody answers true, several characters, and the call DID work -> nil.
+--     We are in a co-op world and our character is not possessed yet. Acting
+--     for the wrong player is exactly what this function exists to prevent,
+--     and the caller searches again shortly, so this heals by itself.
+local function pick_local(list, now)
+    local valid = {}
+    if type(list) == "table" then
+        for _, p in ipairs(list) do
+            if p ~= nil and is_valid(p) then valid[#valid + 1] = p end
+        end
+    end
+    if #valid == 0 then return nil end
+
+    local answered = false
+    for index, p in ipairs(valid) do
+        local mine = locally_controlled(p)
+        if mine == true then
+            sawLocalTrue = true
+            if not resolvedLogged then
+                resolvedLogged = true
+                log_line("our player character is the one this machine controls (IsLocallyControlled), out of " ..
+                    #valid .. " in this world")
+            end
+            if #valid > 1 and index > 1 then
+                log_line(string.format(
+                    "%d player characters in this world; ours is number %d — the old 'first one found' would have been somebody else's",
+                    #valid, index))
+            end
+            return p
+        end
+        if mine == false then answered = true end
+    end
+
+    if #valid == 1 and not sawLocalTrue then
+        if not resolvedLogged then
+            resolvedLogged = true
+            log_line("only one player character in this world and it did not answer IsLocallyControlled — using it, as before")
+        end
+        return valid[1]
+    end
+
+    if #valid == 1 then
+        if now ~= nil and (now - lastNoLocalLogAt) >= NO_LOCAL_LOG_SECONDS then
+            lastNoLocalLogAt = now
+            log_line("the only player character here is not ours — waiting for ours")
+        end
+        return nil
+    end
+
+    if not answered then
+        if not unknownLogged then
+            unknownLogged = true
+            log_line("IsLocallyControlled is not answering in this build — falling back to the first of the " ..
+                #valid .. " player characters found, which may be another player's")
+        end
+        return valid[1]
+    end
+
+    if now ~= nil and (now - lastNoLocalLogAt) >= NO_LOCAL_LOG_SECONDS then
+        lastNoLocalLogAt = now
+        log_line("none of the " .. #valid .. " player characters here is controlled by this machine yet — waiting for ours")
+    end
+    return nil
+end
+
 local function search(now, reason)
     searchCount = searchCount + 1
     cached, cachedName = nil, nil
     local ok, list = pcall(function() return FindAllOf("PalPlayerCharacter") end)
-    if ok and type(list) == "table" then
-        for _, p in ipairs(list) do
-            if p ~= nil and is_valid(p) then
-                cached = p
-                cachedAt = now
-                return p
-            end
+    if ok then
+        local mine = pick_local(list, now)
+        if mine ~= nil then
+            cached = mine
+            cachedAt = now
+            return mine
         end
     end
     lastMissAt = now
@@ -183,8 +293,116 @@ local function recheck(now, why)
 end
 
 -- The local player's PalPlayerCharacter, or nil if there is none right now.
+-- =====================================================================
+-- THE ACTING PLAYER (co-op, 2026-09-21)
+-- =====================================================================
+-- Everything in this mod asks PlayerRef.Get() for "the player", and in
+-- singleplayer that is always the one person at this machine. On a machine
+-- that owns a world other players have joined, work done FOR one of them --
+-- confirming their pet, starting their Pal's follow, putting a Pal in their
+-- party, telling them about it -- must see THAT player as "the player".
+--
+-- WithPlayer(player, fn, ...) runs fn with `player` as Get()'s answer and puts
+-- back whatever was there before, even when fn fails. A timer does not run
+-- inside this scope, so work that continues later must carry the player with
+-- it (Interaction's pet check, Trust's wait before a join). Singleplayer never
+-- sets it, so nothing there changes. See docs/multiplayer-questions.md.
+local actingStack = {}
+
+function PlayerRef.WithPlayer(player, fn, ...)
+    if player == nil then return fn(...) end
+    actingStack[#actingStack + 1] = player
+    local results = table.pack(pcall(fn, ...))
+    actingStack[#actingStack] = nil
+    if not results[1] then error(results[2], 0) end
+    return table.unpack(results, 2, results.n)
+end
+
+-- The player set by WithPlayer, or nil outside any such scope.
+function PlayerRef.Acting()
+    return actingStack[#actingStack]
+end
+
+-- ---------------------------------------------------------------------
+-- THE ACTING PLAYER RIDES ON TIMERS (stage 2, 2026-09-21)
+-- ---------------------------------------------------------------------
+-- A great deal of the work done for a player continues on a timer: the pet
+-- check's polls, the 20% calm-down's release checks, the wait before a join,
+-- a fight's combat window. Wrapping each call site by hand means that one
+-- forgotten timer silently acts for whoever sits at the host instead -- and
+-- nothing in the log would show it. So the timer itself carries the player: a
+-- delay scheduled while working for someone runs for that same someone. Every
+-- module looks the global up when it schedules (checked: none keeps a copy),
+-- so replacing it once here covers them all. A timer scheduled outside any
+-- such scope -- every recurring loop, all of singleplayer -- is untouched.
+local function install_timer_carry()
+    if rawget(_G, "__PalBondsTimerCarry") then return end
+    local original = rawget(_G, "ExecuteInGameThreadWithDelay")
+    if type(original) ~= "function" then return end
+    rawset(_G, "__PalBondsTimerCarry", true)
+    rawset(_G, "ExecuteInGameThreadWithDelay", function(ms, fn)
+        local acting = actingStack[#actingStack]
+        if acting == nil or type(fn) ~= "function" then return original(ms, fn) end
+        return original(ms, function() return PlayerRef.WithPlayer(acting, fn) end)
+    end)
+end
+install_timer_carry()
+
+-- A name for "whose bond is this" that survives the player dying: "local" for
+-- the player at this machine (all of singleplayer), and for a player on
+-- another machine the full name of their player CONTROLLER, which the engine
+-- keeps for as long as they stay connected, while their character is replaced
+-- at every respawn.
+function PlayerRef.OwnerKey(player)
+    if player == nil then return "local" end
+    if locally_controlled(player) ~= false then return "local" end
+    local ctrlName = nil
+    local ok = pcall(function()
+        local c = player.Controller
+        if c ~= nil and c:IsValid() then ctrlName = c:GetFullName() end
+    end)
+    if ok and ctrlName ~= nil then return tostring(ctrlName) end
+    local okN, n = pcall(function() return player:GetFullName() end)
+    return okN and tostring(n) or "remote"
+end
+
+-- The owner key of whoever this machine is working for right now.
+function PlayerRef.CurrentOwnerKey()
+    return PlayerRef.OwnerKey(actingStack[#actingStack])
+end
+
+-- A dedicated server has nobody sitting at it (Session.lua). Asked lazily:
+-- Session needs PlayerRef too.
+local function on_dedicated_server()
+    local ok, Session = pcall(require, "Session")
+    if not ok or Session == nil or Session.IsDedicated == nil then return false end
+    local okAsk, yes = pcall(Session.IsDedicated)
+    return okAsk and yes == true
+end
+
+-- True only for a player character another machine controls: a guest, seen
+-- from the machine that owns the world. Unreadable counts as local, which is
+-- what every build before co-op assumed.
+function PlayerRef.IsRemote(player)
+    if player == nil then return false end
+    return locally_controlled(player) == false
+end
+
 function PlayerRef.Get()
     local now = os.clock()
+
+    -- Work being done for a particular player (see WithPlayer above).
+    local acting = actingStack[#actingStack]
+    if acting ~= nil then
+        if is_valid(acting) then return acting end
+        return nil
+    end
+
+    -- Nobody sits at a dedicated server. Without this the "only one character
+    -- in the world" fallback below adopts the one guest as if it were ours --
+    -- and with two guests finds nobody, which the fast loop reads as the world
+    -- ending and resets every bond.
+    if on_dedicated_server() then return nil end
 
     -- The world is on its way out: hand nobody the player, so nothing the mod
     -- does can build a fresh reference into a world that is about to die. See
@@ -329,12 +547,7 @@ function PlayerRef.ProbeForNewPlayer(cancelSeconds)
     if not worldClosing then return nil end
     local now = os.clock()
     local ok, list = pcall(function() return FindAllOf("PalPlayerCharacter") end)
-    local found = nil
-    if ok and type(list) == "table" then
-        for _, p in ipairs(list) do
-            if p ~= nil and is_valid(p) then found = p break end
-        end
-    end
+    local found = ok and pick_local(list, now) or nil
     if found == nil then return nil end
     local foundAddress = address_of(found)
     if closingPlayerAddress == nil or foundAddress == nil or foundAddress ~= closingPlayerAddress then
@@ -352,6 +565,11 @@ function PlayerRef.ProbeForNewPlayer(cancelSeconds)
         return "cancelled"
     end
     return nil
+end
+
+-- Exposed for the harness: which of these characters is ours (see pick_local).
+function PlayerRef.PickLocal(list)
+    return pick_local(list, os.clock())
 end
 
 -- How many world searches have run this session (tests and profiling).

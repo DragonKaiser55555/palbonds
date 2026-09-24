@@ -1,6 +1,15 @@
 # 32 — PalBonds (behaviour mod for Palworld)
 
-**Progress: 98%**
+**Progress: 100%**
+
+Dragón's ruling (2026-09-23): *"we are already past the 1.0.0 version, which I
+would consider as the 100% - all the rest of things are just extras and add-ons
+to the mod"*. The global rubric's own definition agrees -- 100% is "finished and
+uploaded to its platform(s) for users" -- and PalBonds has been live on the
+Steam Workshop, Nexus and GitHub since 1.1.0, with 1.1.7 (co-op) live on
+2026-09-23. Everything after this point (the settings screen, releasing Pals,
+further co-op verification, cleanup) is post-1.0 extras, tracked in "Pending"
+and in the release sections, NOT as missing percentage.
 
 | Category | Weight | Done | Contributes |
 |---|---|---|---|
@@ -61,7 +70,10 @@ all of them. **Not verified:** 2 (needs a friend).
 
 **Next, in his stated order:** multiplayer, then the in-game settings screen,
 then releasing Pals back to the wild ("an extra out of scope from this
-project"). The immediate options are written up in
+project"). **Corrected by Dragón 2026-09-23:** that order was never a queue to
+wait in -- "if we cannot continue developing multiplayer because we still need
+some tests and another player to do so, then we simply advance with whatever we
+can". Blocked work never blocks the rest. The immediate options are written up in
 `docs/multiplayer-questions.md`:
 - a two-player session with a friend (the only thing that can confirm the claim
   system and answer what each player sees);
@@ -72,6 +84,77 @@ project"). The immediate options are written up in
 **The rubric does not move today:** multiplayer is not one of its categories and
 nothing in the shipped feature set changed. Recalculate when the settings screen
 lands or when co-op becomes a real, released feature.
+
+## 1.1.7 BUILT AND READY TO PUBLISH (2026-09-23) -- Dragón's go-ahead
+
+Co-op ships. His reasoning: no friend with a PC has been found, one machine has
+tested everything it can, so players become the test ("what if we ship it and
+just let players themselves tell us if they can now play with it or not").
+
+Built and verified before packaging:
+- `Session.ALLOW_GUEST_INPUT = true` (was `GUEST_INPUT_PROBE`, shipped false).
+  Set it to false to put a guest back to 1.1.6 behaviour.
+- The guest-food hole closed: a guest names the inventory slot to charge, so
+  the owner now checks that container is that player's OWN (their inventory
+  data's six container ids) before taking anything.
+- Server test settings file deleted (it had `Pet = 125`); source defaults
+  untouched at 50.
+- All 24 suites pass AGAINST `release/PalBonds/Scripts` itself, not just
+  `mod/`; hoist 2 / undef 4 known false positives; no dev flag on anywhere.
+- PERFORMANCE, measured not guessed (PresentMon, `perf-captures/2026-09-23_*`):
+  singleplayer 1.1.6 = 73.1 fps avg / 1% low 35.4 / 11.5 hitches per min;
+  the co-op build = 77.1 / 41.0 / 7.5. No repeating stall series in either, so
+  no timer of ours stutters the game. As a guest on the local dedicated server:
+  66.0 / 42.3 / 4.5 standing still, and 54.7 / 17.7 / 24.0 while actually
+  playing (hitches spread evenly, none periodic -- action-triggered work, the
+  radial-menu target search being the known 40-80 ms one). Dragón's earlier
+  "significantly laggier" was dev logging + the UE4SS console, both off now.
+- Release trees, zip and README updated: `release/PalBonds` and
+  `release/workshop/PalBonds` hold the 14 scripts (the three new files are
+  `Net.lua`, `HostView.lua`, `Session.lua`), `Info.json` Version 1.1.7,
+  `release/PalBonds-v1.1.7.zip` (17 entries, forward-slash paths),
+  README has a new MULTIPLAYER section.
+- Both installs (game + server) now hold the EXACT release scripts, logging
+  off, for a smoke run. The dev `Logger.lua` (DEBUG + diagnostics true) and
+  `ue4ss/UE4SS-settings.ini.devconsole-backup` restore development conditions.
+- **NEXUS: LIVE** (2026-09-23, 10:08PM page time): version 1.1.7, one main
+  file "PalBonds V1.1.7" (330 KB = our zip's 338,680 bytes), Dragón's six-line
+  changelog as agreed, his own short description. Page description untouched.
+- **WORKSHOP: prepared, not uploaded.** The upload folder
+  (`steamapps/workshop/content/1623730/3797816321/`) and both installed copies
+  (`Mods/NativeMods/UE4SS/Mods/PalBonds/Scripts`, `Mods/ManagedMods/PalBonds/
+  Info.json`) carry the 14 release scripts and Version 1.1.7, BOMs kept,
+  `.workshop.json` untouched -- so his Workshop test runs the real 1.1.7.
+- **Dev stack DISABLED for that test:** `Pal/Binaries/Win64/dwmapi.dll` and
+  `ue4ss/Mods/PalBonds/enabled.txt` both renamed `*.MODS-DISABLED`. Undo both
+  to develop again.
+- NOT done, waiting on Dragón: the Workshop upload itself; GitHub (commit,
+  release); and deleting `release/PalBonds-v1.1.6.zip` as previous releases did.
+- KNOWN UNTESTED at ship time, by anybody: two real players at once (claims,
+  one leaving mid-bond), a hosted world where the host also plays, the dungeon
+  RESYNC, and whether the guest's own food count updates on screen.
+
+## MULTIPLAYER IS THE ACTIVE WORK (2026-09-21)
+
+Dragón: make the mod work for co-op, hosted worlds and dedicated servers, by
+whatever route works, and ask him for any test that helps -- advance as far as
+possible before the two-player session with a friend. The plan (host-
+authoritative: the world's owner does every Pal-side job, guests supply input
+and show display) and the current test are in `docs/multiplayer-questions.md`,
+"THE PLAN", "Net probe run 1" (the private line works both ways), "Stage 1"
+(built, and co-op run 1 PASSED: a guest's pets, follow, join and messages all
+worked on the dedicated server) and "Stages 2 and 3" (built 2026-09-21,
+harness-tested, awaiting co-op run 2: several players per host/server, claims,
+dedicated-server detection, the join light and bars/tags for guests via the NEW
+`HostView.lua`; release notes for later are listed there). Co-op runs 2 and 3
+done (run 3: the whole guest loop works on a dedicated server, combat assist
+included); the run 3 fixes (guest-language messages, per-player F10, F8 and
+food charging for guests, ask backoff) are built and deployed, awaiting co-op
+run 4 -- planned as the single friend session. **Machine state for co-op run 1:** the local
+dedicated server has a manual UE4SS (rename its `dwmapi.dll` to remove), the
+server net probe, AND PalBonds itself with full logging and a TEST settings file
+(`Pet = 125`, delete after); the game's dev copy has `GUEST_INPUT_PROBE = true`
+in Session.lua (mod/ ships false) and the client net probe mod in `ue4ss/Mods`.
 
 ## Where we stand — read this first (2026-09-15, after the performance work)
 
@@ -1025,6 +1108,72 @@ it clearly should have logged, check this filter before theorising.** Anything
 that must survive the filter needs a tag that is not on that list — the tag
 bind-hook lines now use `[TAGS]` for exactly this reason.
 
+## Curiosity, and a player answer we will need: Auri cannot be bonded (2026-09-20)
+
+Dragón asked why Auri — the blue-haired NPC with the `Hablar` prompt, standing
+near a boss tower — is completely unaffected by the mod. She is popular enough
+that players will eventually ask us the same thing, so the answer is recorded
+here rather than re-derived later.
+
+**She is not a character.** Identified with UE4SS's own `DumpAllActors`
+(`Ctrl + Numpad 7`, bound in `ue4ss/Mods/Keybinds/Scripts/main.lua`) while
+standing next to her — she appeared 138 units from the player as:
+
+```
+/Game/Pal/Blueprint/FlowGraph/TalkableLevelObject/SkyBoss/
+    BP_PalTalkableLevelObject_SkyBoss.BP_PalTalkableLevelObject_SkyBoss_C
+```
+
+Her full chain, read from `ue4ss/CXXHeaderDump`:
+
+```
+BP_PalTalkableLevelObject_SkyBoss_C
+  -> BP_TalkableLevelObjectBase_Modify_C
+    -> APalLevelObject_Talkable
+      -> APalLevelObjectActor
+        -> AActor
+```
+
+She never touches `ACharacter`, let alone `APalCharacter`. In the game's own
+terms she is a *level object* — the same family as a warp point or a relic —
+that happens to carry a person-shaped mesh. Her internal name is `SkyBoss`
+because the asset is named after the encounter she belongs to, not after her;
+siblings in the same folder are `BP_PalTalkableLevelObject_GrassBoss01` and
+`BP_PalTalkableLevelObject_StrongOldMan001_Release`, one greeter per tower.
+
+Her base class carries only: `UPalSkeletalMeshComponent CharacterMesh` (the
+body), `UPalInteractableSphereComponentNative` (the `Hablar` prompt),
+`UPalNPCTalkFlowComponent` (dialogue), `UPalLookAtComponent` + a single
+`IdleAnimation` montage (she turns her head and loops), and
+`UPalLimitVolumeBoxComponent` (you cannot walk through her). There is no
+capsule, no movement component, no HP, no AI controller and no
+`UPalIndividualCharacterHandle`. She also has `VisibilityCondition` /
+`OnQuestStateChanged` / `SetHiddenAndDisableCollision` wired to the quest
+manager, so she blinks in and out of existence, collision included, as a prop
+does.
+
+That single fact explains every symptom Dragón observed: no name plate, no HP
+bar, and capture spheres passing straight through her. It also explains the
+mod's silence — `find_targeted_pal` builds its candidate list from
+`FindAllOf("PalCharacter")` with no filtering afterwards, so she is never a
+candidate to reject. Ten F8 presses from two metres away all logged
+`not looking at any Pal`, with no rejection line anywhere, because the mod
+cannot perceive her at all.
+
+**Why we will not "fix" this.** Every pillar of PalBonds hangs off the
+individual character handle she does not have: trust is stored per stable
+individual ID, personality reads the AI sensor's response preset, the trust bar
+attaches under a `BP_PalNPCHPGauge` widget, and capture calls
+`PalCaptureSuccess` on the handle. For her, all four point at nothing.
+Supporting her would not extend the mod; it would be a second mod sharing the
+folder.
+
+**The short answer for players:** Auri is not a Pal or an NPC in the game's
+code — she is a scripted part of the scenery with dialogue attached, with no
+health, no stats and no capture target, which is also why Pal Spheres pass
+through her. PalBonds only works on things the game itself treats as Pals, so
+there is nothing there for it to bond with.
+
 ## Known open defects
 
 0. **Microstutters — FIXED in v1.1.2 (committed to GitHub 2026-09-15; stores
@@ -1243,18 +1392,24 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
    "KNOWN LIMITATION: bonded wild Pals despawn when you travel far" below
    **before** touching this again, and do not re-run the experiments listed
    there as dead ends.
-2. **Singleplayer only.** Not designed for co-op or dedicated servers; see
-   "Multiplayer support" under Pending. Official servers do not allow mods.
-3. **`LoopAsync` fallbacks still present** in `Trust.lua` and `Indicator.lua`,
-   dead code that would only run in the emergency it is unsafe for.
-4. **World-change references never cleared:** `Indicator.trackedBars` holds
-   actors across a world change; `Interaction` writes `SpawnedOtomo` into a
-   GameInstance-lived widget and never clears it, same for
-   `pendingWildFeedTarget`.
-5. **`FindFirstOf` exposure** (UE4SS issue #1328): `Capture.lua` still has 4
-   and `Interaction.lua` 3 `FindFirstOf("PalPlayerCharacter")` calls. None is
-   per hit.
-6. **`find_targeted_pal` costs 42-47ms per scan** while the radial menu is open.
+2. ~~Singleplayer only~~ **— NO LONGER TRUE as of 1.1.7 (2026-09-23):** co-op
+   and dedicated servers are supported and shipped. What is untested is listed
+   under "1.1.7 BUILT AND READY TO PUBLISH". Official servers still do not
+   allow mods.
+3. **`LoopAsync` fallbacks still present** (re-counted 2026-09-23: Trust 5,
+   Indicator 1, Combat 1), dead code that would only run in the emergency it
+   is unsafe for.
+4. **World-change references never cleared:** partly fixed. `Indicator` and
+   `Interaction` both have a `ResetForNewWorld` since 1.1.4 (tracked bars,
+   boss entries, `pendingWildFeedTarget`, the radial caches). What is still
+   never cleared is the `SpawnedOtomo` field PalBonds writes into the
+   GameInstance-lived radial widget.
+5. **`FindFirstOf` exposure** (UE4SS issue #1328): re-counted 2026-09-23,
+   `Capture.lua` has 0 and `Interaction.lua` 1
+   `FindFirstOf("PalPlayerCharacter")`. None is per hit.
+6. **`find_targeted_pal` costs 40-80ms per scan** while the radial menu is
+   open (42-47 ms in 2026-09-15's measurement, 76-78 ms in run 3b's). It is
+   the largest named cost left, in singleplayer as well as co-op.
 7. **No settings screen.** The F9 and F10 toggles are session-only.
 8. **Friendly fire** is contained, not prevented (see the combat section).
 9. **Hotkeys fire while typing in chat** — declined by Dragón 2026-09-14 as
@@ -1263,6 +1418,69 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
 ---
 
 ## Pending, deliberately deferred
+
+**SETTINGS ARE READ ONCE AT LOAD (noted 2026-09-23, Dragón asked).** The
+settings file is parsed when the mod loads and most modules copy the values
+into locals at that moment (`Interaction.lua`'s keys and gains, `Trust.lua`'s
+passive tick, `Capture.lua`'s join bonus), so editing the file mid-session
+changes nothing until the game restarts. F9 and F10 are the only live
+switches, and they are session-only. A live re-read (poll the file, or reload
+on demand, and have modules ask `Settings.Get` at use time) is the
+prerequisite for the in-game settings screen -- do it first, not after.
+
+
+**New player report (2026-09-21): Hakaishin Beerus, crash with other mods, plays
+co-op.** Posted in Toxik's Steam thread. Report copied to
+`docs/bug-reports/hakaishin-0921-rentry.md`. `EXCEPTION_ACCESS_VIOLATION reading
+0x0`, VCRUNTIME140 memcpy under UE4SS frames, the same stack hash twice, one of
+those with Pal Insight fully removed, so Pal Insight is not shown to be the cause
+(Dragón's first read was an HP-bar overlap). Two open leads, NEITHER assumed:
+(a) the guest-join fatal crash from `docs/multiplayer-questions.md` if they were
+a guest (note: that one is a `LowLevelFatalError` assert, a different signature);
+(b) the UE4SS build, since the signature matches Esaeon's `c838a8ac` crash --
+but Dragón ruled that Toxik's crash is NOT assumed to be Esaeon's, so ask, don't
+diagnose. PalBonds strings "in crash memory" prove nothing (loaded script text is
+always in memory). Reply drafted asking: singleplayer/host/guest, what they were
+doing, the UE4SS Git SHA, and a PalBonds-only run -- the same triage as Esaeon.
+
+**THEY ANSWERED (2026-09-21, Steam Workshop): it is the known UE4SS build.**
+Singleplayer, feeding a Pal, PalBonds alone with every other mod unsubscribed
+and its leftover folders deleted, on **UE4SS Git SHA `c838a8ac`** -- the same
+15 July build behind every one of Esaeon's crashes, which updating to Okaetsu's
+`2281fa31` fixed with no PalBonds change. They also ask whether we can ship an
+"older UE4SS compatibility patch", because a newer loader breaks other DLL mods
+they use and will not update for. Technical answer for a reply: PalBonds is Lua
+only and the faulting frames are inside UE4SS's own native code, so nothing in
+this mod can patch it; and the build we point at is Okaetsu's Palworld-specific
+one (what the Workshop dependency installs), not the main UE4SS line their DLL
+mods broke on, so that exact build is worth trying. What goes in the reply is
+Dragón's call.
+
+**AND THAT ANSWER DID NOT HOLD (2026-09-22, their reply).** Two corrections
+from them, both of which kill the "it is the old build" conclusion above:
+1. They have **only ever used the Palworld UE4SS** (Okaetsu's line), never the
+   mainline one — so the premise that a newer mainline loader broke their DLL
+   mods was ours, not theirs.
+2. They have already tested **`2281fa31` (3 Sept), and it crashes equally**.
+   "Trust me, tested it a bunch."
+So this is an OPEN crash report on the build we recommend, not a solved one,
+and nothing in the Esaeon finding explains it. They also point out that other
+Palworld mod authors ship old-UE4SS compatibility patches (DynamicPals on
+Nexus, 2 days ago), and that a large group of players deliberately stay on
+older builds — Okaetsu's own advice to them was to pick one and stay there.
+They were explicit that they are not demanding anything.
+**What would actually move this:** the trace build already sitting in
+`release/test-build/` (`PalBonds-v1.1.6-test2.zip`, DEBUG + `TRACE_PHASES` on,
+`docs/crash-testing-guide.md` written for it) writes one line before every job
+it starts, so the last line in the log names the job that was running when the
+game died. Publishing it to them is Dragón's call, as `test1` was for Esaeon.
+Until that log exists, we cannot say whether a compatibility patch is even a
+thing on our side; do not promise one, and do not repeat "update your UE4SS".
+**DRAGÓN'S RULING (2026-09-23): wait for them to open the issue and move on.**
+"We have already recommended him to do so at least twice already - if he still
+fails to do so, we simply continue forward, we cant stop a whole proyect for 1
+person." Note the trace build is ALREADY public if they ever want it: GitHub
+pre-release `v1.1.6-test2`, with `crash-testing-guide.md` attached.
 
 **New player reports (2026-09-19, after 1.1.5 shipped — not yet triaged by Dragón):**
 - **CRASH AROUND THE JOIN, two independent reports.** Esaeon (Proton,
@@ -1289,6 +1507,21 @@ bind-hook lines now use `[TAGS]` for exactly this reason.
   report (Swordfish, twice, uneven terrain). Earlier judged base-game, but
   petting wild Pals only exists through our mod.
 - **Feature request (Swordfish):** a way to release Pals back into the wild.
+- **ANSWERED AND CLOSED, verified 2026-09-23 (do not re-list these as open):**
+  - GitHub issue #1 (Esaeon) is **CLOSED** on the repo. Dragón's instruction at
+    the time: close it so nobody reading the repo thinks the project is stuck
+    on it or abandoned.
+  - The 17 Sep design feedback (ralanost, Warframe666: cooldown feel, no
+    indicator, favourite food, bonding through fighting, no distance limit)
+    was **answered by Dragón on Nexus, 18 Sep 4:23PM**. His answer is the
+    design ruling: bonding takes time on purpose and scales with level (a Pal
+    at or above your level takes much longer, a much lower one needs 2-3
+    interactions, a Kinship Peach can be enough); there is NO cooldown in the
+    mod -- the options hide while the Pal finishes a base-game animation or
+    when you are not aimed at it; and you do not wait around, because a Pal at
+    50% follows you and keeps bonding while you farm or build.
+  - Mammorest through the floor: answered 18 Sep as a base-game clipping issue
+    that the pet/feed alignment makes more visible.
 - **Icon (Meail):** use the meme image as the Workshop icon. Dragón's call.
 - **DRAGÓN'S TRIAGE (2026-09-19):**
   - Crash: do NOT treat the two reports as one bug yet. Swordfish said it was
@@ -1675,8 +1908,10 @@ cleanup (next update).
   README.md known-issues entry. Also ask whether the Nexus/Workshop
   descriptions should mention forgiveness.
 - **Next update's cleanup, not done now to keep the verified build unchanged:**
-  old disabled mechanisms still sit in the code behind false flags (e.g. the
-  "real-Otomo-composite" and "move-order nudge" paths in Combat). Audit and
+  old disabled mechanisms still sit in the code behind false flags. STILL
+  PRESENT, verified 2026-09-23 in `Combat.lua`: `USE_OLD_MOVE_ORDER_NUDGE`,
+  `USE_REPEATED_OTOMO_COMPOSITE`, `USE_ORBIT_WHEN_AT_GOAL`,
+  `USE_MOVE_TO_ACTOR_FOLLOW`, `USE_NATIVE_LEASH_FOLLOW` -- all false. Audit and
   delete them.
 
 **1.1.4 TEST RUN (2026-09-18, 15:10–15:25): PASSED.** Dragón: "everything
@@ -2046,6 +2281,17 @@ they fail against 1.1.3.
       fire, according to their reading of the UE4SS source. PalBonds uses only
       the game-thread `ExecuteInGameThreadWithDelay` plus the dead `LoopAsync`
       fallbacks.
+  - **Creative Menu 1.2.4 studied (2026-09-23, Dragón asked whether we could
+    make our menu like its F1 screen).** It is NOT a Lua mod and there is no
+    technique to copy: its UI ships as cooked Blueprint/UMG assets in
+    `Paks/CreativeMenu_P.pak` (~570 KB, widgets under
+    `/Game/Pal/Mods/CreativeMenu/BP/UI/...`), loaded through the game's own
+    PalModLoader (`/Game/Pal/PalModLoader/BP_Base`, `WBP_UI`). Its leftover
+    LogicMods pak says the LogicMod version is retired and UE4SS is no longer
+    needed for it. Reproducing that route needs the Unreal editor plus
+    Palworld's asset set and a cooked pak -- a different toolchain from ours.
+    The DarnMenu finding above stands as our route: a settings screen in pure
+    Lua, attached to the ESC menu rather than a key of its own.
 - **1.1.5 CONTENT COMPLETE AND LIVE-TESTED (2026-09-18, end of day).**
   Dragón: "we will consider this the new most recent stable version". Pushed
   to GitHub. Tomorrow (09-19) is release packaging only, the usual steps:
