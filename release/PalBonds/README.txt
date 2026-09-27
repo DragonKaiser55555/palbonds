@@ -58,7 +58,8 @@ WHAT IT ADDS
   * Tags and messages follow your game's language, in every language
     Palworld offers.
 
-  * A settings file lets you tune the mod to your liking (see SETTINGS below).
+  * An in-game settings screen, new in 1.1.9 (see SETTINGS below). Press ESC,
+    open PalBonds, and change anything while you play.
 
   * Co-op, new in 1.1.7 (see MULTIPLAYER below). Play together on a shared
     world and each of you can befriend your own Pals.
@@ -74,41 +75,38 @@ CONTROLS
        so you can keep a group instead of them joining your party)
 
   Stand within about 5 metres and look directly at a Pal for any of these.
-  F8, F9 and F10 can be changed in the settings file.
+  F8, F9 and F10 can be rebound to any key in the settings screen.
 
 
 SETTINGS
 --------
 
-  The first time you start the game with PalBonds, it creates a settings
-  file, PalBonds_settings.lua. In it you can change:
+  Press ESC and open PalBonds. Everything changes while you play - no
+  restart, nothing to edit by hand.
 
-    - how much trust petting, playing and feeding give (each food rarity
-      and Kinship Peaches included)
-    - how fast your followers warm up to you on their own
-    - how much friendship a Pal gets when it joins you
-    - how often each personality appears
-    - whether the personality tags start shown or hidden
-    - the keys for Play, the tags and passive bonding
-    - the language of the tags and messages (it follows your game's
-      language by default)
+    - language
+    - friendship points: what petting, playing and each food give, both
+      Kinship Peaches included, the passive gain from followers, and the
+      bonus a Pal arrives with when it joins you
+    - how often each personality appears, and whether Pals of that
+      personality can be befriended at all
+    - the abandonment and betrayal triggers, and whether passive gain and
+      the personality tags start on
+    - accessibility: friendship bar colour, personality tag colour, tag size
+    - keybinds: click a row and press the key you want. Any key.
 
-  Where to find it: in Steam, right-click Palworld > Manage > Browse local
-  files, then open
+  Your choices are saved to PalBonds_settings.lua, in the shared folder
+  beside the mod:
 
     - UE4SS from the Steam Workshop:
           Mods/NativeMods/UE4SS/Mods/shared/PalBonds_settings.lua
     - UE4SS installed by hand:
           Pal/Binaries/Win64/ue4ss/Mods/shared/PalBonds_settings.lua
 
-  How to edit it:
-
-    1. Close the game. The file is only read when the game starts.
-    2. Open the file with Notepad.
-    3. Change a number (or the text in quotes, for keys and the language).
-       Every setting has a short explanation above it. Keep the comma at the
-       end of the line.
-    4. Save, and start the game.
+  They survive updates, and the file can be copied between installs or
+  handed to someone running a server. You can still edit it by hand if you
+  prefer - close the game first, since it is only read at startup, and keep
+  the comma at the end of each line.
 
   A value the mod can't use falls back to its default, and the UE4SS console
   says which one. If the file gets messed up, delete it: a fresh one with
@@ -116,8 +114,6 @@ SETTINGS
 
   When an update adds a new setting, it is added to the file you already have,
   at the end, with your own values left exactly as they were.
-
-  An in-game settings screen is planned for a future update.
 
 
 REQUIREMENTS
@@ -213,8 +209,8 @@ THINGS WORTH KNOWING
     get a message saying it gave up on you.
 
   * The personality tag toggle (F9) lasts for the current session only. The
-    next time you launch the game the tags go back to what the settings file
-    says (shown, unless you set ShowPersonalityTags to 0).
+    next time you launch the game the tags go back to what the settings
+    screen says they start as.
 
 
 TROUBLESHOOTING

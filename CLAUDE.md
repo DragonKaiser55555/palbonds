@@ -57,11 +57,18 @@ Settings section now describes the in-game screen, and the "an in-game settings
 screen is planned" promise is gone. Dragón edited the live pages himself and is
 doing the other 15 languages separately.
 
-**STILL STALE — `release/PalBonds/README.txt`.** It ships INSIDE the zip and
-still tells players to close the game and edit `PalBonds_settings.lua` in
-Notepad (lines ~61, 77, 84-120, 216), and still says the screen is "planned for
-a future update". Fixing it means rebuilding and re-uploading the zip, so
-Dragón parked it — do it with 1.1.10 unless he says otherwise.
+**README updated, HELD FOR 1.2.0 (Dragón's call).**
+`release/PalBonds/README.txt` now describes the in-game screen: the SETTINGS
+section is rewritten, the keybind line says "rebound to any key in the settings
+screen", the feature bullet names the screen as new in 1.1.9, the F9 note points
+at what the screen says tags start as, and the "planned for a future update"
+promise is gone. The settings file keeps a short paragraph — it is where choices
+are saved and still hand-editable.
+
+**MIND THIS:** `release/PalBonds/README.txt` now DIFFERS from the README inside
+the shipped `PalBonds-v1.1.9.zip`, on purpose. The zip was not rebuilt and
+nothing was re-uploaded. **Rebuild the zip when 1.2.0 is packaged** — until
+then, the tree is ahead of what players have.
 
 ## 1.1.9 PACKAGED — was awaiting upload (2026-09-27)
 
