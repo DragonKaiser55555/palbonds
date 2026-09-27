@@ -1,46 +1,11 @@
--- ===========================================================================
--- TRANSLATIONS (2026-09-18)
--- ===========================================================================
--- Every word PalBonds puts on screen, in the 16 languages Palworld ships
--- besides English (EPalLanguageType: JP, EN, ZH_HANS, ZH_HANT, FR, IT, DE, ES,
--- KO, PT_BR, RU, TH, VI, ID, TR, PL, ES_MX). Spanish is one neutral set for
--- Spain and Latin America, like Dragón's Workshop description. Wording follows
--- his Workshop translations where they already name the thing (the "tags",
--- the passive friendship gain, trust, giving up on you).
---
--- WHICH LANGUAGE: Dragón's rule, "follow the game's language automatically IF
--- WE CAN, if not then simply default it to English". The engine's current
--- language follows the in-game option (probe, 2026-09-18: "en" in English,
--- "es-MX" in Spanish), so "auto" reads it. The player can force one with
--- Language in the settings file. Anything unrecognised is English.
---
--- The engine is asked at most once every LANGUAGE_REFRESH_SECONDS, and only
--- from code that already runs on the game thread (tag refresh, toasts).
--- Palworld itself only changes language between launches (Dragón, 2026-09-18),
--- so in practice this settles on the first read; the refresh is just cheap.
 local Locale = {}
 
 local LANGUAGE_REFRESH_SECONDS = 10.0
 
--- Language names the settings file accepts, besides "auto".
 Locale.LANGUAGES = { "en", "es", "fr", "de", "it", "pl", "pt", "ru", "tr", "vi", "th", "id", "ja", "ko", "zh-hans", "zh-hant" }
 
--- {name} is replaced by the Pal's name (which the game already gives in its
--- own language). Where a word changes with the Pal's gender (Spanish,
--- Portuguese, French, Italian, Polish, Russian) the entry is { m = , f = };
--- Dragón caught a female Pal tagged "Curioso" (2026-09-18).
---
--- REVIEWED 2026-09-18 by ChatGPT and Gemini (docs/reveiw-chatgpt.txt,
--- docs/review-gemini.txt) plus a second pass of our own. Changed: tr Feral
--- (Azgın has a sexual meaning), pl Feral (Szalony = crazy), id Scarred
--- (Terluka is physical), ja/ko Curious (noun -> adjective), fr Scarred
--- (Trahi), fr/it shaken (keep the flinch), id abandoned, tr capitalisation,
--- fr idiom, es shaken ("flaquea", Dragón's pick), and Russian to informal ты
--- (Dragón wanted the mod to read casually). Kept on purpose: German neuter
--- "das Pal"/"Es", as in his German description, and the F10 system names,
--- which are his descriptions' own terms.
 local S = {
-    -- Personality tags
+
     tag_normal = {
         en = "Normal", es = "Normal", fr = { m = "Normal", f = "Normale" }, de = "Normal", it = "Normale", pl = { m = "Normalny", f = "Normalna" },
         pt = "Normal", ru = { m = "Обычный", f = "Обычная" }, tr = "Normal", vi = "Bình thường", th = "ปกติ", id = "Normal",
@@ -71,8 +36,7 @@ local S = {
         pt = "Hostil", ru = { m = "Враждебный", f = "Враждебная" }, tr = "Düşmanca", vi = "Thù địch", th = "ก้าวร้าว", id = "Bermusuhan",
         ja = "敵対的", ko = "적대적", ["zh-hans"] = "敌对", ["zh-hant"] = "敵對",
     },
-    -- Not the word for "wild": every Pal the mod tags is a wild Pal, so
-    -- Salvaje/Wild/Dziki/Vahşi would read as a description of all of them.
+
     tag_feral = {
         en = "Feral", es = "Feroz", fr = "Féroce", de = "Rasend", it = "Feroce", pl = { m = "Wściekły", f = "Wściekła" },
         pt = "Feroz", ru = { m = "Свирепый", f = "Свирепая" }, tr = "Gözü dönmüş", vi = "Hung dữ", th = "ดุร้าย", id = "Buas",
@@ -88,8 +52,7 @@ local S = {
         pt = { m = "Apegado", f = "Apegada" }, ru = { m = "Привязанный", f = "Привязанная" }, tr = "Bağlı", vi = "Gắn bó", th = "ผูกพัน", id = "Terikat",
         ja = "絆", ko = "유대", ["zh-hans"] = "亲近", ["zh-hant"] = "親近",
     },
-    -- Dragón: "scarred for betrayed pals so players actually feel bad for what
-    -- they did". An emotional wound, not a physical one.
+
     tag_scarred = {
         en = "Scarred", es = { m = "Resentido", f = "Resentida" }, fr = { m = "Trahi", f = "Trahie" }, de = "Verbittert", it = { m = "Rancoroso", f = "Rancorosa" }, pl = { m = "Urażony", f = "Urażona" },
         pt = { m = "Magoado", f = "Magoada" }, ru = { m = "Обиженный", f = "Обиженная" }, tr = "Kırgın", vi = "Tổn thương", th = "เจ็บใจ", id = "Sakit hati",
@@ -106,17 +69,12 @@ local S = {
         ja = "警戒", ko = "경계", ["zh-hans"] = "警惕", ["zh-hant"] = "警惕",
     },
 
-    -- Co-op (2026-09-20): shown to OTHER players over a wild Pal that is
-    -- already bonding with someone, so they understand it will not respond to
-    -- them. The Pal's own player never sees this word. Short by necessity, and
-    -- the idea is "taken / already has someone", not "reserved by the system".
     tag_claimed = {
         en = "Claimed", es = { m = "Ocupado", f = "Ocupada" }, fr = { m = "Pris", f = "Prise" }, de = "Vergeben", it = { m = "Occupato", f = "Occupata" }, pl = { m = "Zajęty", f = "Zajęta" },
         pt = { m = "Ocupado", f = "Ocupada" }, ru = { m = "Занят", f = "Занята" }, tr = "Sahipli", vi = "Đã có chủ", th = "ถูกจอง", id = "Sudah diklaim",
         ja = "先約", ko = "선점됨", ["zh-hans"] = "已有主", ["zh-hant"] = "已有主",
     },
 
-    -- Messages
     a_pal = {
         en = "A Pal", es = "Un Pal", fr = "Un Pal", de = "Ein Pal", it = "Un Pal", pl = "Pal",
         pt = "Um Pal", ru = "Pal", tr = "Bir Pal", vi = "Một Pal", th = "Pal ตัวหนึ่ง", id = "Seekor Pal",
@@ -140,9 +98,7 @@ local S = {
         ["zh-hans"] = "{name}选择与你同行。它完全信任你。",
         ["zh-hant"] = "{name}選擇與你同行。牠完全信任你。",
     },
-    -- 50%: the Pal starts following (Dragón's idea, 2026-09-18: "(palname)
-    -- seems to like you"), with the second half saying what the player will
-    -- now see it do.
+
     following = {
         en = "{name} seems to like you and starts following you.",
         es = "{name} parece tenerte cariño y empieza a seguirte.",
@@ -301,12 +257,218 @@ local S = {
         ["zh-hans"] = "被动友情增长：关闭 - 你的 Pal 会保持现有的信任。",
         ["zh-hant"] = "被動友情值增加：關閉 - 你的 Pal 會保持現有的信任。",
     },
+
+    menu_close = {
+        en = "Close", es = "Cerrar", fr = "Fermer", de = "Schließen", it = "Chiudi", pl = "Zamknij",
+        pt = "Fechar", ru = "Закрыть", tr = "Kapat", vi = "Đóng", th = "ปิด", id = "Tutup",
+        ja = "閉じる", ko = "닫기", ["zh-hans"] = "关闭", ["zh-hant"] = "關閉",
+    },
+
+    sec_trust = {
+        en = "Friendship points", es = "Puntos de amistad", fr = "Points d'amitié", de = "Freundschaftspunkte", it = "Punti amicizia", pl = "Punkty przyjaźni",
+        pt = "Pontos de amizade", ru = "Очки дружбы", tr = "Dostluk puanları", vi = "Điểm tình bạn", th = "คะแนนมิตรภาพ", id = "Poin persahabatan", ja = "友情ポイント", ko = "우정 포인트", ["zh-hans"] = "友情点数", ["zh-hant"] = "友情點數",
+    },
+    sec_personality = {
+        en = "Personality chances", es = "Probabilidades de personalidad", fr = "Chances de personnalité", de = "Persönlichkeits-Chancen", it = "Probabilità di personalità", pl = "Szanse osobowości",
+        pt = "Chances de personalidade", ru = "Шансы характеров", tr = "Kişilik şansları", vi = "Tỉ lệ tính cách", th = "โอกาสของนิสัย", id = "Peluang kepribadian", ja = "性格の出現率", ko = "성격 확률", ["zh-hans"] = "性格出现概率", ["zh-hant"] = "性格出現機率",
+    },
+    sec_language = {
+        en = "Language", es = "Idioma", fr = "Langue", de = "Sprache", it = "Lingua", pl = "Język",
+        pt = "Idioma", ru = "Язык", tr = "Dil", vi = "Ngôn ngữ", th = "ภาษา", id = "Bahasa", ja = "言語", ko = "언어", ["zh-hans"] = "语言", ["zh-hant"] = "語言",
+    },
+    sec_display = {
+        en = "Modules", es = "Módulos", fr = "Modules", de = "Module", it = "Moduli", pl = "Moduły",
+        pt = "Módulos", ru = "Модули", tr = "Modüller", vi = "Mô-đun", th = "โมดูล", id = "Modul", ja = "モジュール", ko = "모듈", ["zh-hans"] = "模块", ["zh-hant"] = "模組",
+    },
+    sec_keys = {
+        en = "Keys", es = "Teclas", fr = "Touches", de = "Tasten", it = "Tasti", pl = "Klawisze",
+        pt = "Teclas", ru = "Клавиши", tr = "Tuşlar", vi = "Phím", th = "ปุ่ม", id = "Tombol", ja = "キー", ko = "키", ["zh-hans"] = "按键", ["zh-hant"] = "按鍵",
+    },
+    set_pet = {
+        en = "Petting", es = "Acariciar", fr = "Caresser", de = "Streicheln", it = "Accarezzare", pl = "Głaskanie",
+        pt = "Acariciar", ru = "Поглаживание", tr = "Sevmek", vi = "Vuốt ve", th = "การลูบ", id = "Membelai", ja = "なでる", ko = "쓰다듬기", ["zh-hans"] = "抚摸", ["zh-hant"] = "撫摸",
+    },
+    set_play = {
+        en = "Playing", es = "Jugar", fr = "Jouer", de = "Spielen", it = "Giocare", pl = "Zabawa",
+        pt = "Brincar", ru = "Игра", tr = "Oynamak", vi = "Chơi cùng", th = "การเล่น", id = "Bermain", ja = "あそぶ", ko = "놀아주기", ["zh-hans"] = "玩耍", ["zh-hant"] = "玩耍",
+    },
+    set_feed = {
+        en = "Feeding", es = "Alimentar", fr = "Nourrir", de = "Füttern", it = "Nutrire", pl = "Karmienie",
+        pt = "Alimentar", ru = "Кормление", tr = "Beslemek", vi = "Cho ăn", th = "การให้อาหาร", id = "Memberi makan", ja = "エサをあげる", ko = "먹이 주기", ["zh-hans"] = "喂食", ["zh-hant"] = "餵食",
+    },
+    set_feed_common = {
+        en = "Extra for common food", es = "Extra por comida común", fr = "Bonus pour nourriture commune", de = "Extra für gewöhnliches Futter", it = "Extra per cibo comune", pl = "Dodatek za zwykłe jedzenie",
+        pt = "Extra por comida comum", ru = "Бонус за обычную еду", tr = "Sıradan yemek için ek", vi = "Thêm cho thức ăn thường", th = "เพิ่มสำหรับอาหารธรรมดา", id = "Tambahan untuk makanan biasa", ja = "コモンのエサのボーナス", ko = "일반 먹이 보너스", ["zh-hans"] = "普通食物加成", ["zh-hant"] = "普通食物加成",
+    },
+    set_feed_uncommon = {
+        en = "Extra for uncommon food", es = "Extra por comida poco común", fr = "Bonus pour nourriture peu commune", de = "Extra für ungewöhnliches Futter", it = "Extra per cibo non comune", pl = "Dodatek za niezwykłe jedzenie",
+        pt = "Extra por comida incomum", ru = "Бонус за необычную еду", tr = "Az bulunan yemek için ek", vi = "Thêm cho thức ăn không phổ biến", th = "เพิ่มสำหรับอาหารไม่ธรรมดา", id = "Tambahan untuk makanan tidak biasa", ja = "アンコモンのエサのボーナス", ko = "고급 먹이 보너스", ["zh-hans"] = "罕见食物加成", ["zh-hant"] = "罕見食物加成",
+    },
+    set_feed_rare = {
+        en = "Extra for rare food", es = "Extra por comida rara", fr = "Bonus pour nourriture rare", de = "Extra für seltenes Futter", it = "Extra per cibo raro", pl = "Dodatek za rzadkie jedzenie",
+        pt = "Extra por comida rara", ru = "Бонус за редкую еду", tr = "Nadir yemek için ek", vi = "Thêm cho thức ăn hiếm", th = "เพิ่มสำหรับอาหารหายาก", id = "Tambahan untuk makanan langka", ja = "レアのエサのボーナス", ko = "희귀 먹이 보너스", ["zh-hans"] = "稀有食物加成", ["zh-hant"] = "稀有食物加成",
+    },
+    set_feed_epic = {
+        en = "Extra for epic food", es = "Extra por comida épica", fr = "Bonus pour nourriture épique", de = "Extra für episches Futter", it = "Extra per cibo epico", pl = "Dodatek za epickie jedzenie",
+        pt = "Extra por comida épica", ru = "Бонус за эпическую еду", tr = "Destansı yemek için ek", vi = "Thêm cho thức ăn sử thi", th = "เพิ่มสำหรับอาหารระดับเอปิก", id = "Tambahan untuk makanan epik", ja = "エピックのエサのボーナス", ko = "영웅 먹이 보너스", ["zh-hans"] = "史诗食物加成", ["zh-hant"] = "史詩食物加成",
+    },
+    set_feed_legendary = {
+        en = "Extra for legendary food", es = "Extra por comida legendaria", fr = "Bonus pour nourriture légendaire", de = "Extra für legendäres Futter", it = "Extra per cibo leggendario", pl = "Dodatek za legendarne jedzenie",
+        pt = "Extra por comida lendária", ru = "Бонус за легендарную еду", tr = "Efsanevi yemek için ek", vi = "Thêm cho thức ăn truyền thuyết", th = "เพิ่มสำหรับอาหารระดับตำนาน", id = "Tambahan untuk makanan legendaris", ja = "レジェンドのエサのボーナス", ko = "전설 먹이 보너스", ["zh-hans"] = "传说食物加成", ["zh-hant"] = "傳說食物加成",
+    },
+
+    set_peach_lesser = {
+        en = "Little Kinship Peach", es = "Fruta de afecto pequeña (Little Kinship Peach)", fr = "Petit fruit d'affection (Little Kinship Peach)", de = "Kleine Zuneigungsfrucht (Little Kinship Peach)", it = "Piccolo frutto dell'affetto (Little Kinship Peach)", pl = "Mały owoc więzi (Little Kinship Peach)",
+        pt = "Fruta de afeto pequena (Little Kinship Peach)", ru = "Малый плод привязанности (Little Kinship Peach)", tr = "Küçük bağ meyvesi (Little Kinship Peach)", vi = "Quả thân thiết nhỏ (Little Kinship Peach)", th = "ผลไม้ความผูกพันเล็ก (Little Kinship Peach)", id = "Buah kasih kecil (Little Kinship Peach)", ja = "小さな絆の実 (Little Kinship Peach)", ko = "작은 유대의 열매 (Little Kinship Peach)", ["zh-hans"] = "小型羁绊果实 (Little Kinship Peach)", ["zh-hant"] = "小型羈絆果實 (Little Kinship Peach)",
+    },
+    set_peach = {
+        en = "Kinship Peach", es = "Fruta de afecto (Kinship Peach)", fr = "Fruit d'affection (Kinship Peach)", de = "Zuneigungsfrucht (Kinship Peach)", it = "Frutto dell'affetto (Kinship Peach)", pl = "Owoc więzi (Kinship Peach)",
+        pt = "Fruta de afeto (Kinship Peach)", ru = "Плод привязанности (Kinship Peach)", tr = "Bağ meyvesi (Kinship Peach)", vi = "Quả thân thiết (Kinship Peach)", th = "ผลไม้ความผูกพัน (Kinship Peach)", id = "Buah kasih (Kinship Peach)", ja = "絆の実 (Kinship Peach)", ko = "유대의 열매 (Kinship Peach)", ["zh-hans"] = "羁绊果实 (Kinship Peach)", ["zh-hant"] = "羈絆果實 (Kinship Peach)",
+    },
+    set_passive = {
+        en = "Passive friendship gain while following", es = "Ganancia pasiva de amistad al seguirte", fr = "Gain d'amitié passif en te suivant", de = "Passiver Freundschaftsgewinn beim Folgen", it = "Guadagno passivo di amicizia mentre ti segue", pl = "Pasywny przyrost przyjaźni podczas podążania",
+        pt = "Ganho passivo de amizade ao te seguir", ru = "Пассивный рост дружбы, пока Pal следует", tr = "Takip ederken pasif dostluk kazanımı", vi = "Tăng tình bạn thụ động khi đi theo", th = "การเพิ่มมิตรภาพแบบอัตโนมัติขณะเดินตาม", id = "Perolehan persahabatan pasif saat mengikuti", ja = "ついてくる間の受動的な友情値上昇", ko = "따라올 때 수동 우정 상승", ["zh-hans"] = "跟随时的被动友情增长", ["zh-hant"] = "跟隨時的被動友情增加",
+    },
+    set_join = {
+        en = "Friendship when a Pal joins you", es = "Amistad al unirse un Pal", fr = "Amitié quand un Pal te rejoint", de = "Freundschaft beim Beitritt eines Pals", it = "Amicizia quando un Pal si unisce", pl = "Przyjaźń przy dołączeniu Pala",
+        pt = "Amizade quando um Pal se junta", ru = "Дружба при присоединении Pal", tr = "Bir Pal katıldığında dostluk", vi = "Tình bạn khi Pal gia nhập", th = "มิตรภาพเมื่อ Pal เข้าร่วม", id = "Persahabatan saat Pal bergabung", ja = "仲間になったときの友情値", ko = "합류할 때의 우정", ["zh-hans"] = "Pal 加入时的友情值", ["zh-hant"] = "Pal 加入時的友情值",
+    },
+    set_language = {
+        en = "Language", es = "Idioma", fr = "Langue", de = "Sprache", it = "Lingua", pl = "Język",
+        pt = "Idioma", ru = "Язык", tr = "Dil", vi = "Ngôn ngữ", th = "ภาษา", id = "Bahasa", ja = "言語", ko = "언어", ["zh-hans"] = "语言", ["zh-hant"] = "語言",
+    },
+    set_tags = {
+        en = "Show personality tags", es = "Mostrar etiquetas de personalidad", fr = "Afficher les étiquettes de personnalité", de = "Persönlichkeits-Tags anzeigen", it = "Mostra le etichette di personalità", pl = "Pokaż etykiety osobowości",
+        pt = "Mostrar etiquetas de personalidade", ru = "Показывать метки характера", tr = "Kişilik etiketlerini göster", vi = "Hiện thẻ tính cách", th = "แสดงป้ายนิสัย", id = "Tampilkan label kepribadian", ja = "性格タグを表示", ko = "성격 태그 표시", ["zh-hans"] = "显示性格标签", ["zh-hant"] = "顯示性格標籤",
+    },
+    set_key_play = {
+        en = "Play key", es = "Tecla de jugar", fr = "Touche Jouer", de = "Taste für Spielen", it = "Tasto Gioca", pl = "Klawisz zabawy",
+        pt = "Tecla de brincar", ru = "Клавиша игры", tr = "Oynama tuşu", vi = "Phím chơi cùng", th = "ปุ่มเล่น", id = "Tombol bermain", ja = "あそぶキー", ko = "놀아주기 키", ["zh-hans"] = "玩耍按键", ["zh-hant"] = "玩耍按鍵",
+    },
+    set_key_tags = {
+        en = "Tags key", es = "Tecla de etiquetas", fr = "Touche Étiquettes", de = "Taste für Tags", it = "Tasto Etichette", pl = "Klawisz etykiet",
+        pt = "Tecla de etiquetas", ru = "Клавиша меток", tr = "Etiket tuşu", vi = "Phím thẻ", th = "ปุ่มป้าย", id = "Tombol label", ja = "タグキー", ko = "태그 키", ["zh-hans"] = "标签按键", ["zh-hant"] = "標籤按鍵",
+    },
+    set_key_passive = {
+        en = "Passive trust key", es = "Tecla de confianza pasiva", fr = "Touche confiance passive", de = "Taste für passives Vertrauen", it = "Tasto fiducia passiva", pl = "Klawisz pasywnego zaufania",
+        pt = "Tecla de confiança passiva", ru = "Клавиша пассивного доверия", tr = "Pasif güven tuşu", vi = "Phím tin tưởng thụ động", th = "ปุ่มความไว้ใจแบบอัตโนมัติ", id = "Tombol kepercayaan pasif", ja = "受動的な信頼キー", ko = "수동 신뢰 키", ["zh-hans"] = "被动信任按键", ["zh-hant"] = "被動信任按鍵",
+    },
+    menu_press_key = {
+        en = "Press a key", es = "Pulsa una tecla", fr = "Appuie sur une touche", de = "Drücke eine Taste", it = "Premi un tasto", pl = "Naciśnij klawisz",
+        pt = "Pressione uma tecla", ru = "Нажми клавишу", tr = "Bir tuşa bas", vi = "Nhấn một phím", th = "กดปุ่ม", id = "Tekan sebuah tombol", ja = "キーを押してください", ko = "키를 누르세요", ["zh-hans"] = "请按一个键", ["zh-hant"] = "請按一個鍵",
+    },
+
+    menu_press_key_cancel = {
+        en = "Esc to cancel", es = "Esc para cancelar", fr = "Échap pour annuler", de = "Esc zum Abbrechen", it = "Esc per annullare", pl = "Esc, aby anulować",
+        pt = "Esc para cancelar", ru = "Esc — отмена", tr = "İptal için Esc", vi = "Esc để hủy", th = "กด Esc เพื่อยกเลิก", id = "Esc untuk membatalkan", ja = "Escでキャンセル", ko = "Esc로 취소", ["zh-hans"] = "按 Esc 取消", ["zh-hant"] = "按 Esc 取消",
+    },
+    menu_applies_now = {
+        en = "Changes apply right away", es = "Los cambios se aplican al instante", fr = "Les changements s'appliquent aussitôt", de = "Änderungen gelten sofort", it = "Le modifiche si applicano subito", pl = "Zmiany działają od razu",
+        pt = "As mudanças se aplicam na hora", ru = "Изменения применяются сразу", tr = "Değişiklikler hemen geçerli olur", vi = "Thay đổi áp dụng ngay", th = "การเปลี่ยนแปลงมีผลทันที", id = "Perubahan langsung berlaku", ja = "変更はすぐに反映されます", ko = "변경은 바로 적용됩니다", ["zh-hans"] = "更改立即生效", ["zh-hant"] = "更改立即生效",
+    },
+
+    menu_save = {
+        en = "Save", es = "Guardar", fr = "Enregistrer", de = "Speichern", it = "Salva", pl = "Zapisz",
+        pt = "Salvar", ru = "Сохранить", tr = "Kaydet", vi = "Lưu", th = "บันทึก", id = "Simpan", ja = "保存", ko = "저장", ["zh-hans"] = "保存", ["zh-hant"] = "儲存",
+    },
+    menu_cancel = {
+        en = "Cancel", es = "Cancelar", fr = "Annuler", de = "Abbrechen", it = "Annulla", pl = "Anuluj",
+        pt = "Cancelar", ru = "Отмена", tr = "İptal", vi = "Hủy", th = "ยกเลิก", id = "Batal", ja = "キャンセル", ko = "취소", ["zh-hans"] = "取消", ["zh-hant"] = "取消",
+    },
+    menu_defaults = {
+        en = "Restore defaults", es = "Restaurar valores por defecto", fr = "Rétablir les valeurs par défaut", de = "Standardwerte wiederherstellen", it = "Ripristina i valori predefiniti", pl = "Przywróć domyślne",
+        pt = "Restaurar padrões", ru = "Сбросить настройки", tr = "Varsayılanlara dön", vi = "Khôi phục mặc định", th = "คืนค่าเริ่มต้น", id = "Kembalikan ke bawaan", ja = "初期値に戻す", ko = "기본값으로 되돌리기", ["zh-hans"] = "恢复默认值", ["zh-hant"] = "恢復預設值",
+    },
+    menu_auto = {
+        en = "Auto", es = "Automático", fr = "Auto", de = "Automatisch", it = "Automatico", pl = "Automatyczny",
+        pt = "Automático", ru = "Авто", tr = "Otomatik", vi = "Tự động", th = "อัตโนมัติ", id = "Otomatis", ja = "自動", ko = "자동", ["zh-hans"] = "自动", ["zh-hant"] = "自動",
+    },
+    menu_saved = {
+        en = "Saved", es = "Guardado", fr = "Enregistré", de = "Gespeichert", it = "Salvato", pl = "Zapisano",
+        pt = "Salvo", ru = "Сохранено", tr = "Kaydedildi", vi = "Đã lưu", th = "บันทึกแล้ว", id = "Tersimpan", ja = "保存しました", ko = "저장했습니다", ["zh-hans"] = "已保存", ["zh-hant"] = "已儲存",
+    },
+
+    sec_accessibility = {
+        en = "Accessibility", es = "Accesibilidad", fr = "Accessibilité", de = "Barrierefreiheit", it = "Accessibilità", pl = "Dostępność",
+        pt = "Acessibilidade", ru = "Доступность", tr = "Erişilebilirlik", vi = "Trợ năng", th = "การช่วยการเข้าถึง", id = "Aksesibilitas", ja = "アクセシビリティ", ko = "접근성", ["zh-hans"] = "无障碍", ["zh-hant"] = "無障礙",
+    },
+    set_abandonment = {
+        en = "A Pal left behind gives up on you", es = "Un Pal que dejas atrás se rinde contigo", fr = "Un Pal laissé derrière finit par renoncer", de = "Ein zurückgelassener Pal gibt dich auf", it = "Un Pal lasciato indietro rinuncia a te", pl = "Pal zostawiony z tyłu rezygnuje z ciebie",
+        pt = "Um Pal deixado para trás desiste de você", ru = "Оставленный позади Pal перестаёт ждать", tr = "Geride bırakılan bir Pal senden vazgeçer", vi = "Pal bị bỏ lại sẽ từ bỏ bạn", th = "Pal ที่ถูกทิ้งไว้จะเลิกรอคุณ", id = "Pal yang ditinggal akan menyerah padamu", ja = "置いていかれたPalはあなたを諦める", ko = "두고 온 Pal은 당신을 포기합니다", ["zh-hans"] = "被留下的 Pal 会放弃你", ["zh-hant"] = "被留下的 Pal 會放棄你",
+    },
+    set_betrayal = {
+        en = "Hitting a Pal can end the bond", es = "Golpear a un Pal puede romper el vínculo", fr = "Frapper un Pal peut briser le lien", de = "Ein Schlag kann die Bindung beenden", it = "Colpire un Pal può spezzare il legame", pl = "Uderzenie Pala może zerwać więź",
+        pt = "Bater em um Pal pode romper o vínculo", ru = "Удар может разорвать связь", tr = "Bir Pal'a vurmak bağı koparabilir", vi = "Đánh một Pal có thể phá vỡ mối liên kết", th = "การตี Pal อาจทำให้สายสัมพันธ์ขาด", id = "Memukul Pal bisa memutus ikatan", ja = "Palを叩くと絆が切れることがある", ko = "Pal을 때리면 유대가 끊길 수 있습니다", ["zh-hans"] = "攻击 Pal 可能会断开羁绊", ["zh-hant"] = "攻擊 Pal 可能會斷開羈絆",
+    },
+    set_bar_color = {
+        en = "Friendship bar colour", es = "Color de la barra de amistad", fr = "Couleur de la barre d'amitié", de = "Farbe der Freundschaftsleiste", it = "Colore della barra dell'amicizia", pl = "Kolor paska przyjaźni",
+        pt = "Cor da barra de amizade", ru = "Цвет шкалы дружбы", tr = "Dostluk çubuğu rengi", vi = "Màu thanh tình bạn", th = "สีแถบมิตรภาพ", id = "Warna bilah persahabatan", ja = "友情バーの色", ko = "우정 바 색상", ["zh-hans"] = "友情条颜色", ["zh-hant"] = "友情條顏色",
+    },
+    set_tag_color = {
+        en = "Personality tag colour", es = "Color de la etiqueta de personalidad", fr = "Couleur de l'étiquette de personnalité", de = "Farbe des Persönlichkeits-Tags", it = "Colore dell'etichetta di personalità", pl = "Kolor etykiety osobowości",
+        pt = "Cor da etiqueta de personalidade", ru = "Цвет метки характера", tr = "Kişilik etiketi rengi", vi = "Màu thẻ tính cách", th = "สีป้ายนิสัย", id = "Warna label kepribadian", ja = "性格タグの色", ko = "성격 태그 색상", ["zh-hans"] = "性格标签颜色", ["zh-hant"] = "性格標籤顏色",
+    },
+    set_tag_size = {
+        en = "Personality tag size", es = "Tamaño de la etiqueta de personalidad", fr = "Taille de l'étiquette de personnalité", de = "Größe des Persönlichkeits-Tags", it = "Dimensione dell'etichetta di personalità", pl = "Rozmiar etykiety osobowości",
+        pt = "Tamanho da etiqueta de personalidade", ru = "Размер метки характера", tr = "Kişilik etiketi boyutu", vi = "Cỡ thẻ tính cách", th = "ขนาดป้ายนิสัย", id = "Ukuran label kepribadian", ja = "性格タグの大きさ", ko = "성격 태그 크기", ["zh-hans"] = "性格标签大小", ["zh-hant"] = "性格標籤大小",
+    },
+    opt_name = {
+        en = "Same as the name", es = "Igual que el nombre", fr = "Comme le nom", de = "Wie der Name", it = "Come il nome", pl = "Tak jak nazwa",
+        pt = "Igual ao nome", ru = "Как имя", tr = "İsimle aynı", vi = "Giống tên", th = "เหมือนชื่อ", id = "Sama seperti nama", ja = "名前と同じ", ko = "이름과 동일", ["zh-hans"] = "与名称相同", ["zh-hant"] = "與名稱相同",
+    },
+    opt_gold = {
+        en = "Gold", es = "Dorado", fr = "Or", de = "Gold", it = "Oro", pl = "Złoty",
+        pt = "Dourado", ru = "Золотой", tr = "Altın", vi = "Vàng kim", th = "ทอง", id = "Emas", ja = "ゴールド", ko = "금색", ["zh-hans"] = "金色", ["zh-hant"] = "金色",
+    },
+    opt_white = {
+        en = "White", es = "Blanco", fr = "Blanc", de = "Weiß", it = "Bianco", pl = "Biały",
+        pt = "Branco", ru = "Белый", tr = "Beyaz", vi = "Trắng", th = "ขาว", id = "Putih", ja = "ホワイト", ko = "흰색", ["zh-hans"] = "白色", ["zh-hant"] = "白色",
+    },
+    opt_red = {
+        en = "Red", es = "Rojo", fr = "Rouge", de = "Rot", it = "Rosso", pl = "Czerwony",
+        pt = "Vermelho", ru = "Красный", tr = "Kırmızı", vi = "Đỏ", th = "แดง", id = "Merah", ja = "レッド", ko = "빨간색", ["zh-hans"] = "红色", ["zh-hant"] = "紅色",
+    },
+    opt_green = {
+        en = "Green", es = "Verde", fr = "Vert", de = "Grün", it = "Verde", pl = "Zielony",
+        pt = "Verde", ru = "Зелёный", tr = "Yeşil", vi = "Xanh lá", th = "เขียว", id = "Hijau", ja = "グリーン", ko = "초록색", ["zh-hans"] = "绿色", ["zh-hant"] = "綠色",
+    },
+    opt_blue = {
+        en = "Blue", es = "Azul", fr = "Bleu", de = "Blau", it = "Blu", pl = "Niebieski",
+        pt = "Azul", ru = "Синий", tr = "Mavi", vi = "Xanh dương", th = "น้ำเงิน", id = "Biru", ja = "ブルー", ko = "파란색", ["zh-hans"] = "蓝色", ["zh-hant"] = "藍色",
+    },
+    opt_purple = {
+        en = "Purple", es = "Morado", fr = "Violet", de = "Lila", it = "Viola", pl = "Fioletowy",
+        pt = "Roxo", ru = "Фиолетовый", tr = "Mor", vi = "Tím", th = "ม่วง", id = "Ungu", ja = "パープル", ko = "보라색", ["zh-hans"] = "紫色", ["zh-hant"] = "紫色",
+    },
+    opt_small = {
+        en = "Small", es = "Pequeño", fr = "Petite", de = "Klein", it = "Piccola", pl = "Mała",
+        pt = "Pequeno", ru = "Маленький", tr = "Küçük", vi = "Nhỏ", th = "เล็ก", id = "Kecil", ja = "小", ko = "작게", ["zh-hans"] = "小", ["zh-hant"] = "小",
+    },
+    opt_normal = {
+        en = "Normal", es = "Normal", fr = "Normale", de = "Normal", it = "Normale", pl = "Normalna",
+        pt = "Normal", ru = "Обычный", tr = "Normal", vi = "Bình thường", th = "ปกติ", id = "Normal", ja = "標準", ko = "보통", ["zh-hans"] = "标准", ["zh-hant"] = "標準",
+    },
+    opt_large = {
+        en = "Large", es = "Grande", fr = "Grande", de = "Groß", it = "Grande", pl = "Duża",
+        pt = "Grande", ru = "Большой", tr = "Büyük", vi = "Lớn", th = "ใหญ่", id = "Besar", ja = "大", ko = "크게", ["zh-hans"] = "大", ["zh-hant"] = "大",
+    },
+    opt_huge = {
+        en = "Very large", es = "Muy grande", fr = "Très grande", de = "Sehr groß", it = "Molto grande", pl = "Bardzo duża",
+        pt = "Muito grande", ru = "Очень большой", tr = "Çok büyük", vi = "Rất lớn", th = "ใหญ่มาก", id = "Sangat besar", ja = "特大", ko = "아주 크게", ["zh-hans"] = "特大", ["zh-hant"] = "特大",
+    },
+
+    set_bondable = {
+        en = "can be bonded", es = "puede vincularse", fr = "peut se lier", de = "kann sich binden", it = "può legarsi", pl = "może się związać",
+        pt = "pode se vincular", ru = "может подружиться", tr = "bağ kurabilir", vi = "có thể kết bạn", th = "ผูกพันได้", id = "bisa menjalin ikatan", ja = "絆を結べる", ko = "유대를 맺을 수 있음", ["zh-hans"] = "可以建立羁绊", ["zh-hant"] = "可以建立羈絆",
+    },
+
+    set_passive_enabled = {
+        en = "Passive friendship gain", es = "Ganancia pasiva de amistad", fr = "Gain d'amitié passif", de = "Passiver Freundschaftsgewinn", it = "Guadagno passivo di amicizia", pl = "Pasywny przyrost przyjaźni",
+        pt = "Ganho passivo de amizade", ru = "Пассивный рост дружбы", tr = "Pasif dostluk kazanımı", vi = "Tăng tình bạn thụ động", th = "การเพิ่มมิตรภาพแบบอัตโนมัติ", id = "Perolehan persahabatan pasif", ja = "受動的な友情値の上昇", ko = "수동 우정 상승", ["zh-hans"] = "被动友情增长", ["zh-hant"] = "被動友情增加",
+    },
 }
 Locale.STRINGS = S
 
--- Engine culture code -> our language key. Pure, so it can be tested.
--- "es-MX" -> "es", "pt-BR" -> "pt", "zh-Hans" / "zh-CN" -> "zh-hans",
--- "zh-Hant" / "zh-TW" / "zh-HK" -> "zh-hant", anything unknown -> "en".
 local SUPPORTED = {}
 for _, code in ipairs(Locale.LANGUAGES) do SUPPORTED[code] = true end
 
@@ -343,7 +505,6 @@ local function engine_culture()
     return nil
 end
 
--- The language in use right now.
 function Locale.Current()
     local choice = "auto"
     pcall(function() choice = require("Settings").Get("Language") end)
@@ -362,14 +523,11 @@ function Locale.Current()
     return lang
 end
 
--- Text for `key` in the current language, English if that one is missing.
--- `vars.name` fills {name}; `vars.female` picks the feminine form.
 function Locale.T(key, vars)
     local entry = S[key]
     if entry == nil then return key end
     local text = entry[Locale.Current()] or entry.en
-    -- Gendered languages hold { m = ..., f = ... }: the masculine form is also
-    -- the neutral one, used for a Pal whose gender is None or unknown.
+
     if type(text) == "table" then
         text = (vars and vars.female) and text.f or text.m
     end

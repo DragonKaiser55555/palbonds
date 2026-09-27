@@ -46,7 +46,6 @@ local FRIENDLY_TRIGGER_RATIO = 0.2
 -- Two-hundred-and-ninety-third pass: the HP watch no longer decides betrayal,
 -- so its per-drop line is off by default. It would otherwise print on every
 -- enemy hit a follower takes in a fight, which is most of a fight.
-local HP_WATCH_VERBOSE = false
 local TICK_INTERVAL_MS = 1500          
 
 -- Hundred-and-eighty-sixth pass (2026-09-05): Dragón's real target —
@@ -97,8 +96,37 @@ local LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST = false
 -- at this machine); a key present here means OFF for that player's
 -- followers. One table read per follower per tick -- free.
 local passiveGainOffBy = {}
+
+-- WHERE PASSIVE GAIN STARTS (2026-09-25). The key still toggles it for the
+-- session; this is what it starts AS, the same shape as ShowPersonalityTags.
+-- Applied to the player at this machine: the setting is per-machine, while the
+-- toggle is per-player (a guest's key switches their own followers).
+local function read_passive_default()
+    local on = true
+    pcall(function() on = require("Settings").Get("PassiveGainEnabled") ~= 0 end)
+    if on then passiveGainOffBy["local"] = nil else passiveGainOffBy["local"] = true end
+end
+
+read_passive_default()
+
+pcall(function()
+    require("Settings").OnChange(function(key)
+        if key ~= "PassiveGainEnabled" then return end
+        read_passive_default()
+    end)
+end)
 local REAL_PASSIVE_FRIENDSHIP_PER_TICK = require("Settings").Get("PassivePerTick")  -- the player's settings file (2026-09-18)
 local PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST and 0 or REAL_PASSIVE_FRIENDSHIP_PER_TICK
+
+-- 2026-09-25: the in-game screen can change this mid-session, so the tick
+-- amount is refreshed here rather than read on every follower every 1.5 s.
+pcall(function()
+    require("Settings").OnChange(function(key)
+        if key ~= "PassivePerTick" then return end
+        REAL_PASSIVE_FRIENDSHIP_PER_TICK = require("Settings").Get("PassivePerTick")
+        PASSIVE_FRIENDSHIP_PER_TICK = LEVEL_MULTIPLIER_DISABLED_FOR_BALANCE_TEST and 0 or REAL_PASSIVE_FRIENDSHIP_PER_TICK
+    end)
+end)
 
 -- Seconds between third-party-damage log lines per follower. A multi-hit
 -- attack lands far faster than this; the hits are counted and reported in
@@ -114,7 +142,10 @@ local THIRD_PARTY_DAMAGE_LOG_INTERVAL = 2.0
 -- building. Following works now, so drifting out of range is once again a real
 -- consequence the player is responsible for, which is the intended design.
 local EXPERIMENTAL_FOLLOW_NO_TRUST_LOSS = false
-local MAX_FOLLOW_DISTANCE = 3000.0
+-- 2026-09-25, Dragón's balancing pass: 3000 -> 3500, "a bit more before
+-- triggering". This is the distance at which a follower starts losing trust and
+-- eventually counts as abandoned.
+local MAX_FOLLOW_DISTANCE = 3500.0
 
 -- ===================================================================
 -- THE GRACE PERIOD (three-hundred-and-twenty-third pass, 2026-09-12)
@@ -171,6 +202,32 @@ end
 -- stay untouched, real, and vanilla-scale regardless of level; only how
 -- MUCH of them is needed changes.
 local BONDING_TRIGGER_THRESHOLD_BASE = 500
+
+-- ===================================================================
+-- THE TWO ENDINGS CAN EACH BE SWITCHED OFF (2026-09-25, settings screen)
+-- ===================================================================
+-- Abandonment is "a Pal you leave far behind gives up on you"; betrayal is
+-- "hitting a Pal you are bonding with ends it". Each is a single switch, and
+-- switching one off has to turn off EVERYTHING the player would otherwise read
+-- as it still happening -- Dragón's point: a disabled trigger that still shows
+-- its message reads as a broken setting.
+--
+--   * abandonment off also silences the despawn message. A Pal that wanders out
+--     of the world is still gone, but the player is left to assume it simply
+--     despawned rather than being told it gave up on them.
+--   * betrayal off also removes the trust-shaken effect and the points a hit
+--     costs at all: with it off, hitting a Pal never takes friendship points.
+--
+-- Declared here, above the first thing that asks: the world-change message is
+-- much earlier in this file than the bond-loss path.
+local TRIGGER_OFF_FLOOR = math.floor(BONDING_TRIGGER_THRESHOLD_BASE * 0.05)
+
+local function trigger_enabled(kind)
+    local setting = (kind == "abandoned") and "AbandonmentEnabled" or "BetrayalEnabled"
+    local on = true
+    pcall(function() on = require("Settings").Get(setting) ~= 0 end)
+    return on
+end
 
 -- Share of a Pal's own bonding bar lost per direct hit from the player. At 0.5
 -- a bond survives one accident and dies on the second hit, whatever the Pal's
@@ -774,8 +831,8 @@ end
 -- solved there with a flat delay). Falling back to (2): a single flat
 -- delay after the interaction that crossed the capture threshold, same
 -- honest, already-proven-acceptable pattern as Play's own
--- `PLAY_HAPPY_FOLLOWUP_DELAY_MS`. Set slightly more generous than Play's
--- 3000ms since Feed's real sequence stacks eating THEN Happy (Play's delay
+-- `PLAY_HAPPY_FOLLOWUP_DELAY_MS`. Set slightly more generous than Play's own
+-- delay since Feed's real sequence stacks eating THEN Happy (Play's delay
 -- only ever needed to cover Happy alone, after an idle animation that had
 -- already played) — Dragón's to retune live once he's actually watched a
 -- few real captures against this number.
@@ -1015,6 +1072,11 @@ function Trust.FlushWorldChangeAbandonments()
     local list = pendingAbandoned
     pendingAbandoned = {}
     if #list == 0 then return 0 end
+    if not trigger_enabled("abandoned") then
+        Logger.log("[PalBonds/Trust] [WORLD-RESET] abandonment is switched off — " .. #list ..
+            " follower(s) were left behind and the player is not told")
+        return 0
+    end
     local okCap, Capture = pcall(require, "Capture")
     if not (okCap and Capture and Capture.NotifyBondLostByName) then return 0 end
     for _, e in ipairs(list) do
@@ -1033,7 +1095,8 @@ function Trust.TogglePassiveFriendshipGain(ownerKey)
     local nowOn = not passiveGainOffBy[ownerKey]
     Logger.log("[PalBonds/Trust] [PASSIVE-TOGGLE] passive friendship gain is now " ..
         (nowOn and "ON" or "OFF") .. " for " .. (ownerKey == "local" and "this player" or "a remote player") ..
-        " (" .. tostring(require("Settings").Get("KeyPassiveGain")) .. "; session-only, back to ON on the next launch)")
+        " (" .. tostring(require("Settings").Get("KeyPassiveGain")) ..
+        "; session-only, back to your setting on the next launch)")
     return nowOn
 end
 function Trust.IsPassiveGainEnabled(ownerKey)
@@ -1132,7 +1195,48 @@ end
 -- R2/R4 on the machine that owns the world: may the player this machine is
 -- working for right now earn this Pal's trust? Yes when nobody has a claim
 -- yet or the claim is theirs; no when another player's bond holds it.
+-- ===================================================================
+-- A PERSONALITY CAN BE SWITCHED OFF FOR BONDING (2026-09-25, Dragón)
+-- ===================================================================
+-- "for players that maybe dont want some personalities to be interactable at
+-- all (like feral or aloof, etc)". Those Pals still spawn and still wear their
+-- tag -- that is how the player knows to leave them alone -- they simply never
+-- respond to petting, feeding or playing.
+--
+-- Checked through Trust.MayBond, which is what refuses an interaction BEFORE
+-- any food is spent, and again inside AddPoints as the backstop every points
+-- path goes through.
+-- KEYED ON THE DISPOSITION, WHICH IS WHAT THE TAG SHOWS -- not on the rolled
+-- tier. They are not the same thing: a Pal whose SPECIES is already Kill_All is
+-- kept out of the roll entirely and carries rolledTier = "normal" while wearing
+-- the Feral tag. Keying the switch off the tier is why switching Feral off did
+-- nothing to the Feral Pals in front of Dragón (live test, 2026-09-25). The
+-- vocabulary here is Indicator's PERSONALITY_DISPLAY_NAMES, so the switch and
+-- the tag can only ever agree.
+local TIER_BOND_SETTING = {
+    normal = "BondNormal", friendly = "BondCurious", escape = "BondTimid",
+    notinterested = "BondAloof", warlike = "BondGrumpy",
+    warlike_anyway = "BondHostile", kill_all = "BondFeral",
+}
+
+-- Unknown means allowed: a Pal with no personality yet, or one already bonding
+-- (companion_combat), must not be refused by a switch that cannot apply to it.
+function Trust.PersonalityMayBond(palActor)
+    if palActor == nil then return true end
+    local okP, Personality = pcall(require, "Personality")
+    if not (okP and Personality and Personality.GetStableId and Personality.GetDisposition) then return true end
+    local palId = safe_call(Personality.GetStableId, palActor)
+    if palId == nil then return true end
+    local disposition = safe_call(Personality.GetDisposition, palId)
+    local setting = disposition ~= nil and TIER_BOND_SETTING[disposition] or nil
+    if setting == nil then return true end
+    local on = true
+    pcall(function() on = require("Settings").Get(setting) ~= 0 end)
+    return on
+end
+
 function Trust.MayBond(palActor)
+    if not Trust.PersonalityMayBond(palActor) then return false end
     local key = get_key(palActor)
     local st = key ~= nil and State[key] or nil
     if st == nil or st.ownerKey == nil then return true end
@@ -1153,6 +1257,13 @@ function Trust.AddPoints(palActor, amount, label)
     local okReqGuard, CaptureGuard = pcall(require, "Capture")
     if okReqGuard and CaptureGuard.IsAlreadyOwned and CaptureGuard.IsAlreadyOwned(palActor) then
         Logger.log("[PalBonds/Trust] [POINTS] " .. tostring(label) .. ": this Pal already has a real owner — no points")
+        return nil
+    end
+    -- The backstop for the personality switches: every points path in the mod
+    -- comes through here, so nothing can slip past by taking another route.
+    if not Trust.PersonalityMayBond(palActor) then
+        Logger.log("[PalBonds/Trust] [POINTS] " .. tostring(label) ..
+            ": this Pal's personality is switched off for bonding — no points")
         return nil
     end
     local st, key = get_state(palActor)
@@ -1334,6 +1445,16 @@ end
 -- Dragón's spec ("if trust reaches 0, it should run away") and DESIGN.md
 -- §3.6's existing "permanently flagged as uninterested" behavior.
 local function on_follower_lost_all_trust(pal, reason)
+    local kindNow = (type(reason) == "string" and reason:find("far")) and "abandoned" or "betrayed"
+    if not trigger_enabled(kindNow) then
+        local st = get_state(pal)
+        if st ~= nil and (st.points or 0) < TRIGGER_OFF_FLOOR then
+            st.points = TRIGGER_OFF_FLOOR
+        end
+        Logger.log("[PalBonds/Trust] " .. kindNow ..
+            " is switched off in the settings — the bond survives (" .. tostring(reason) .. ")")
+        return
+    end
     Trust.StopFollowing(pal, reason)
     local okReq, Capture = pcall(require, "Capture")
     if okReq and Capture.OnTrustLost then
@@ -1443,6 +1564,13 @@ function Trust.OnFollowerDamaged(pal, attackerIsPlayer)
     local key = safe_call(function() return pal:GetFullName() end)
     local st = key ~= nil and State[key] or nil
     if not st then return end
+
+    -- BETRAYAL OFF MEANS A HIT COSTS NOTHING. Not a smaller penalty, not a
+    -- penalty without the ending: no points lost, no trust-shaken effect, no
+    -- betrayal. Dragón: "lets consider it as an on/off to reduce friendship
+    -- points from player hits". Everything below this line is the penalty in one
+    -- form or another, which is why the test is the first thing here.
+    if attackerIsPlayer and not trigger_enabled("betrayed") then return end
 
     -- The capture is already under way (the 5 s celebration, then the join).
     -- For a boss, Capture tells the game the player hit it so the defeat is
@@ -1556,7 +1684,7 @@ local function forget_despawned_pals()
             Logger.log("[PalBonds/Trust] [DESPAWN] " .. tostring(key) .. " left the world" ..
                 (wasBonded and " while following" or "") .. " — its record (" ..
                 tostring(st.points or 0) .. " points) is forgotten")
-            if wasBonded then
+            if wasBonded and trigger_enabled("abandoned") then
                 local okCap, CaptureD = pcall(require, "Capture")
                 if okCap and CaptureD and CaptureD.NotifyBondLostByName then
                     safe_call(CaptureD.NotifyBondLostByName, st.displayName, "abandoned", st.displayFemale)
@@ -1756,12 +1884,6 @@ tick_follower_group = function(groupKey)
                             -- The HP reading itself is kept: st.lastHPRate is
                             -- still updated above, which is what the rest of the
                             -- follower logic reads.
-                            if HP_WATCH_VERBOSE then
-                                Logger.log(string.format(
-                                    "[PalBonds/Trust] [HP-WATCH] %s lost health (%.2f -> %.2f) - recorded only; betrayal is decided by the damage hooks, which check who actually attacked",
-                                    tostring(key), prev, rate
-                                ))
-                            end
                         end
                     end
                 end
@@ -1882,19 +2004,8 @@ tick_follower_group = function(groupKey)
 
                         if (not lostAllTrust) and okReq and st.isFollowing then
 
-                            -- Two-hundred-and-second pass (2026-09-06): both
-                            -- mechanisms are called from here every tick —
-                            -- IssueFollowMoveOrder itself now no-ops when
-                            -- USE_OLD_MOVE_ORDER_NUDGE is off (Combat.lua),
-                            -- and TickRealOtomoFollow is the repeated push
-                            -- for the composite mechanism agreed with
-                            -- Dragón, replacing the old one-shot call that
-                            -- used to fire only from Combat.StartFollowing.
                             if Combat.IssueFollowMoveOrder then
-                                Combat.IssueFollowMoveOrder(st.pal, playerLoc, player) 
-                            end
-                            if Combat.TickRealOtomoFollow then
-                                Combat.TickRealOtomoFollow(st.pal, key)
+                                Combat.IssueFollowMoveOrder(st.pal, playerLoc, player)
                             end
                         end
                     end
@@ -2056,6 +2167,7 @@ function Trust.Init()
         local okBetray, errBetray = pcall(function()
             RegisterHook("/Script/Pal.PalDamageReactionComponent:OnProcessedActualDamageDelegate__DelegateSignature", function(Context, Attacker, Defender, ActualDamage)
                 if world_is_closing() or we_are_a_guest() then return end
+                Logger.trace("dmg.reaction")
 
                 -- Dragón caught this before it shipped, and he was right:
                 -- "if you're tracking every hit of the player on pals, wouldnt
@@ -2113,6 +2225,7 @@ function Trust.Init()
             (okBetray and "OK" or ("FAILED: " .. tostring(errBetray) .. " — betrayal falls back to the hate hook, which misses followers whose Damaged_Player slot is Ignore")))
         RegisterHook("/Script/Pal.PalHate:DamageEvent", function(Context, DamageResult)
             if world_is_closing() or we_are_a_guest() then return end
+            Logger.trace("dmg.hate")
             local result = hook_get(DamageResult)
             if result == nil then return end
 
@@ -2316,12 +2429,6 @@ function Trust.Init()
                 -- the result was thrown away, since Lua evaluates arguments
                 -- before the call. Exactly the trap the hundred-and-seventy-fifth
                 -- pass found in the SetHPPercent hook.
-                if Logger.DiagnosticsEnabled and Logger.DiagnosticsEnabled() then
-                    Logger.log(string.format(
-                        "[PalBonds/Trust] [DAMAGE-WATCH] real DamageEvent fired — defender=%s attacker=%s damage=%s",
-                        tostring(defenderName), tostring(attackerName), tostring(damage)
-                    ))
-                end
 
                 -- Hundred-and-eighty-fourth pass: identify whether the
                 -- PLAYER specifically dealt this hit (betrayal, see
@@ -2405,10 +2512,6 @@ function Trust.Init()
     -- error strings warn its underlying EngineTick/ProcessEvent hook can
     -- fail an AOB scan on some game versions, which would make this
     -- silently do nothing. Logged clearly either way; if
-    -- "game-thread tick fired" never appears again after the first line,
-    -- that's the signal to fall back to plain LoopAsync (works, but its
-    -- callback thread isn't confirmed safe for touching Pal actors —
-    -- guarded here with IsInGameThread() as a minimum precaution).
     local tickEverLogged = false
     local function scheduleTick()
         local ok = pcall(function()
@@ -2436,20 +2539,7 @@ function Trust.Init()
             end)
         end)
         if not ok then
-            Logger.log("[PalBonds/Trust] ExecuteInGameThreadWithDelay failed to schedule — falling back to LoopAsync")
-            pcall(function()
-                LoopAsync(TICK_INTERVAL_MS, function()
-                    local inGameThread = true
-                    pcall(function() inGameThread = IsInGameThread() end)
-                    if inGameThread then
-                        Logger.log("[PalBonds/Trust] [TICK] LoopAsync tick fired (game thread confirmed)")
-                        safe_call(tick_followers)
-                    else
-                        Logger.log("[PalBonds/Trust] [TICK] LoopAsync tick fired OFF the game thread — skipping this tick (not touching Pal actors from here)")
-                    end
-                    return false 
-                end)
-            end)
+            Logger.log("[PalBonds/Trust] ExecuteInGameThreadWithDelay failed to schedule the follower tick")
         end
     end
     scheduleTick()

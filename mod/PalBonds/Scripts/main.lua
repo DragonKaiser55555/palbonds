@@ -62,6 +62,11 @@ function PalBonds.Init()
 
     Capture.Init()
 
+    -- The PalBonds row in the game's pause menu (2026-09-25). Last, and in
+    -- its own pcall, because it is the only module that builds widgets inside
+    -- a native menu: if it ever fails it must not take the mod down with it.
+    pcall(function() require("Menu").Init() end)
+
     print("[PalBonds] all modules initialized\n")
 end
 

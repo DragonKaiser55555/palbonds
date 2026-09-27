@@ -1,69 +1,3 @@
---[[
-    PalBonds — the one place the mod looks up the local player's character.
-
-    WHY THIS EXISTS (profiled 2026-09-15). Finding the player means walking the
-    entire loaded object array (FindAllOf "PalPlayerCharacter"), which measured
-    ~40ms on a quiet map and 55–100ms in real play — two to six dropped frames
-    per lookup. The mod was doing it from twelve places in five files, some of
-    them constantly: the radial-menu redirect on every hook fire while the menu
-    window was open (3.2–3.8s of freezing per minute of feeding), the 1.5s Trust
-    tick, the 8s personality scan, the damage hooks during fights, and Combat's
-    follower loop.
-
-    WHAT IT DOES INSTEAD. The player's character almost never changes, so the
-    reference is kept and checked with IsValid() on every use. The world is only
-    searched again when something says the character may have changed:
-
-      * The kept character became invalid (destroyed).
-      * The world changed: Combat.ResetForNewWorld calls PlayerRef.Invalidate().
-      * The player DIED (Dragón's suggestion, 2026-09-15, instead of re-searching
-        on a short timer). The kept character is checked at most once per
-        DEATH_CHECK_SECONDS with the same IsDead/IsDying check Trust.lua uses on
-        followers. A dead character is not replaced straight away: the body is
-        still returned, exactly as before this file existed, so nothing that
-        runs during the death screen suddenly sees "no player". Meanwhile the
-        world is searched every RESPAWN_RETRY_SECONDS until a DIFFERENT
-        character, or a living one, turns up — the respawn.
-      * SAFETY_NET_RESEARCH_SECONDS have passed since the last search. Kept as a
-        rare last resort for any way the reference could go stale that none of
-        the above catches.
-
-    When a search finds nobody (title screen, loading screen), it waits
-    MISS_RETRY_SECONDS before searching again instead of searching on every call.
-
-    THE WORLD-CHANGE CRASH CAME BACK WITH THIS FILE (2026-09-16). Dragón:
-    bond a Pal, quit to the menu, load a world -> EXCEPTION_ACCESS_VIOLATION
-    reading 0x338, in 1.1.2 and the dev build, never in 1.1.1 (tested both ways,
-    pet-only and feed-only). The 1.1.1 log shows why: Combat's fast loop
-    re-searched for the player every ~4 s, the search came back EMPTY when he
-    quit, and "[WORLD-RESET] the player left the world" dropped every reference.
-    In 1.1.2 this file kept handing back the old character, which still passed
-    UE4SS's IsValid() while its world was being torn down, so the reset never
-    ran and the old world's followers were touched after the new one loaded.
-
-    Two checks, both cheap, stop the kept reference from outliving its world:
-      * Once per LIVENESS_CHECK_SECONDS, UKismetSystemLibrary::IsValid on the
-        kept character — the engine's own check, which also rejects objects
-        marked for destruction. One function call, no search.
-      * While a Pal is following (the only time a stale world matters), a real
-        search every FOLLOWER_RESEARCH_SECONDS — exactly 1.1.1's cadence, the
-        one proven to catch the quit. With nothing following it never runs.
-    Both log a [PLAYER-LIFE] line when they notice the player gone or changed,
-    so a test run shows which one fired.
-
-    Always FindAllOf, never FindFirstOf: UE4SS issue #1328 (FindFirstOf
-    dereferences before its null check), the crash-on-respawn investigation in
-    Trust.lua/Combat.lua.
-
-    WHICH PLAYER IS OURS (2026-09-20, the first step towards co-op). Until now
-    every lookup here took the FIRST valid PalPlayerCharacter in the object
-    list. In singleplayer there is only ever one, so that was always right. In
-    a co-op world every player's character is loaded on every machine, and
-    "first in the list" is whoever the engine happens to list first -- which is
-    how a Workshop player watched the Digtoise HE befriended join his friend's
-    party instead (LuWicki97, 2026-09-15). See pick_local below.
-]]
-
 local PlayerRef = {}
 
 local SAFETY_NET_RESEARCH_SECONDS = 60.0
@@ -84,31 +18,8 @@ local lastRespawnSearchAt = -1e9
 local searchCount = 0
 local lastLivenessAt = -1e9
 
--- Set by PlayerRef.ExpectWorldChange while the player has asked to leave the
--- world; nil the rest of the time. See the branch in Get() that reads it.
 local fastLivenessUntil = nil
 
--- ===================================================================
--- WORLD CLOSING (2026-09-17, after the second reproducible crash)
--- ===================================================================
--- Dragón's log settled a question the polling fix could not: when he confirms
--- "return to title", the mod gets NO MORE PASSES. The quit hook fired, and the
--- log ends there -- no world-reset line, because the game never serviced
--- another ExecuteInGameThreadWithDelay callback before the world was gone.
--- Noticing a world change afterwards is therefore impossible by construction;
--- everything has to be released at the moment the player confirms, while the
--- world is still alive.
---
--- Releasing early leaves a second hole, though: the game keeps running for a
--- moment, and the nameplate hook, the personality resolver and the trust
--- recorder would happily refill those tables before the world actually dies.
--- This flag closes it at the single point they all depend on -- Get() returns
--- nil while the world is closing, which every caller already handles, because
--- that is what it returns at the title screen.
---
--- It is cleared by ProbeForNewPlayer (see Combat's watch): a DIFFERENT player
--- means the new world is up; the SAME one still there after a while means the
--- player cancelled the quit.
 local worldClosing = false
 local closingPlayerAddress = nil
 local closingSince = nil
@@ -140,9 +51,6 @@ local function log_line(msg)
     if ok and L and L.log then L.log("[PalBonds/PlayerRef] [PLAYER-LIFE] " .. msg) end
 end
 
--- APawn::IsLocallyControlled(): true only for the character THIS machine
--- controls, on the host and on a guest alike. Returns nil when the call is not
--- available, which is a different answer from false and is treated as one.
 local function locally_controlled(p)
     local ok, v = pcall(function() return p:IsLocallyControlled() end)
     if not ok or type(v) ~= "boolean" then return nil end
@@ -151,32 +59,11 @@ end
 
 local unknownLogged = false
 local sawLocalTrue = false
--- One line per session saying HOW our character was recognised. It is the only
--- way to tell, from a player's log, whether this build answers the question at
--- all -- which decides whether co-op can ever work.
+
 local resolvedLogged = false
 local lastNoLocalLogAt = -1e9
 local NO_LOCAL_LOG_SECONDS = 30.0
 
--- Picks OUR player character out of everything the search returned.
---
--- Three outcomes, and each one is deliberate:
---   * somebody answers true -> that is ours, wherever it sat in the list;
---   * nobody answers true, there is exactly ONE character, and no character
---     has ever answered true this session -> that one. A singleplayer world
---     can never hold more, so if this build ever stopped answering the
---     question, singleplayer keeps working exactly as it does today. This is
---     the fail-open that matters most. Once some character HAS answered true
---     we know the question works, so a lone character saying "not yours" is
---     believed -- otherwise, in co-op, our character unloading for a moment
---     would hand the mod the other player's;
---   * nobody answers true, several characters, and the call never worked at
---     all -> the first one (the old behaviour) plus one log line, because
---     going blind would be worse than the bug we are fixing;
---   * nobody answers true, several characters, and the call DID work -> nil.
---     We are in a co-op world and our character is not possessed yet. Acting
---     for the wrong player is exactly what this function exists to prevent,
---     and the caller searches again shortly, so this heals by itself.
 local function pick_local(list, now)
     local valid = {}
     if type(list) == "table" then
@@ -238,9 +125,81 @@ local function pick_local(list, now)
     return nil
 end
 
+local cachedWorld = nil
+local askGameLogged = nil
+
+local function world_context()
+    if is_valid(cachedWorld) then return cachedWorld end
+    cachedWorld = nil
+    if cached ~= nil then
+        local okW, w = pcall(function() return cached:GetWorld() end)
+        if okW and w ~= nil and is_valid(w) then cachedWorld = w; return w end
+    end
+    local okH, UEHelpers = pcall(require, "UEHelpers")
+    if okH and UEHelpers and UEHelpers.GetWorld then
+        local okW, w = pcall(UEHelpers.GetWorld)
+        if okW and w ~= nil and is_valid(w) then cachedWorld = w; return w end
+    end
+
+    local okU, util = pcall(function() return StaticFindObject("/Script/Pal.Default__PalUtility") end)
+    if okU and util ~= nil then
+        local okW, w = pcall(function() return util:GetWorld() end)
+        if okW and w ~= nil and is_valid(w) then cachedWorld = w; return w end
+    end
+    return nil
+end
+
+function PlayerRef.ForgetWorld()
+    cachedWorld = nil
+end
+
+local function ask_game_for_player()
+    local okU, util = pcall(function() return StaticFindObject("/Script/Pal.Default__PalUtility") end)
+    if not okU or util == nil then
+        if askGameLogged ~= "no-util" then
+            askGameLogged = "no-util"
+            log_line("UPalUtility is not reachable -- falling back to the world search")
+        end
+        return nil
+    end
+    local world = world_context()
+    if world == nil then
+        if askGameLogged ~= "no-world" then
+            askGameLogged = "no-world"
+            log_line("no world context yet -- falling back to the world search")
+        end
+        return nil
+    end
+    local okP, mine = pcall(function() return util:GetPlayerCharacter(world) end)
+    if okP and mine ~= nil and is_valid(mine) then
+        if askGameLogged ~= "ok" then
+            askGameLogged = "ok"
+            log_line("the game names our character directly (UPalUtility.GetPlayerCharacter)")
+        end
+        return mine
+    end
+    if askGameLogged ~= "no-answer" then
+        askGameLogged = "no-answer"
+        log_line("GetPlayerCharacter gave nothing (call ok=" .. tostring(okP) .. ") -- falling back to the world search")
+    end
+    cachedWorld = nil
+    return nil
+end
+
 local function search(now, reason)
     searchCount = searchCount + 1
     cached, cachedName = nil, nil
+
+    local named = ask_game_for_player()
+    if named ~= nil then
+        cached = named
+        cachedAt = now
+        if not resolvedLogged then
+            resolvedLogged = true
+            log_line("the game names our character directly (UPalUtility.GetPlayerCharacter)")
+        end
+        return named
+    end
     local ok, list = pcall(function() return FindAllOf("PalPlayerCharacter") end)
     if ok then
         local mine = pick_local(list, now)
@@ -254,8 +213,6 @@ local function search(now, reason)
     return nil
 end
 
--- UKismetSystemLibrary::IsValid(kept character). Returns false only when the
--- engine says so; nil (unknown) if the call itself is unavailable.
 local function engine_says_alive(p)
     if kismet == nil or not is_valid(kismet) then
         kismet = nil
@@ -277,7 +234,6 @@ local function anyone_following()
     return ok2 and v == true
 end
 
--- Re-search, and say so when the answer is "gone" or "someone else".
 local function recheck(now, why)
     local before = address_of(cached)
     local found = search(now, why)
@@ -292,21 +248,6 @@ local function recheck(now, why)
     return found
 end
 
--- The local player's PalPlayerCharacter, or nil if there is none right now.
--- =====================================================================
--- THE ACTING PLAYER (co-op, 2026-09-21)
--- =====================================================================
--- Everything in this mod asks PlayerRef.Get() for "the player", and in
--- singleplayer that is always the one person at this machine. On a machine
--- that owns a world other players have joined, work done FOR one of them --
--- confirming their pet, starting their Pal's follow, putting a Pal in their
--- party, telling them about it -- must see THAT player as "the player".
---
--- WithPlayer(player, fn, ...) runs fn with `player` as Get()'s answer and puts
--- back whatever was there before, even when fn fails. A timer does not run
--- inside this scope, so work that continues later must carry the player with
--- it (Interaction's pet check, Trust's wait before a join). Singleplayer never
--- sets it, so nothing there changes. See docs/multiplayer-questions.md.
 local actingStack = {}
 
 function PlayerRef.WithPlayer(player, fn, ...)
@@ -318,23 +259,10 @@ function PlayerRef.WithPlayer(player, fn, ...)
     return table.unpack(results, 2, results.n)
 end
 
--- The player set by WithPlayer, or nil outside any such scope.
 function PlayerRef.Acting()
     return actingStack[#actingStack]
 end
 
--- ---------------------------------------------------------------------
--- THE ACTING PLAYER RIDES ON TIMERS (stage 2, 2026-09-21)
--- ---------------------------------------------------------------------
--- A great deal of the work done for a player continues on a timer: the pet
--- check's polls, the 20% calm-down's release checks, the wait before a join,
--- a fight's combat window. Wrapping each call site by hand means that one
--- forgotten timer silently acts for whoever sits at the host instead -- and
--- nothing in the log would show it. So the timer itself carries the player: a
--- delay scheduled while working for someone runs for that same someone. Every
--- module looks the global up when it schedules (checked: none keeps a copy),
--- so replacing it once here covers them all. A timer scheduled outside any
--- such scope -- every recurring loop, all of singleplayer -- is untouched.
 local function install_timer_carry()
     if rawget(_G, "__PalBondsTimerCarry") then return end
     local original = rawget(_G, "ExecuteInGameThreadWithDelay")
@@ -348,14 +276,33 @@ local function install_timer_carry()
 end
 install_timer_carry()
 
--- A name for "whose bond is this" that survives the player dying: "local" for
--- the player at this machine (all of singleplayer), and for a player on
--- another machine the full name of their player CONTROLLER, which the engine
--- keeps for as long as they stay connected, while their character is replaced
--- at every respawn.
+local function is_our_character(player)
+    if player == nil then return false end
+    local mine = ask_game_for_player()
+    if mine == nil then mine = cached end
+    if mine == nil then return nil end
+    if rawequal(mine, player) then return true end
+    local okA, a = pcall(function() return mine:GetAddress() end)
+    local okB, b = pcall(function() return player:GetAddress() end)
+    if okA and okB and a ~= nil and b ~= nil then return a == b end
+    local okNA, na = pcall(function() return mine:GetFullName() end)
+    local okNB, nb = pcall(function() return player:GetFullName() end)
+    if okNA and okNB and na ~= nil and nb ~= nil then return na == nb end
+    return nil
+end
+PlayerRef.IsOurCharacter = is_our_character
+
 function PlayerRef.OwnerKey(player)
     if player == nil then return "local" end
-    if locally_controlled(player) ~= false then return "local" end
+    local ours = is_our_character(player)
+    if ours == true then return "local" end
+    if ours == nil then
+        local okS, Session = pcall(require, "Session")
+        if okS and Session and Session.ModeIfKnown and Session.ModeIfKnown() == "singleplayer" then
+            return "local"
+        end
+        if locally_controlled(player) ~= false then return "local" end
+    end
     local ctrlName = nil
     local ok = pcall(function()
         local c = player.Controller
@@ -366,13 +313,10 @@ function PlayerRef.OwnerKey(player)
     return okN and tostring(n) or "remote"
 end
 
--- The owner key of whoever this machine is working for right now.
 function PlayerRef.CurrentOwnerKey()
     return PlayerRef.OwnerKey(actingStack[#actingStack])
 end
 
--- A dedicated server has nobody sitting at it (Session.lua). Asked lazily:
--- Session needs PlayerRef too.
 local function on_dedicated_server()
     local ok, Session = pcall(require, "Session")
     if not ok or Session == nil or Session.IsDedicated == nil then return false end
@@ -380,36 +324,31 @@ local function on_dedicated_server()
     return okAsk and yes == true
 end
 
--- True only for a player character another machine controls: a guest, seen
--- from the machine that owns the world. Unreadable counts as local, which is
--- what every build before co-op assumed.
 function PlayerRef.IsRemote(player)
     if player == nil then return false end
+    local ours = is_our_character(player)
+    if ours ~= nil then return not ours end
+
+    local okS, Session = pcall(require, "Session")
+    if okS and Session and Session.ModeIfKnown and Session.ModeIfKnown() == "singleplayer" then
+        return false
+    end
     return locally_controlled(player) == false
 end
 
 function PlayerRef.Get()
     local now = os.clock()
 
-    -- Work being done for a particular player (see WithPlayer above).
     local acting = actingStack[#actingStack]
     if acting ~= nil then
         if is_valid(acting) then return acting end
         return nil
     end
 
-    -- Nobody sits at a dedicated server. Without this the "only one character
-    -- in the world" fallback below adopts the one guest as if it were ours --
-    -- and with two guests finds nobody, which the fast loop reads as the world
-    -- ending and resets every bond.
     if on_dedicated_server() then return nil end
 
-    -- The world is on its way out: hand nobody the player, so nothing the mod
-    -- does can build a fresh reference into a world that is about to die. See
-    -- the worldClosing comment near the top of this file.
     if worldClosing then return nil end
 
-    -- Waiting for a respawn.
     if deadBody ~= nil then
         if (now - lastRespawnSearchAt) >= RESPAWN_RETRY_SECONDS then
             lastRespawnSearchAt = now
@@ -430,12 +369,6 @@ function PlayerRef.Get()
 
     if cached ~= nil then
 
-        -- 2026-09-17: while a quit has been ASKED for (the ESC menu's
-        -- return-to-title, see Combat.ExpectWorldChange), the engine check runs
-        -- on every call instead of once a second. That window is the only time
-        -- the difference matters -- the world is about to go and everything the
-        -- mod holds has to be released before the next one loads -- and it ends
-        -- by itself, so the normal cadence is untouched for the whole session.
         local livenessEvery = LIVENESS_CHECK_SECONDS
         if fastLivenessUntil ~= nil then
             if now < fastLivenessUntil then livenessEvery = 0 else fastLivenessUntil = nil end
@@ -465,7 +398,6 @@ function PlayerRef.Get()
     return search(now, "no player kept")
 end
 
--- The player's GetFullName(), resolved once per kept reference.
 function PlayerRef.Name()
     local p = PlayerRef.Get()
     if p == nil then return nil end
@@ -479,7 +411,6 @@ function PlayerRef.Name()
     return cachedName
 end
 
--- Forget everything; the next Get() searches immediately. Called on a world change.
 function PlayerRef.Invalidate()
     cached, cachedName = nil, nil
     cachedAt = -1e9
@@ -491,16 +422,12 @@ function PlayerRef.Invalidate()
     fastLivenessUntil = nil
 end
 
--- The player asked to leave the world (the ESC menu's return-to-title). For the
--- next `seconds`, check with the engine on every Get() rather than once a
--- second, so the moment the world actually goes is caught immediately.
 function PlayerRef.ExpectWorldChange(seconds)
     fastLivenessUntil = os.clock() + (seconds or 20.0)
 end
 
--- The player CONFIRMED leaving. Nobody gets a player reference from here until
--- a new world is up (or the quit turns out to have been cancelled).
 function PlayerRef.SetWorldClosing(on)
+    cachedWorld = nil
     if on then
         closingPlayerAddress = cached ~= nil and address_of(cached) or nil
         closingSince = os.clock()
@@ -511,17 +438,7 @@ function PlayerRef.SetWorldClosing(on)
         closingSince = nil
     end
 end
--- Read by every hook in the mod (the world-closing gate), so it stays a
--- boolean read plus one os.clock.
---
--- The time limit is a safety net, not a mechanism: while this is true the mod
--- is deliberately blind, and the only thing that clears it is Combat's watch
--- noticing how the quit ended. If that watch ever stopped being serviced --
--- one broken reschedule during a teardown would do it -- the mod would stay
--- blind for the rest of the session and look exactly like "the mod stopped
--- working". After CLOSING_MAX_SECONDS it gives up waiting and lets everything
--- resume; being wrong that way costs a crash risk for one frame, being wrong
--- the other way costs the whole session.
+
 local CLOSING_MAX_SECONDS = 60.0
 function PlayerRef.IsWorldClosing()
     if not worldClosing then return false end
@@ -538,11 +455,6 @@ function PlayerRef.IsWorldClosing()
     return true
 end
 
--- Called while the world is closing, and ONLY then: a real search that ignores
--- the flag, so the mod can tell the two possible endings apart.
---   * a player at a different address -> the new world is up
---   * the same player still there after cancelSeconds -> the quit was cancelled
--- Returns "new-world", "cancelled" or nil (still closing, keep waiting).
 function PlayerRef.ProbeForNewPlayer(cancelSeconds)
     if not worldClosing then return nil end
     local now = os.clock()
@@ -567,12 +479,10 @@ function PlayerRef.ProbeForNewPlayer(cancelSeconds)
     return nil
 end
 
--- Exposed for the harness: which of these characters is ours (see pick_local).
 function PlayerRef.PickLocal(list)
     return pick_local(list, os.clock())
 end
 
--- How many world searches have run this session (tests and profiling).
 function PlayerRef.SearchCount()
     return searchCount
 end

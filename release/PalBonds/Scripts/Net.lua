@@ -1,40 +1,3 @@
---[[
-    PalBonds -- the private line between the machine that owns the world and
-    each player who joined it.
-
-    WHY (2026-09-21). Co-op is built host-authoritative: the machine that owns
-    the world (singleplayer, a host, a dedicated server) does every Pal-side
-    job, because only it can -- the guest run of 2026-09-20 measured that a
-    guest cannot write a Pal's AI, cannot keep a follow action on it, and that
-    asking for the join from a guest is a FATAL error in the game itself. A
-    guest keeps the one part only its own screen can do, the radial-menu
-    substitution, and that already reaches the owner: the game sends the pet
-    or feed as its own request and the owner runs the real animation on the
-    wild Pal (net probe run 1).
-
-    What the game does not send is OUR part: which Pal it was, what food, and
-    the messages back. This file carries those, on two requests every
-    APalPlayerController already has and that take a plain string:
-
-      guest -> owner    Debug_CheatCommand_ToServer(FString)
-      owner -> guest    Debug_ReceiveCheatCommand_ToClient(FString)
-
-    Measured in net probe run 1: 4 of 4 messages each way, the sender known on
-    the owner (the hook's `self` is that player's controller), the reply
-    reaching that player only, in 50-90 ms, and NOTHING shown on screen by the
-    game for either -- so a player without the mod never notices them.
-
-    FORMAT: "PB1", the kind, then the fields, separated by TAB. Anything that
-    does not start with "PB1" is ignored, so the game's own use of these
-    requests (if any) is never touched. Fields are plain text; TAB and newline
-    inside a field are replaced with spaces.
-
-    WHO LISTENS: every copy registers both hooks. Owner-side handlers
-    (Net.OnServer) only run for a message from a REMOTE player -- in
-    singleplayer, or for the host's own actions, the ordinary local code path
-    already did the work. Guest-side handlers (Net.OnClient) run on the guest.
-]]
-
 local Logger = require("Logger")
 
 local Net = {}
@@ -70,7 +33,6 @@ function Net.Encode(kind, ...)
     return table.concat(parts, SEP)
 end
 
--- Returns kind, { fields... } -- or nil for anything that is not ours.
 function Net.Decode(text)
     if type(text) ~= "string" then return nil end
     if text:sub(1, #PREFIX + 1) ~= PREFIX .. SEP then return nil end
@@ -101,7 +63,6 @@ local function local_controller()
     return nil
 end
 
--- Guest -> the machine that owns the world. True when the request was sent.
 function Net.SendToServer(kind, ...)
     local ctrl = local_controller()
     if ctrl == nil then
@@ -115,7 +76,6 @@ function Net.SendToServer(kind, ...)
     return ok
 end
 
--- The machine that owns the world -> one player. True when the request was sent.
 function Net.SendToPlayer(player, kind, ...)
     local ctrl = player and safe_call(function() return player.Controller end)
     if not valid(ctrl) then
@@ -136,14 +96,12 @@ local function world_is_closing()
     return okAsk and closing == true
 end
 
--- The owner-side entry point, exposed so the harness can drive it directly.
 function Net.HandleFromPlayer(ctrl, text)
     local kind, fields = Net.Decode(text)
     if kind == nil then return false end
     if world_is_closing() then return false end
     if not valid(ctrl) then return false end
-    -- Our own controller: singleplayer or the host acting for themselves. The
-    -- local code path already did this work; doing it again would pay twice.
+
     if safe_call(function() return ctrl:IsLocalPlayerController() end) == true then return false end
     local pawn = safe_call(function() return ctrl.Pawn end)
     if not valid(pawn) then
@@ -162,12 +120,6 @@ function Net.HandleFromPlayer(ctrl, text)
     return ok
 end
 
--- The guest-side entry point, exposed for the harness.
---
--- Only on the machine the message was sent TO. Calling a "to client" request
--- runs our hook on the SENDING machine too (UE4SS sees the call before it goes
--- out), and there the controller belongs to someone else -- without this check
--- a host would show every guest's messages on its own screen.
 function Net.HandleFromHost(ctrl, text)
     local kind, fields = Net.Decode(text)
     if kind == nil then return false end

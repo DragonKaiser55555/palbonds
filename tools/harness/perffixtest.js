@@ -242,6 +242,21 @@ function indicatorState(bindHookRegisters) {
   return S;
 }
 
+console.log('\n=== B3. The sense budget (2026-09-24): it throttles, and it lets Pals through ===');
+{
+  const S = personalityState(true);
+  const HOOK = '/Script/Pal.PalAISensorComponent:SelectResponseBySenses';
+  S.must('__SEEN = 0; __SENSOR.GetAddress = function() __SEEN = __SEEN + 1; return 0x5000 end', 'count');
+  S.must('for i = 1, 200 do __HOOKS["' + HOOK + '"]({ get = function() return __SENSOR end }) end', 'flood');
+  expect('a flood of senses is capped, not processed one for one', S.str('__SEEN'), (v) => Number(v) > 0 && Number(v) <= 25);
+  S.must('__SEEN = 0; __CLOCK = __CLOCK + 1.1', 'nextsecond');
+  S.must('__HOOKS["' + HOOK + '"]({ get = function() return __SENSOR end })', 'sense-again');
+  expect('the budget refills: the next second is processed again', S.str('__SEEN'), (v) => Number(v) >= 1);
+  S.must('__CLOCK = __CLOCK + 1.1; __HOOKS["' + HOOK + '"]({ get = function() return __SENSOR end })', 'later');
+  expect('a Pal skipped while busy still ends up with its personality state',
+    S.str('P.GetState(P.GetStableId(__PAL)) ~= nil'), (v) => v === 'true');
+}
+
 console.log('\n=== C. Indicator: bind hook registered ===');
 {
   const S = indicatorState(true);
@@ -276,6 +291,124 @@ console.log('\n=== C2. Indicator: bind hook NOT registered (the sweep must keep 
   const S = indicatorState(false);
   S.must('__SEARCHES["WBP_PalNPCHPGauge_C"] = 0; __PUMP(10)', 'pump10');
   expect('10 ticks without the hook: a world sweep on every tick', S.str('__SEARCHES["WBP_PalNPCHPGauge_C"]'), (v) => v === '10');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n=== D. Indicator: the trust-bar cache expires (2026-09-26) ===');
+
+// A nameplate gauge shaped enough for install_trust_bar to get all the way to
+// storing its entry: it needs ProgressBar_HP's slot (position, size and a real
+// parent panel) or Canvas_Innner, and a panel that accepts children.
+const GAUGE_STUB = [
+  // The prelude's Pal stubs all share one stable ID, which would collapse
+  // every tracked entry onto one key. The ID function is not what is under
+  // test here, so give each fake Pal its own.
+  'local __P = require("Personality")',
+  '__P.GetStableId = function(a) if a == nil then return nil end return "PAL_" .. tostring(a.__name) end',
+  'function __make_gauge(name)',
+  '  local panel = __obj(name .. "_Panel")',
+  '  panel.AddChildToCanvas = function(self, w)',
+  '    local slot = __obj(name .. "_Slot")',
+  '    slot.SetPosition = function() end',
+  '    slot.SetSize = function() end',
+  '    slot.Parent = panel',
+  '    if type(w) == "table" then w.Slot = slot end',
+  '    return slot',
+  '  end',
+  '  panel.AddChild = function(self, w) return panel:AddChildToCanvas(w) end',
+  '  panel.RemoveChild = function(self, w)',
+  '    __DETACHED = (__DETACHED or 0) + 1',
+  '    if type(w) == "table" then w.Slot = nil end',
+  '  end',
+  '  local hpSlot = __obj(name .. "_HPSlot")',
+  '  hpSlot.GetPosition = function() return __vec(0, 0, 0) end',
+  '  hpSlot.GetSize = function() return __vec(80, 6, 0) end',
+  '  hpSlot.Parent = panel',
+  '  local textClass = __obj(name .. "_TextClass")',
+  '  local workName = __obj(name .. "_WorkName")',
+  '  workName.GetClass = function() return textClass end',
+  '  local g = __obj(name)',
+  '  g.GetFullName = function() return name end',
+  '  g.WBP_EnemyGauge = { ProgressBar_HP = { Slot = hpSlot }, Text_WorkName = workName }',
+  '  g.Canvas_Innner = panel',
+  '  g.__panel = panel',
+  '  return g',
+  'end',
+  'function __make_handle(name, palName)',
+  '  local pal = __obj(palName)',
+  '  local h = __obj(name)',
+  '  h.TryGetIndividualActor = function() return pal end',
+  '  return h, pal',
+  'end',
+].join('\n');
+
+const BIND = '/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:BindFromHandle';
+const UNBIND = '/Game/Pal/Blueprint/UI/NPCHPGauge/WBP_PalNPCHPGauge.WBP_PalNPCHPGauge_C:Unbind';
+
+{
+  // Dragón's trace run measured trackedBars going 0 -> 603 in fourteen minutes
+  // of flying with nothing ever removed, because an entry was only dropped when
+  // its gauge WIDGET went invalid -- and the game pools those rather than
+  // destroying them. Keeping the entry after its gauge is recycled is on
+  // purpose (reparent_existing_bar reuses it), so the fix is an expiry, not an
+  // eager delete. That means BOTH directions need checking: it must drop what
+  // is gone and keep what is still on screen.
+  const S = indicatorState(true);
+  S.must(GAUGE_STUB, 'gauge-stub');
+  const bars = () => S.str('select(3, I.BindCounts())');
+
+  S.must('__G = __make_gauge("Gauge_A"); __H = __make_handle("Handle_A", "BP_Chikipi_C_1")', 'setup');
+  S.must('__FIRE("' + BIND + '", __arg(__G), __arg(__H)); __PUMP(2)', 'bind');
+  expect('a resolved nameplate becomes one tracked entry', bars(), (v) => v === '1');
+
+  // ---- MUST LET THROUGH: a Pal still on screen is never pruned. ----
+  S.must('__CLOCK = __CLOCK + 600; __PUMP(4)', 'tenminutes');
+  expect('ten minutes later, a nameplate still bound is STILL tracked', bars(), (v) => v === '1');
+
+  // ---- Unbound, but inside the window: kept, so reuse still works. ----
+  S.must('__FIRE("' + UNBIND + '", __arg(__G)); __CLOCK = __CLOCK + 30; __PUMP(2)', 'unbind30');
+  expect('30s after the nameplate goes, the entry is kept for reuse', bars(), (v) => v === '1');
+
+  // ---- Past the window: dropped, and the widgets are taken off the gauge. ----
+  S.must('__DETACHED = 0; __CLOCK = __CLOCK + 60; __PUMP(2)', 'past');
+  expect('past the expiry, the entry is dropped', bars(), (v) => v === '0');
+  expect('...and its widgets were detached, not left on a recycled gauge',
+    S.str('__DETACHED'), (v) => Number(v) > 0);
+
+  // ---- And the gauge is free to host a Pal again afterwards. ----
+  S.must('__FIRE("' + BIND + '", __arg(__G), __arg(__H)); __PUMP(2)', 'rebind');
+  expect('the same gauge can be used again after a prune', bars(), (v) => v === '1');
+}
+{
+  // The shape of the leak itself: many Pals seen once each, none of them still
+  // on screen afterwards. Before the fix this table only ever grew.
+  const S = indicatorState(true);
+  S.must(GAUGE_STUB, 'gauge-stub');
+  const bars = () => S.str('select(3, I.BindCounts())');
+
+  S.must([
+    '__FLOCK = {}',
+    'for i = 1, 25 do',
+    '  local g = __make_gauge("Gauge_F" .. i)',
+    '  local h = __make_handle("Handle_F" .. i, "BP_Flyby_C_" .. i)',
+    '  __FLOCK[i] = { g = g, h = h }',
+    'end',
+  ].join('\n'), 'flock');
+
+  S.must([
+    'for i = 1, 25 do',
+    '  __FIRE("' + BIND + '", __arg(__FLOCK[i].g), __arg(__FLOCK[i].h))',
+    '  __PUMP(2)',
+    '  __FIRE("' + UNBIND + '", __arg(__FLOCK[i].g))',
+    '  __CLOCK = __CLOCK + 2',
+    'end',
+  ].join('\n'), 'flyby');
+  expect('flying past 25 Pals tracks them while they are in view',
+    bars(), (v) => Number(v) > 1);
+
+  S.must('__CLOCK = __CLOCK + 120; __PUMP(3)', 'flyaway');
+  expect('...and every one of them is released once they are behind you',
+    bars(), (v) => v === '0');
 }
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));

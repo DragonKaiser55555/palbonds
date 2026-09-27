@@ -96,6 +96,28 @@ local PERSONALITY_TIERS = {
     { tier = "kill_all", weight = SettingsP.Get("ChanceFeral") },
 }
 
+-- 2026-09-25: the in-game screen can change the chances mid-session. The
+-- weights are rewritten IN PLACE (not a new table) because the roll below and
+-- everything that reads it hold this exact table.
+--
+-- Settings refuses a change that would make every chance 0, so the roll's
+-- total can never reach 0 here -- the same rule the settings file has always
+-- had, applied in one place instead of two.
+local TIER_CHANCE_KEY = {
+    normal = "ChanceNormal", friendly = "ChanceCurious", escape = "ChanceTimid",
+    notinterested = "ChanceAloof", warlike = "ChanceGrumpy",
+    warlike_anyway = "ChanceHostile", kill_all = "ChanceFeral",
+}
+pcall(function()
+    SettingsP.OnChange(function(key)
+        if type(key) ~= "string" or not key:find("^Chance") then return end
+        for _, entry in ipairs(PERSONALITY_TIERS) do
+            local chanceKey = TIER_CHANCE_KEY[entry.tier]
+            if chanceKey ~= nil then entry.weight = SettingsP.Get(chanceKey) end
+        end
+    end)
+end)
+
 -- Hundred-and-twenty-eighth pass (2026-09-03): Dragón hit a real, fair
 -- problem testing Skittish→Curious — with the roll active, a Pal that
 -- LOOKS skittish (fleeing) usually isn't tracked as skittish at all (real
@@ -1531,8 +1553,10 @@ local function cache_sensor_for_pal(sensor, pawn)
     -- this cache before falling back to a world-wide index rebuild. Caching after
     -- GetOrInitState meant every brand-new Pal's first sense missed its own
     -- sensor and paid for that rebuild (FindAllOf over the whole world).
+    Logger.trace("cache.stableid")
     local palId = Personality.GetStableId(pawn)
     if palId then cachedSensorByPalId[palId] = sensor end
+    Logger.trace("cache.initstate", palId)
     local stateId = Personality.GetOrInitState(pawn)
     if stateId and stateId ~= palId then cachedSensorByPalId[stateId] = sensor end
     return stateId
@@ -1611,11 +1635,49 @@ function Personality.ForEachKnownPal(fn)
     end
 end
 local senseHookArmed = false
+-- 2026-09-24 (run H): this hook fired 7,635 times in two minutes of flying --
+-- every Pal that senses anything, ~64 a second -- and was the mod's single
+-- biggest cost. Nothing is lost by skipping some: a Pal senses continuously,
+-- so one skipped now is handled a moment later. The budget refills every
+-- second, so a quiet world is never throttled and a busy one degrades to a
+-- fixed, known cost instead of scaling with the crowd.
+local SENSE_CALLS_PER_SECOND = 25
+local senseWindowStart = 0.0
+local senseWindowCalls = 0
+local senseSkipped = 0
+local senseSkipLoggedAt = 0.0
+
 local function on_sensor_select_response(Context)
+    local now = os.clock()
+    if (now - senseWindowStart) >= 1.0 then
+        if senseSkipped > 0 and (now - senseSkipLoggedAt) >= 60.0 then
+            senseSkipLoggedAt = now
+            Logger.log("[PalBonds/Personality] [ENFORCE] the sense budget skipped " .. senseSkipped ..
+                " sense(s) in the last second — they are picked up on their next sense (logged at most once a minute)")
+        end
+        senseWindowStart = now
+        senseWindowCalls = 0
+        senseSkipped = 0
+    end
+    senseWindowCalls = senseWindowCalls + 1
+    if senseWindowCalls > SENSE_CALLS_PER_SECOND then
+        senseSkipped = senseSkipped + 1
+        return
+    end
+
+    -- STEP-LEVEL TRACE (2026-09-26). This hook is the prime suspect for the
+    -- crash family Dragón reproduced four times on 2026-09-26 and that three
+    -- players have reported since 19 Sep: it fires from deep inside the game's
+    -- AI for every Pal that senses anything, which is exactly what saturates
+    -- while flying over open world. Each engine call below gets its own line so
+    -- the LAST line in the log names the call that died, instead of us guessing
+    -- at the hook as a whole. Off unless TRACE_PHASES is on.
+    Logger.trace("sense.get")
     local sensor = safe_call(function() return Context:get() end)
     if not sensor then return end
 
     -- Cheap identity first. Everything below this line is expensive.
+    Logger.trace("sense.addr")
     local addr = safe_call(function() return sensor:GetAddress() end)
     if addr ~= nil then
         local seenId = handledSensorAddresses[addr]
@@ -1625,12 +1687,17 @@ local function on_sensor_select_response(Context)
             return
         end
     end
+    Logger.trace("sense.fullname", addr)
     local sensorKey = safe_call(function() return sensor:GetFullName() end)
     if not sensorKey then return end
+    Logger.trace("sense.outer", addr)
     local owner = safe_call(function() return sensor:GetOuter() end)
+    Logger.trace("sense.pawn", addr)
     local pawn = owner and safe_call(function() return owner.Pawn end)
+    Logger.trace("sense.pawnvalid", addr)
     local validOk, isValid = pcall(function() return pawn ~= nil and pawn:IsValid() end)
     if not (validOk and isValid) then return end
+    Logger.trace("sense.cache", addr)
     local palId = cache_sensor_for_pal(sensor, pawn)
     if not palId then return end
     pawnByPalId[palId] = pawn
@@ -1654,7 +1721,9 @@ local function on_sensor_select_response(Context)
     -- has to be set where the work finishes -- the same place handledSensorKeys
     -- has always been set -- not where it starts.
     if addr ~= nil then handledSensorAddresses[addr] = palId end
+    Logger.trace("sense.enforce", palId)
     try_enforce_personality_with_sensor(pawn, palId, sensor)
+    Logger.trace("sense.done", palId)
 end
 local SENSOR_HOOK_MAX_ROUNDS = 20
 local SENSOR_HOOK_RETRY_MS = 5000

@@ -184,7 +184,8 @@ local ACTION_TYPE_PAL_RANDOM_REST = 77
 -- Hundred-and-forty-eighth pass (2026-09-04): Dragón's real test — 3s cut
 -- some idle animations off before they'd finished playing properly.
 -- Bumped to 6s per his direct request.
-local PLAY_HAPPY_FOLLOWUP_DELAY_MS = 6000
+-- 2026-09-25, balancing pass: 6s -> 5s, Dragón's call after living with it.
+local PLAY_HAPPY_FOLLOWUP_DELAY_MS = 5000
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
     if ok then
@@ -857,6 +858,14 @@ local function do_play()
     end
     if Capture.HasPermanentlyFled(pal) then
         Logger.log("[PalBonds/Interaction] this Pal already lost all its trust and fled permanently — refusing Play")
+        return
+    end
+    -- Play does not go through the radial menu, so the substitution gate that
+    -- hides Pet and Feed cannot cover it: it needs its own. Without this a
+    -- switched-off Pal still played the animation -- it earned nothing, but
+    -- "immune" should mean immune (Dragón, 2026-09-25).
+    if Trust.PersonalityMayBond and not Trust.PersonalityMayBond(pal) then
+        Logger.log("[PalBonds/Interaction] this Pal's personality is switched off for bonding — refusing Play")
         return
     end
     -- A guest's copy of a wild Pal does not carry its live action state or
@@ -2378,18 +2387,104 @@ local function run_on_game_thread(fn)
     return false
 end
 
+-- ===================================================================
+-- THE IN-GAME SCREEN CAN CHANGE THESE WHILE YOU PLAY (2026-09-25)
+-- ===================================================================
+-- The amounts are refreshed into the locals above rather than read at every
+-- use, so a grant and a feed cost exactly what they cost before: the
+-- assignment updates the local every closure already captured.
+--
+-- THE KEYS ARE HARDER, and this is the part worth reading. UE4SS can bind a
+-- key but cannot UNBIND one, so a rebind cannot take the old key back. Instead
+-- every binding asks, at the moment it fires, what that key is FOR right now:
+-- a key the player has moved an action off simply does nothing. The new key is
+-- bound if it has never been bound this session, so the bindings accumulate at
+-- most one per key the player has ever chosen, and none of the stale ones act.
+local keyOwner = {}      -- [KEY NAME] = which action that key means right now
+local keyBound = {}      -- [KEY NAME] = UE4SS already has a binding for it
+local keyHandler = {}    -- [action] = what to run
+
+local function bind_key(action, name, fn)
+    if fn ~= nil then keyHandler[action] = fn end
+    -- This action gives up whatever key it held before.
+    for k, owner in pairs(keyOwner) do
+        if owner == action then keyOwner[k] = nil end
+    end
+    if type(name) ~= "string" or name == "" then return false end
+    local okKey, code = pcall(function() return Key ~= nil and Key[name] or nil end)
+    if not okKey or code == nil then
+        Logger.log("[PalBonds/Interaction] \"" .. tostring(name) ..
+            "\" is not a key UE4SS knows — " .. action .. " has no key until you pick another")
+        return false
+    end
+    keyOwner[name] = action
+    if keyBound[name] then return true end
+    -- The dispatcher reads two tables and nothing else, which is all that is
+    -- safe here: RegisterKeyBind runs on UE4SS's own thread, and every handler
+    -- below does its own hop to the game thread before touching the game.
+    local ok = pcall(RegisterKeyBind, code, function()
+        local owner = keyOwner[name]
+        if owner == nil then return end
+        -- The settings screen is waiting for the player to press the key they
+        -- want. Without this, choosing F8 for Play would ALSO play with a Pal on
+        -- the way in -- the press does double duty, because UE4SS cannot
+        -- swallow it. Cheap: one table lookup in package.loaded, and only for a
+        -- key that is actually ours.
+        local okM, MenuMod = pcall(require, "Menu")
+        if okM and MenuMod and MenuMod.WaitingForKey and MenuMod.WaitingForKey() then return end
+        local handler = keyHandler[owner]
+        if handler ~= nil then handler() end
+    end)
+    if ok then keyBound[name] = true end
+    return ok
+end
+
+-- Guarded like every other module's: Settings is what everything here depends
+-- on, so a build where it could not be loaded properly must still give the
+-- player a working mod with its defaults, not no mod at all.
+pcall(function()
+Settings.OnChange(function(key)
+    if key == "KeyPlay" then
+        PLAY_KEY = Settings.Get("KeyPlay")
+        bind_key("play", PLAY_KEY)
+        Logger.log("[PalBonds/Interaction] Play is now " .. tostring(PLAY_KEY))
+        return
+    elseif key == "KeyTags" then
+        TAGS_KEY = Settings.Get("KeyTags")
+        bind_key("tags", TAGS_KEY)
+        Logger.log("[PalBonds/Interaction] the tags key is now " .. tostring(TAGS_KEY))
+        return
+    elseif key == "KeyPassiveGain" then
+        PASSIVE_KEY = Settings.Get("KeyPassiveGain")
+        bind_key("passive", PASSIVE_KEY)
+        Logger.log("[PalBonds/Interaction] the passive-gain key is now " .. tostring(PASSIVE_KEY))
+        return
+    end
+    FEED_FRIENDSHIP_BASE = Settings.Get("FeedBase")
+    FEED_RARITY_BONUS[0] = Settings.Get("FeedBonusCommon")
+    FEED_RARITY_BONUS[1] = Settings.Get("FeedBonusUncommon")
+    FEED_RARITY_BONUS[2] = Settings.Get("FeedBonusRare")
+    FEED_RARITY_BONUS[3] = Settings.Get("FeedBonusEpic")
+    FEED_RARITY_BONUS[4] = Settings.Get("FeedBonusLegendary")
+    KINSHIP_PEACH_LESSER_FRIENDSHIP_BASE = Settings.Get("KinshipPeachLesser")
+    KINSHIP_PEACH_FULL_FRIENDSHIP_BASE = Settings.Get("KinshipPeach")
+    PET_FRIENDSHIP_GAIN = Settings.Get("Pet")
+    PLAY_FRIENDSHIP_GAIN = Settings.Get("Play")
+end)
+end)
+
 function Interaction.Init()
     -- Co-op: what this machine does for a guest's pet or feed (Net.lua).
     safe_call(register_coop_handlers)
     Logger.log(string.format("[PalBonds/Interaction] keys: %s = Play, %s = personality tags, %s = passive gain", PLAY_KEY, TAGS_KEY, PASSIVE_KEY))
-    RegisterKeyBind(Key[PLAY_KEY], function()
+    bind_key("play", PLAY_KEY, function()
         -- Co-op (2026-09-21): a guest aims here and the host plays the Pal
         -- (do_play / the PLAY message). A dedicated server has no keyboard.
         if on_dedicated_server() then return end
         run_on_game_thread(do_play)
     end)
 
-    RegisterKeyBind(Key[TAGS_KEY], function()
+    bind_key("tags", TAGS_KEY, function()
         -- Co-op stage 3: a guest has tags now (HostView.lua), and this key only
         -- shows or hides them on this screen, so it works for a guest too. A
         -- dedicated server has no screen.
@@ -2418,7 +2513,7 @@ function Interaction.Init()
     -- friendship drip. F10 was the old Feed key back when interactions were on
     -- bare function keys; nothing has been bound to it since the radial menu
     -- took over, so it is free.
-    RegisterKeyBind(Key[PASSIVE_KEY], function()
+    bind_key("passive", PASSIVE_KEY, function()
         if on_dedicated_server() then return end
         -- Co-op (2026-09-21): per player -- it decides whether THIS player
         -- keeps their followers (Dragón). A guest's followers live on the
@@ -3208,6 +3303,18 @@ function Interaction.Init()
                         redirect_idle_log("noaim", "[PalBonds/Interaction] [RADIAL-REDIRECT] menu window open but not aiming at any Pal — leaving the real Otomo in place")
                         return
                     end
+                    -- THE OPTION NEVER APPEARS FOR A PERSONALITY THE PLAYER
+                    -- SWITCHED OFF. This substitution is the only reason the
+                    -- game's own menu offers a WILD Pal at all, so refusing it
+                    -- here means there is nothing to refuse later: no Pet, no
+                    -- Feed, no Play, and no food spent finding out. Dragón:
+                    -- "it should fail from the beginning, not even letting the
+                    -- option appear at all".
+                    if Trust.PersonalityMayBond and not Trust.PersonalityMayBond(wildPal) then
+                        redirect_idle_log("notbondable",
+                            "[PalBonds/Interaction] [RADIAL-REDIRECT] this Pal's personality is switched off for bonding — leaving the real Otomo in place")
+                        return
+                    end
                     local playerName = safe_call(function() return player:GetFullName() end)
                     local wildPalName = safe_call(function() return wildPal:GetFullName() end)
                     if playerName and wildPalName and playerName == wildPalName then
@@ -3465,7 +3572,6 @@ function Interaction.Init()
     -- on change, same discipline as OTOMO-GETTER-WATCH, since some UI
     -- panels may push repeatedly) — cheap, and answers the question
     -- directly from the very next test.
-    local lastLoggedPushedClass = nil
 
     -- Ninetieth pass (2026-09-03): extracted the actual field-rewrite logic
     -- out of try_fix_worker_menu_parameter so it can be reused from a
@@ -3544,14 +3650,6 @@ function Interaction.Init()
     local function try_fix_worker_menu_parameter(hookLabel, Context, WidgetClassParam, ParameterParam)
         local parameter = hook_get(ParameterParam)
         local paramDesc = hook_describe(parameter)
-        local diagKey = hookLabel .. ":" .. paramDesc
-        if diagKey ~= lastLoggedPushedClass then
-            lastLoggedPushedClass = diagKey
-            Logger.log(string.format(
-                "[PalBonds/Interaction] [WORKER-BIND-FIX-DIAG] %s pushed a widget with Parameter: %s",
-                hookLabel, paramDesc
-            ))
-        end
         if not parameter then return end
         if not paramDesc:find("WorkerRadialMenu", 1, true) then
             return 

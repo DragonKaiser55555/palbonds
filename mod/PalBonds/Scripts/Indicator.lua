@@ -161,6 +161,7 @@ local gaugeBoundAt = {}
 local NEW_WORLD_BIND_GRACE_SECONDS = 20.0
 local NAMEPLATE_SWEEPS_AFTER_HOOK = 5
 local NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS = 15
+local MAX_BARS_BUILT_PER_SWEEP = 4
 local nameplateSweepsSinceHook = 0
 local gaugeHandleByKey = {}
 
@@ -227,13 +228,20 @@ local function register_bind_hook_immediate(round)
             -- which is why the first Cattiva never showed a tag. Recording is
             -- bookkeeping only -- the drawing (the tick) still waits.
             if world_is_closing() then return end
+            -- Traced (2026-09-26): a nameplate binding is what "looking at a
+            -- Pal" IS, so this hook runs constantly in the scenario Dragón
+            -- reproduces the crash with. describe_widget reflects into the
+            -- widget, so it gets its own line.
+            Logger.trace("gauge.bind.get")
             local self = hook_get(Context)
             local handle = hook_get(TargetHandle)
             if self == nil or handle == nil then return end
+            Logger.trace("gauge.bind.describe")
             local key = describe_widget(self)
             gaugeHandleByKey[key] = handle
             gaugeBoundAt[key] = os.clock()
             pendingGauges[key] = self
+            Logger.trace("gauge.bind.done", key)
         end)
     end)
     if hookOk then
@@ -243,12 +251,15 @@ local function register_bind_hook_immediate(round)
         local unbindOk, unbindErr = pcall(function()
             RegisterHook(unbindPath, function(Context)
                 if world_is_closing() then return end
+                Logger.trace("gauge.unbind.get")
                 local self = hook_get(Context)
                 if self == nil then return end
+                Logger.trace("gauge.unbind.describe")
                 local key = describe_widget(self)
                 gaugeHandleByKey[key] = nil
                 gaugeBoundAt[key] = nil
                 pendingGauges[key] = nil
+                Logger.trace("gauge.unbind.done", key)
             end)
         end)
         Logger.log("[PalBonds/Indicator] [TAGS] (immediate) RegisterHook(" .. unbindPath .. ") = " .. (unbindOk and "OK" or ("FAILED (non-fatal, BindFromHandle hook still stands): " .. tostring(unbindErr))))
@@ -580,6 +591,65 @@ local loggedLabelGeometryOnce = false
 -- `sourceText` (optional, 2026-09-16): the text widget to copy the style from.
 -- Nameplates leave it nil and copy their own Text_Name; the boss bar passes one
 -- of its own text widgets, since it has no WBP_EnemyGauge.
+-- ===================================================================
+-- HOW THE BAR AND THE TAG LOOK (2026-09-25, accessibility)
+-- ===================================================================
+-- Gold on a bright hillside is not readable for everyone, and a tag sized for
+-- one screen is not sized for another. All three are the player's choice now.
+--
+-- Held in locals, so drawing a label costs no settings lookup at all, and
+-- refreshed from a listener when the player changes one -- the same shape every
+-- other module uses. Must sit ABOVE the first thing that reads it: Lua locals
+-- are lexically scoped, so a colour table declared further down would resolve to
+-- a nil global here and the tag colour would silently never apply.
+local NAMED_COLORS = {
+    gold   = { R = 1.00, G = 0.84, B = 0.00, A = 1 },
+    white  = { R = 1.00, G = 1.00, B = 1.00, A = 1 },
+    red    = { R = 0.95, G = 0.18, B = 0.15, A = 1 },
+    green  = { R = 0.30, G = 0.90, B = 0.35, A = 1 },
+    blue   = { R = 0.25, G = 0.62, B = 1.00, A = 1 },
+    purple = { R = 0.72, G = 0.42, B = 1.00, A = 1 },
+}
+local TAG_SIZE_SCALE = { small = 0.8, normal = 1.0, large = 1.25, huge = 1.5 }
+
+local barColorName = "gold"
+local tagColorName = nil          -- nil means "leave the Pal's own name colour"
+local tagSizeScale = 1.0
+
+local function named_color(name)
+    return NAMED_COLORS[name]
+end
+
+-- `ratio` is kept and ignored: the fill LENGTH already shows progress, so the
+-- colour is flat (Dragón dropped the gradient on 2026-09-03). Keeping the
+-- parameter means no call site had to change then, or now.
+local function compute_trust_bar_color(ratio)
+    return named_color(barColorName) or NAMED_COLORS.gold
+end
+
+local function read_appearance_settings()
+    local okS, Set = pcall(require, "Settings")
+    if not okS then return end
+    barColorName = Set.Get("BarColor") or "gold"
+    local tag = Set.Get("TagColor")
+    tagColorName = (tag ~= nil and tag ~= "name") and tag or nil
+    tagSizeScale = TAG_SIZE_SCALE[Set.Get("TagSize")] or 1.0
+end
+
+read_appearance_settings()
+
+-- A change has to show on the Pals already on screen, not only the next one, so
+-- every tracked bar is recoloured and every label redrawn from scratch.
+pcall(function()
+    require("Settings").OnChange(function(key)
+        local appearance = (key == "BarColor" or key == "TagColor" or key == "TagSize")
+        local bondable = type(key) == "string" and key:find("^Bond") ~= nil
+        if not (appearance or bondable) then return end
+        read_appearance_settings()
+        Indicator.RefreshAppearance()
+    end)
+end)
+
 local function style_personality_label(labelObj, gaugeWidget, sourceText)
     if labelObj == nil then return end
 
@@ -597,6 +667,25 @@ local function style_personality_label(labelObj, gaugeWidget, sourceText)
     if nameValid then
         fontOk = pcall(function() labelObj:SetFont(nameText.Font) end)
         colorOk = pcall(function() labelObj:SetColorAndOpacity(nameText.ColorAndOpacity) end)
+
+        -- 2026-09-25 (accessibility): the tag's colour and size are the
+        -- player's. Both are applied ON TOP of the copy above, so "same as the
+        -- name" and "normal" leave the label exactly as it has always been, and
+        -- the shadow the name carries is kept either way.
+        local wanted = named_color(tagColorName)
+        if wanted ~= nil then
+            pcall(function() labelObj:SetColorAndOpacity({ SpecifiedColor = wanted, ColorUseRule = 0 }) end)
+        end
+        if tagSizeScale ~= 1.0 then
+            pcall(function()
+                local font = labelObj.Font
+                local base = tonumber(font.Size) or 0
+                if base > 0 then
+                    font.Size = math.max(6, math.floor(base * tagSizeScale + 0.5))
+                    labelObj:SetFont(font)
+                end
+            end)
+        end
 
         -- The name reads crisply against any background because it carries a
         -- shadow/outline. Without copying this the label would be the right size
@@ -633,11 +722,8 @@ local function dump_label_geometry(gaugeWidget, labelObj)
     end
     pcall(function()
         local eg = gaugeWidget.WBP_EnemyGauge
-        Logger.log("[PalBonds/Indicator] [DIAG-GEOM] Text_Name      " .. slotOf(eg.Text_Name))
-        Logger.log("[PalBonds/Indicator] [DIAG-GEOM] ProgressBar_HP " .. slotOf(eg.ProgressBar_HP))
     end)
     if labelObj ~= nil then
-        Logger.log("[PalBonds/Indicator] [DIAG-GEOM] personality    " .. slotOf(labelObj))
     end
 end
 
@@ -660,6 +746,46 @@ end
 -- everytime me log into the game". So where the tags START is now the player's
 -- to decide in the settings file; the key still toggles them from there.
 local personalityLabelsVisible = (require("Settings").Get("ShowPersonalityTags") ~= 0)
+
+-- 2026-09-25: changing this on the in-game screen applies NOW, the same as the
+-- key does -- a setting that only took effect next launch would read as broken
+-- when it is sitting on screen next to a switch the player just flipped. Every
+-- tracked bar forgets its last text so the next refresh redraws it.
+pcall(function()
+    require("Settings").OnChange(function(key)
+        if key ~= "ShowPersonalityTags" then return end
+        personalityLabelsVisible = (require("Settings").Get("ShowPersonalityTags") ~= 0)
+        for _, entry in pairs(trackedBars) do
+            if type(entry) == "table" then entry.labelLastText = nil end
+        end
+    end)
+end)
+-- Redraw what is already on screen after an appearance setting changes. The
+-- bar is recoloured in place; the label is styled again from the Pal's name and
+-- then told to forget its last text, so the next refresh writes it back at the
+-- new size.
+function Indicator.RefreshAppearance()
+    for _, entry in pairs(trackedBars) do
+        if type(entry) == "table" then
+            if entry.bar ~= nil then
+                pcall(function() entry.bar:SetFillColorAndOpacity(compute_trust_bar_color(0)) end)
+                -- A personality switched off mid-session takes its bar with it,
+                -- rather than leaving one on screen that can never move again.
+                local allowed = true
+                pcall(function()
+                    local T = require("Trust")
+                    if T.PersonalityMayBond then allowed = T.PersonalityMayBond(entry.actor) end
+                end)
+                pcall(function() entry.bar:SetVisibility(allowed and 0 or 1) end)
+            end
+            if entry.label ~= nil and entry.gaugeWidget ~= nil then
+                pcall(function() style_personality_label(entry.label, entry.gaugeWidget) end)
+            end
+            entry.labelLastText = nil
+        end
+    end
+end
+
 function Indicator.TogglePersonalityLabels()
     personalityLabelsVisible = not personalityLabelsVisible
     for _, entry in pairs(trackedBars) do
@@ -785,9 +911,9 @@ end
 -- regardless of ratio. `ratio` is kept as a parameter (harmless, ignored)
 -- rather than changing every call site, since the fill LENGTH already
 -- shows progress via SetPercent; the color no longer needs to.
-local function compute_trust_bar_color(ratio)
-    return { R = 1.00, G = 0.84, B = 0.00, A = 1 }
-end
+--
+-- 2026-09-25: the colour moved up into the accessibility block, because the
+-- appearance refresh calls it and sits above this point.
 
 -- Hundred-and-eightieth pass (2026-09-05): Dragón asked to try the
 -- technique found while reading the "Pal Analyzer" reference mod's
@@ -946,6 +1072,58 @@ local function try_upgrade_entry_with_bar(entry)
     entry.bar = newBar
     Logger.log("[PalBonds/Indicator] [DIAG-CREATE] upgraded a label-only entry with a real trust bar (first interaction) for " .. describe_pal(entry.actor))
 end
+-- ===================================================================
+-- THE TRACKED-BAR TABLE HAD NO WAY OUT (2026-09-26)
+-- ===================================================================
+-- Dragón's trace run, measured: `trackedBars` went from 0 to 603 entries in
+-- fourteen minutes of flying, straight line, nothing ever removed -- and the
+-- very first Pal whose nameplate he saw was still being re-validated every two
+-- seconds fourteen minutes later. 139,454 of the run's 196,115 log lines were
+-- this one loop.
+--
+-- Why nothing left: the loop only drops an entry when its GAUGE WIDGET goes
+-- invalid, and the game pools and recycles nameplate gauges rather than
+-- destroying them, so that never happens. Keeping the entry after its gauge is
+-- recycled is deliberate -- it is what reparent_existing_bar reuses when the
+-- same Pal comes back -- but a cache with no expiry is just a leak, and this
+-- one is very likely the "the game feels laggier the longer I play" Dragón has
+-- been reporting for weeks (it was blamed on the debug log at the time; it was
+-- measured this time).
+--
+-- So the cache now expires. Presence is read from gaugeHandleByKey, which the
+-- bind hook sets and the unbind hook clears: a Pal whose nameplate is on screen
+-- keeps its entry alive for free (one table lookup per entry per scan, no
+-- reflection at all), and a Pal left behind ages out and is dropped.
+local TRACKED_BAR_UNSEEN_PRUNE_SECONDS = 60.0
+
+-- Our bar and label MIGRATE between pooled gauges (see reparent_existing_bar),
+-- so dropping the entry without detaching them would leave a dead Pal's bar
+-- parented to a gauge the game is about to hand to a different Pal. Same
+-- RemoveChild pattern reparent_existing_bar already uses.
+local function detach_tracked_widget(w)
+    if w == nil then return end
+    local okValid, isValid = pcall(function() return w:IsValid() end)
+    if not (okValid and isValid) then return end
+    pcall(function()
+        local parent = w.Slot and w.Slot.Parent
+        if parent ~= nil and parent:IsValid() then parent:RemoveChild(w) end
+    end)
+end
+
+local function release_tracked_entry(entry)
+    detach_tracked_widget(entry.bar)
+    detach_tracked_widget(entry.label)
+    -- Let the gauge host a new Pal's bar again -- but only if it is still the
+    -- gauge this entry was on. Compared by address: two UObject wrappers for
+    -- the same object are not necessarily the same Lua value.
+    if entry.gaugeKey ~= nil then
+        local held = barInstalledForGauge[entry.gaugeKey]
+        if held ~= nil and address_of_obj(held) == address_of_obj(entry.gaugeWidget) then
+            barInstalledForGauge[entry.gaugeKey] = nil
+        end
+    end
+end
+
 local function install_trust_bar(gaugeWidget)
     Logger.trace("build trust bar")
     local key = describe_widget(gaugeWidget)
@@ -985,6 +1163,12 @@ local function install_trust_bar(gaugeWidget)
     -- `hasBonding` splits the rest of this function: the label always
     -- gets built below; the bar only when this is true.
     local hasBonding = Trust.HasBondingState(earlyActor)
+    -- A personality switched off for bonding never gets a bar: it could never
+    -- fill. The TAG stays, because that is how the player knows to leave that
+    -- Pal alone (Dragón's call, 2026-09-25).
+    if hasBonding and Trust.PersonalityMayBond and not Trust.PersonalityMayBond(earlyActor) then
+        hasBonding = false
+    end
 
     -- Hundred-and-eightieth pass: this exact Pal might already have a
     -- live tracked entry (label and/or bar, from a different, now-stale
@@ -997,6 +1181,10 @@ local function install_trust_bar(gaugeWidget)
         local entry = trackedBars[earlyPalId]
         local reused = reparent_existing_bar(entry, gaugeWidget)
         if reused then
+            -- The entry now lives on THIS gauge, and the Pal is plainly here.
+            entry.gaugeWidget = gaugeWidget
+            entry.gaugeKey = key
+            entry.lastSeenAt = os.clock()
             Logger.log("[PalBonds/Indicator] [DIAG-CREATE] REUSED existing widget(s) for already-tracked Pal " .. describe_pal(earlyActor) .. " on recycled gauge " .. key .. " (no new widgets built)")
             if hasBonding then
                 try_upgrade_entry_with_bar(entry)
@@ -1186,7 +1374,10 @@ local function install_trust_bar(gaugeWidget)
     -- retry.
     local trackKey = earlyPalId or key
     trackedBars[trackKey] = { bar = newBar, gaugeWidget = gaugeWidget, actor = earlyActor, label = newLabel, palId = earlyPalId,
-        actorAddr = address_of_obj(earlyActor) }
+        actorAddr = address_of_obj(earlyActor),
+        -- gaugeKey lets the scan tell "this Pal's nameplate is still up" from a
+        -- plain table lookup, with no reflection; lastSeenAt is what expires.
+        gaugeKey = key, lastSeenAt = os.clock() }
 end
 
 -- Fifty-seventh pass: periodic refresh for every installed bar — re-reads
@@ -1219,6 +1410,8 @@ local function update_trust_bars()
     -- while traversing it (removing/nil-ing an EXISTING key, as already
     -- done below, is explicitly fine; adding one is not).
     local promotions = {}
+    local now = os.clock()
+    local prunedBars = 0
     for key, entry in pairs(trackedBars) do
 
         -- Hundred-and-ninety-fourth pass: `entry.bar` can legitimately be
@@ -1227,13 +1420,35 @@ local function update_trust_bars()
         -- WHOLE entry (including its personality label) every single
         -- tick, which would have made the "always show the label" feature
         -- impossible. Only require the bar to be valid when one exists.
+        -- Traced (2026-09-26): this is the loop that reads CACHED actor and
+        -- widget pointers every scan — the shape most likely to touch an
+        -- object the engine has already recycled. The key names which entry.
+        Logger.trace("bar.entry", key)
+
+        -- IS THIS PAL'S NAMEPLATE STILL UP? Two table lookups, no reflection.
+        -- The bind hook fills gaugeHandleByKey and the unbind hook clears it,
+        -- so a Pal on screen refreshes itself here for free and a Pal left
+        -- behind stops refreshing and ages out. See TRACKED_BAR_UNSEEN_PRUNE_
+        -- SECONDS above for what this is fixing.
+        if entry.lastSeenAt == nil then entry.lastSeenAt = now end
+        if entry.gaugeKey ~= nil and gaugeHandleByKey[entry.gaugeKey] ~= nil then
+            entry.lastSeenAt = now
+        end
+        local unseenTooLong = (now - entry.lastSeenAt) > TRACKED_BAR_UNSEEN_PRUNE_SECONDS
+
         local hasBar = entry.bar ~= nil
         local barOk, barValid = true, true
         if hasBar then
             barOk, barValid = pcall(function() return entry.bar:IsValid() end)
         end
         local gaugeOk, gaugeValid = pcall(function() return entry.gaugeWidget:IsValid() end)
-        if not gaugeValid or (hasBar and not (barOk and barValid)) then
+        if unseenTooLong or not gaugeValid or (hasBar and not (barOk and barValid)) then
+            -- Detach only when the widgets are being abandoned while still
+            -- alive. A gauge that went invalid took our children with it.
+            if unseenTooLong and gaugeValid then
+                safe_call(release_tracked_entry, entry)
+                prunedBars = prunedBars + 1
+            end
             trackedBars[key] = nil
         else
             if entry.actor == nil then
@@ -1377,6 +1592,13 @@ local function update_trust_bars()
             trackedBars[promotion.newKey] = entry
         end
     end
+    if prunedBars > 0 then
+        local left = 0
+        for _ in pairs(trackedBars) do left = left + 1 end
+        Logger.log(string.format(
+            "[PalBonds/Indicator] [PRUNE] dropped %d trust-bar entr(ies) for Pals whose nameplate has been gone for %.0fs, %d still tracked",
+            prunedBars, TRACKED_BAR_UNSEEN_PRUNE_SECONDS, left))
+    end
 end
 -- ===========================================================================
 -- BOSS HP BAR (2026-09-16)
@@ -1416,9 +1638,9 @@ local BOSS_LABEL_HEIGHT = 22
 -- which would make the tag as large as the name. Falls back to the name.
 local BOSS_LABEL_STYLE_FIELDS = { "Text_LvTitle", "Text_BossName" }
 local hasRegisteredBossHook = false
+local loggedBossHookThrow = false
 local pendingBossGauges = {}
 local bossEntries = {}
-local bossGeometryLogged = false
 
 local function is_valid_obj(obj)
     return obj ~= nil and safe_call(function() return obj:IsValid() end) == true
@@ -1488,43 +1710,6 @@ end
 
 -- One-shot, diagnostics only: where the boss bar's pieces really sit, and what
 -- the HP bar is nested in, so the stacking question is answered with numbers.
-local function log_boss_geometry(entry, layout)
-    if bossGeometryLogged or not Logger.DiagnosticsEnabled() then return end
-    bossGeometryLogged = true
-    local function slotOf(wd)
-        local s = "?"
-        pcall(function()
-            local sl = wd.Slot
-            local pos, size = sl:GetPosition(), sl:GetSize()
-            s = string.format("pos=(%s,%s) size=(%s,%s)", tostring(pos.X), tostring(pos.Y), tostring(size.X), tostring(size.Y))
-        end)
-        return s
-    end
-    local function nameOf(wd)
-        local n = safe_call(function() return wd:GetFullName() end)
-        return n and (tostring(n):match("^(%S+)") .. " " .. (tostring(n):match("([^%.:]+)$") or "")) or "?"
-    end
-    Logger.log("[PalBonds/Indicator] [BOSS-GEOM] BossGaugeHP    " .. slotOf(layout.inner.BossGaugeHP))
-    local a = layout.anc
-    Logger.log(string.format("[PalBonds/Indicator] [BOSS-GEOM] BossGaugeHP anchors=%s alignment=(%s,%s) -> height used=%s topEdge=%s",
-        a and string.format("min(%s,%s) max(%s,%s)", tostring(a.minX), tostring(a.minY), tostring(a.maxX), tostring(a.maxY)) or "UNREADABLE",
-        tostring(layout.al.x), tostring(layout.al.y), tostring(layout.h), tostring(layout.topEdge)))
-    pcall(function() Logger.log("[PalBonds/Indicator] [BOSS-GEOM] Text_BossName  " .. slotOf(layout.inner.Text_BossName)) end)
-    pcall(function() Logger.log("[PalBonds/Indicator] [BOSS-GEOM] Text_LvTitle   " .. slotOf(layout.inner.Text_LvTitle)) end)
-    if entry.bar then Logger.log("[PalBonds/Indicator] [BOSS-GEOM] trust bar      " .. slotOf(entry.bar)) end
-    if entry.label then Logger.log("[PalBonds/Indicator] [BOSS-GEOM] tag            " .. slotOf(entry.label)) end
-    local chain = {}
-    local cur = layout.inner.BossGaugeHP
-    for _ = 1, 8 do
-        local parent = safe_call(function() return cur.Slot.Parent end)
-        if not is_valid_obj(parent) then break end
-        chain[#chain + 1] = nameOf(parent)
-        cur = parent
-    end
-    Logger.log("[PalBonds/Indicator] [BOSS-GEOM] HP bar nesting (inner→outer): " .. table.concat(chain, "  <  "))
-    local clip = safe_call(function() return layout.parent.Clipping end)
-    Logger.log("[PalBonds/Indicator] [BOSS-GEOM] HP bar's panel clipping = " .. tostring(clip) .. " (0 = children may draw outside it)")
-end
 
 local function build_boss_bar(entry, layout)
     local cls = safe_call(function() return StaticFindObject("/Script/UMG.ProgressBar") end)
@@ -1545,14 +1730,6 @@ local function build_boss_bar(entry, layout)
         return
     end
     place_under_hp(slot, layout, layout.topEdge + layout.h + BOSS_BAR_GAP, boss_bar_height(layout))
-    if Logger.DiagnosticsEnabled() then
-        pcall(function()
-            local p, s, a = slot:GetPosition(), slot:GetSize(), slot:GetAnchors()
-            Logger.log(string.format("[PalBonds/Indicator] [BOSS-GEOM] trust bar placed: offsets=(%s,%s,%s,%s) anchors=min(%s,%s) max(%s,%s)",
-                tostring(p.X), tostring(p.Y), tostring(s.X), tostring(s.Y),
-                tostring(a.Minimum.X), tostring(a.Minimum.Y), tostring(a.Maximum.X), tostring(a.Maximum.Y)))
-        end)
-    end
     entry.bar = bar
     entry.lastRatio = nil
     Logger.log("[PalBonds/Indicator] [BOSS] trust bar built under the boss HP bar for " .. describe_pal(entry.actor))
@@ -1606,7 +1783,6 @@ local function install_boss_display(key, pending)
     bossEntries[key] = entry
     Logger.log(string.format("[PalBonds/Indicator] [BOSS] boss bar attached for %s (id %s) — tag=%s bar=%s",
         describe_pal(actor), tostring(entry.palId), tostring(entry.label ~= nil), tostring(entry.bar ~= nil)))
-    log_boss_geometry(entry, layout)
     return true
 end
 
@@ -1707,7 +1883,26 @@ local function register_boss_hook(round)
     local ok, err = pcall(function()
         RegisterHook(BOSS_GAUGE_HOOK_PATH, function(Context, TargetCharacter)
             if world_is_closing() then return end
-            queue_boss_gauge(hook_get(Context), hook_get(TargetCharacter))
+            -- UNGUARDED UNTIL 2026-09-26, and the trace caught it: over a
+            -- 40-minute session this callback was entered 40 times and reached
+            -- its end 20 -- exactly the 20 boss bars that attached. UE4SS
+            -- invokes it twice per call, and on the second invocation the
+            -- parameters are not in the shape hook_get expects, so it threw.
+            -- Nothing broke (the bars all attached on the first invocation) but
+            -- an exception raised twice a minute inside a hook is not something
+            -- to ship, and every other hook in this file is already wrapped.
+            -- Logged once so a real failure is still visible rather than muted.
+            Logger.trace("gauge.boss")
+            local ok = pcall(function()
+                queue_boss_gauge(hook_get(Context), hook_get(TargetCharacter))
+            end)
+            if not ok and not loggedBossHookThrow then
+                loggedBossHookThrow = true
+                Logger.log("[PalBonds/Indicator] [BOSS] the gauge hook's second invocation carries "
+                    .. "different parameters and was skipped (logged once -- the bar still attaches "
+                    .. "on the first)")
+            end
+            Logger.trace("gauge.boss.done")
         end)
     end)
     if ok then
@@ -1789,7 +1984,13 @@ local function scan_for_gauge_widgets()
     -- until that hook is registered, for NAMEPLATE_SWEEPS_AFTER_HOOK ticks after,
     -- and then every NAMEPLATE_SAFETY_SWEEP_EVERY_N_SCANS ticks as a safety net.
 
+    -- 2026-09-24: one sweep used to build every queued bar, which is how a
+    -- single tick reached 141 ms while flying past a crowd. The queue keeps
+    -- what is left for the next tick 2 s later; nothing is dropped.
+    local builtThisSweep = 0
     for key, g in pairs(pendingGauges) do
+        if builtThisSweep >= MAX_BARS_BUILT_PER_SWEEP then break end
+        builtThisSweep = builtThisSweep + 1
         if not safe_call(function() return g:IsValid() end) then
             pendingGauges[key] = nil
         else
@@ -1904,16 +2105,7 @@ local function scheduleScan()
         end)
     end)
     if not ok then
-        pcall(function()
-            LoopAsync(SCAN_INTERVAL_MS, function()
-                local inGameThread = true
-                pcall(function() inGameThread = IsInGameThread() end)
-                if inGameThread then
-                    safe_call(scan_for_gauge_widgets)
-                end
-                return false 
-            end)
-        end)
+        Logger.log("[PalBonds/Indicator] ExecuteInGameThreadWithDelay failed to schedule the nameplate scan")
     end
 end
 function Indicator.Init()
@@ -2062,10 +2254,14 @@ end
 
 -- Tests only: how many nameplates we know the Pal of, and how many are queued.
 function Indicator.BindCounts()
-    local h, p = 0, 0
+    local h, p, b = 0, 0, 0
     for _ in pairs(gaugeHandleByKey) do h = h + 1 end
     for _ in pairs(pendingGauges) do p = p + 1 end
-    return h, p
+    -- Third return added 2026-09-26: this is the table that was growing without
+    -- bound, so it needs to be countable from outside for the prune's tests.
+    -- Extra return value, so the existing two-value callers are unaffected.
+    for _ in pairs(trackedBars) do b = b + 1 end
+    return h, p, b
 end
 
 function Indicator.ResetForNewWorld()

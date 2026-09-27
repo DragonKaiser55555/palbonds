@@ -1,42 +1,11 @@
---[[
-    PalBonds -- what a guest SEES: trust bars and personality tags drawn from
-    the host's numbers (co-op stage 3, 2026-09-21).
-
-    WHY. In a shared world every trust record, every rolled personality and
-    every bond lives on the machine that owns the world (Net.lua has the
-    history). A guest's copy draws nameplates on its own screen, but it has
-    nothing true to draw: co-op run 1 bonded and joined a Cattiva with no bar
-    and no tag on the guest's screen at all.
-
-    HOW. Two halves in one file.
-
-      * On the machine that owns the world (a host or a dedicated server):
-        every SEND_EVERY_MS, for each player on ANOTHER machine, the Pals this
-        machine knows near that player are summarised -- personality, bar,
-        bonding, broken bond, and whose bond it is from that player's point of
-        view -- and whatever changed since the last message to that player is
-        sent in one INFO message over the private line. In singleplayer it
-        returns before looking at anything.
-
-      * On a guest: the INFO records are kept by Pal (stable id, the same on
-        every machine), and the handful of functions the nameplate code reads
-        -- Trust.GetBarRatio / HasBondingState, Personality.GetDisposition /
-        IsFemale, Capture.HasPermanentlyFled / GetFledReason,
-        Combat.ClaimedByAnotherPlayer -- answer from here instead of from local
-        state that a guest never has. Indicator itself is unchanged.
-
-    Nothing here writes to a Pal or to the world. A guest that never receives
-    an INFO simply shows what it showed before: no bar, "?" tags.
-]]
-
 local Logger = require("Logger")
 
 local HostView = {}
 
 local SEND_EVERY_MS = 2000
-local NEAR = 6000               -- a nameplate is only drawn this close anyway
-local RECORD_SEP = "\31"        -- between Pal records inside one message
-local FIELD_SEP = "\30"         -- between a record's fields
+local NEAR = 6000
+local RECORD_SEP = "\31"
+local FIELD_SEP = "\30"
 
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
@@ -59,13 +28,8 @@ local function we_are_a_guest()
 end
 HostView.IsGuest = we_are_a_guest
 
--- ===================================================================
--- GUEST SIDE: the cache and the answers
--- ===================================================================
--- palId -> { disp, ratio (0..1), bond, female, fled, rel ("mine"/"other"/"") }
 local cache = {}
--- actor address -> palId, so the nameplate tick does not rebuild the id
--- (several reflection calls) for the same actor every two seconds.
+
 local idByAddress = {}
 
 local function id_of(actor)
@@ -92,22 +56,18 @@ function HostView.HasBond(actor)
     return e ~= nil and (e.bond == true or (e.ratio or 0) > 0)
 end
 
--- A Pal the host has not described yet, asked for at most every ASK_AGAIN_SECONDS.
 local askQueue = {}
 local askedAt = {}
 local askCount = {}
 local ASK_AGAIN_SECONDS = 10
--- Co-op run 3: a few Pals were asked about 11-15 times -- ones the guest can
--- see but the host never describes (too far from the guest for the host to
--- find, or not a wild Pal at all). After ASK_TRIES unanswered asks the same
--- Pal is asked again only every ASK_LATER_SECONDS, in case it comes closer.
+
 local ASK_TRIES = 3
 local ASK_LATER_SECONDS = 60
 
 function HostView.Disposition(palId)
     local e = palId and cache[palId] or nil
     if e == nil and palId ~= nil then
-        -- A nameplate is showing this Pal with nothing to say about it: ask.
+
         local now = os.clock()
         local wait = ((askCount[palId] or 0) < ASK_TRIES) and ASK_AGAIN_SECONDS or ASK_LATER_SECONDS
         if askedAt[palId] == nil or (now - askedAt[palId]) >= wait then
@@ -135,14 +95,8 @@ end
 
 local heardFromHost = false
 
--- Co-op run 3b (2026-09-21): a guest's dungeon loading screen counts as a new
--- world here (its character is briefly not its own), which empties this cache
--- -- but the host only sends what CHANGED, so everything unchanged would
--- never come back and the drawing would wait for a hello that never repeats.
--- After a reset the guest asks the host to start it over (RESYNC).
 local resyncWanted = false
 
--- True once the host's PalBonds has sent this guest anything at all.
 function HostView.HostHasPalBonds()
     return heardFromHost
 end
@@ -157,8 +111,6 @@ function HostView.Reset()
     resyncWanted = true
 end
 
--- The guest's side of starting over: once its character is back, one RESYNC.
--- Exposed for the harness. Returns true when sent.
 function HostView.SendResync()
     if not resyncWanted or not we_are_a_guest() then return false end
     local okRef, PlayerRef = pcall(require, "PlayerRef")
@@ -171,8 +123,6 @@ function HostView.SendResync()
     return false
 end
 
--- The guest's side of asking: one ASK with every waiting id (at most 24).
--- Exposed for the harness. Returns how many ids were asked for.
 function HostView.SendAsks()
     if not we_are_a_guest() or not heardFromHost then return 0 end
     local ids = {}
@@ -190,9 +140,6 @@ function HostView.SendAsks()
     return #ids
 end
 
--- One INFO message: records separated by RECORD_SEP, fields by FIELD_SEP:
---   palId, disposition, bar percent (0-100), bonding (0/1), female (0/1),
---   fled reason, relation
 local function accept_info(text)
     if type(text) ~= "string" or text == "" then return 0 end
     local n = 0
@@ -218,16 +165,12 @@ local function accept_info(text)
 end
 HostView.AcceptInfo = accept_info
 
--- ===================================================================
--- HOST SIDE: summarise and send
--- ===================================================================
--- owner key -> { palId -> the record text last sent to that player }
 local sentTo = {}
 
 local function record_for(palId, pawn, state, viewer, viewerKey)
     local Trust = require("Trust")
     local PlayerRef = require("PlayerRef")
-    -- The bar's size depends on the player's level: measured for the viewer.
+
     local ratio = safe_call(function()
         return PlayerRef.WithPlayer(viewer, Trust.GetBarRatio, pawn)
     end) or 0
@@ -259,7 +202,6 @@ local function remote_players()
     return out
 end
 
--- One pass. Exposed for the harness. Returns how many records were sent.
 function HostView.SendUpdates()
     local mode = session_mode()
     if mode ~= "host" and mode ~= "dedicated" then return 0 end
@@ -293,8 +235,7 @@ function HostView.SendUpdates()
                 Net.SendToPlayer(viewer, "INFO", table.concat(batch, RECORD_SEP))
                 sentTotal = sentTotal + #batch
             elseif isNewViewer then
-                -- Nothing to describe yet, but say hello: the guest then knows
-                -- this host runs PalBonds and starts drawing and asking.
+
                 Net.SendToPlayer(viewer, "INFO", "")
             end
         end
@@ -302,15 +243,10 @@ function HostView.SendUpdates()
     return sentTotal
 end
 
--- A player who left: forget what was sent, so a rejoin gets everything again.
--- Called on world reset (both sides).
 function HostView.ResetSent()
     sentTo = {}
 end
 
--- The host's side of asking: find those Pals next to that guest, give each a
--- personality if it has none yet (as singleplayer does for a "?" tag), and
--- answer at once. Exposed for the harness.
 function HostView.AnswerAsk(viewer, text)
     if type(text) ~= "string" or text == "" or not valid(viewer) then return 0 end
     local wanted, n = {}, 0
@@ -359,7 +295,7 @@ function HostView.Init()
     local okNet, Net = pcall(require, "Net")
     if okNet and Net and Net.OnServer then
         Net.OnServer("ASK", function(ctrl, pawn, fields) HostView.AnswerAsk(pawn, fields[1]) end)
-        -- That guest is treated as new: a hello, then everything near them.
+
         Net.OnServer("RESYNC", function(ctrl, pawn, fields)
             sentTo[require("PlayerRef").OwnerKey(pawn)] = nil
         end)

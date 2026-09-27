@@ -38,15 +38,6 @@ end
 -- the whole-struct-by-value GetSaveParameter() call that caused this
 -- project's three earlier crashes). nil if anything along the chain
 -- fails or the Pal has no owner yet (wild).
-local function read_owner_id(pal)
-    return safe_call(function()
-        local comp = pal.CharacterParameterComponent
-        if comp == nil or not comp:IsValid() then return nil end
-        local param = comp:GetIndividualParameter()
-        if param == nil or not param:IsValid() then return nil end
-        return param.SaveParameter and param.SaveParameter.OwnerPlayerUId
-    end)
-end
 
 -- THIRTY-EIGHTH PASS (2026-09-02) — the project's first genuinely
 -- experimental (not just cautious-but-safe) live call. Calls the real
@@ -102,20 +93,14 @@ function Capture.TryDirectCapture(pal, player)
         return false
     end
     local palName = safe_call(function() return pal:GetFullName() end)
-    Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] TryDirectCapture starting on %s", tostring(palName)))
     if pal == nil or not pal:IsValid() then
-        Logger.log("[PalBonds/Capture] [EXPERIMENT] target Pal is not valid — aborting, nothing risky called")
         return
     end
     if player == nil or not player:IsValid() then
-        Logger.log("[PalBonds/Capture] [EXPERIMENT] no valid player — aborting, nothing risky called")
         return
     end
-    local ownerBefore = read_owner_id(pal)
-    Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] owner BEFORE the call = %s (this line is flushed to disk before the risky call below runs)", tostring(ownerBefore)))
     local utility = get_pal_utility()
     if utility == nil then
-        Logger.log("[PalBonds/Capture] [EXPERIMENT] could not resolve PalUtility — aborting, nothing risky called")
         return
     end
 
@@ -123,17 +108,6 @@ function Capture.TryDirectCapture(pal, player)
     local callOk, callErr = pcall(function()
         utility:PalCaptureSuccess(player, pal)
     end)
-    Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] PalCaptureSuccess call returned — result=%s", callOk and "ok (no Lua-level error — doesn't yet mean it worked, just that nothing threw)" or ("Lua ERROR: " .. tostring(callErr))))
-    local stillValid = safe_call(function() return pal:IsValid() end)
-    Logger.log(string.format("[PalBonds/Capture] [EXPERIMENT] target actor still valid immediately after = %s", tostring(stillValid)))
-    if stillValid then
-        local ownerAfter = read_owner_id(pal)
-        Logger.log(string.format(
-            "[PalBonds/Capture] [EXPERIMENT] owner AFTER the call = %s (compare to BEFORE=%s — a real change here would be strong evidence this actually worked)",
-            tostring(ownerAfter), tostring(ownerBefore)
-        ))
-    end
-    Logger.log("[PalBonds/Capture] [EXPERIMENT] TryDirectCapture finished — the real answer is what you see in-game: did this Pal vanish from the world AND show up in your party or Palbox? Check both.")
 end
 
 -- Hundred-and-thirtieth pass (2026-09-03): real in-game toast notification,
@@ -399,6 +373,16 @@ end
 -- `key`, `name` and `female` (optional) say WHICH message it is: a guest then
 -- gets the key, the Pal's id and gender instead of the finished sentence,
 -- and writes it in its own language (co-op run 3, 2026-09-21).
+local toastFailuresLogged = {}
+local function toast_failed(why)
+    if not toastFailuresLogged[why] then
+        toastFailuresLogged[why] = true
+        Logger.log("[PalBonds/Capture] [NOTIFY] the message could not be shown: " .. why ..
+            " (logged once per reason per session)")
+    end
+    return false
+end
+
 local function show_log(player, message, tone, key, name, female)
     if player == nil or not safe_call(function() return player:IsValid() end) then return false end
     local okRef, PlayerRef = pcall(require, "PlayerRef")
@@ -413,19 +397,28 @@ local function show_log(player, message, tone, key, name, female)
         end
         return false
     end
+    -- 2026-09-25: this used to return false at each step without a word, so a
+    -- message that was built and then never reached the screen looked like the
+    -- feature being broken (Dragón, flying away from a Petallia: the bond
+    -- ended, the message existed in the log, nothing appeared). Each failure
+    -- now names its step, once per step per session.
     local utility = get_pal_utility()
-    if utility == nil then return false end
+    if utility == nil then return toast_failed("no PalUtility") end
     local manager = safe_call(function() return utility:GetLogManager(player) end)
-    if manager == nil then return false end
+    if manager == nil then return toast_failed("GetLogManager gave nothing for this player") end
     local widgetClass = resolve_toast_widget_class(manager)
-    if widgetClass == nil then return false end
+    if widgetClass == nil then return toast_failed("the toast widget class could not be resolved") end
     local textLibrary = safe_call(function() return StaticFindObject("/Script/Engine.Default__KismetTextLibrary") end)
-    if textLibrary == nil then return false end
+    if textLibrary == nil then return toast_failed("no KismetTextLibrary") end
     local text = safe_call(function() return textLibrary:Conv_StringToText(tostring(message)) end)
-    if text == nil then return false end
-    manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = tone })
+    if text == nil then return toast_failed("the message could not be converted to text") end
+    local shown = pcall(function()
+        manager:AddLog(1, text, { OverrideWidgetClass = widgetClass, LogToneType = tone })
+    end)
+    if not shown then return toast_failed("AddLog itself failed") end
     return true
 end
+
 Capture.ShowLogFor = show_log
 
 function Capture.NotifyJoined(pal, player, preResolvedName, preResolvedFemale)
@@ -847,6 +840,14 @@ end
 -- from zero lands at rank 5, just short of 6.
 -- 2026-09-18: from the player's settings file (JoinBonus, 0 to 200000, default 50000).
 local JOIN_FRIENDSHIP_POINT_GRANT = require("Settings").Get("JoinBonus")
+-- 2026-09-25: changeable from the in-game screen; read once here and refreshed
+-- on change, so the capture path is unchanged.
+pcall(function()
+    require("Settings").OnChange(function(key)
+        if key ~= "JoinBonus" then return end
+        JOIN_FRIENDSHIP_POINT_GRANT = require("Settings").Get("JoinBonus")
+    end)
+end)
 -- ===================================================================
 -- A BOSS THAT JOINS COUNTS AS DEFEATED (2026-09-19, Dragón found it)
 -- ===================================================================

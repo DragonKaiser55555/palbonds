@@ -309,7 +309,7 @@ console.log('\n=== S12. Co-op run 2 fixes: binds, hello, asking, F9 ===');
   const sc = ind.indexOf('local function scan_for_gauge_widgets()');
   expect('...while the drawing still waits for the host', String(/if guest_without_host_view\(\) then return end/.test(ind.slice(sc, sc + 300))), 'true');
   const inter = fs.readFileSync(path.join(scriptsDir, 'Interaction.lua'), 'utf8');
-  const k = inter.indexOf('RegisterKeyBind(Key[TAGS_KEY], function()');
+  const k = inter.indexOf('bind_key("tags", TAGS_KEY, function()');
   expect('F9 works on a guest (only a dedicated server ignores it)',
     String(k >= 0 && /if on_dedicated_server\(\) then return end/.test(inter.slice(k, k + 500)) && !/we_are_a_guest\(\)/.test(inter.slice(k, k + 500))), 'true');
 }
@@ -437,12 +437,12 @@ console.log('\n=== S13. Co-op run 3 fixes: messages in the guest\'s language, pe
 }
 {
   const inter = fs.readFileSync(path.join(scriptsDir, 'Interaction.lua'), 'utf8');
-  const k8 = inter.indexOf('RegisterKeyBind(Key[PLAY_KEY], function()');
+  const k8 = inter.indexOf('bind_key("play", PLAY_KEY, function()');
   expect('F8 works on a guest', String(k8 >= 0 && !/we_are_a_guest\(\)/.test(inter.slice(k8, k8 + 300))), 'true');
   const dp = inter.indexOf('local function do_play()');
   expect('...which sends PLAY to the host instead of moving the Pal itself',
     String(/if we_are_a_guest\(\) then[\s\S]{0,200}SendToServer\("PLAY", palId\)/.test(inter.slice(dp))), 'true');
-  const k10 = inter.indexOf('RegisterKeyBind(Key[PASSIVE_KEY], function()');
+  const k10 = inter.indexOf('bind_key("passive", PASSIVE_KEY, function()');
   expect('F10 on a guest asks the host', String(/SendToServer\("PASSIVE"\)/.test(inter.slice(k10, k10 + 700))), 'true');
 }
 {

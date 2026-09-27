@@ -109,7 +109,9 @@ console.log('\n=== C. End to end: the fast loop drops the old world ===');
   expect('(setup) following', S.str('C.HasAnyFollower()'), (v) => v === 'true');
   // Quit: the old character still passes UE4SS IsValid (that was the bug), the
   // engine says otherwise, and the world has no player any more.
-  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; for i = 1, 80 do __CLOCK = __CLOCK + 0.1; __PUMP(1) end', 'quit');
+  // 2026-09-24: the watch is the SAFETY NET now (10 s, two misses in a row);
+  // the fast paths are the quit hook and the loading-screen event, covered in F.
+  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; for i = 1, 300 do __CLOCK = __CLOCK + 0.1; __PUMP(1) end', 'quit');
   expect('the world reset ran', S.str('__has("[WORLD-RESET]") and __has("dropped every reference")'), (v) => v === 'true');
   expect('no follower is kept from the old world', S.str('C.HasAnyFollower()'), (v) => v === 'false');
 }
@@ -137,7 +139,8 @@ console.log('\n=== D. Quitting with NOTHING bonded still drops the old world ===
   S.must('for i = 1, 20 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'idle');
   expect('(setup) nothing is following', S.str('C.HasAnyFollower()'), (v) => v === 'false');
   expect('(setup) no reset while the world is up', S.str('__count("[WORLD-RESET] the player")'), (v) => v === '0');
-  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; for i = 1, 5 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'quit');
+  // the safety net needs two misses of its 10 s watch (2026-09-24)
+  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; for i = 1, 30 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'quit');
   expect('the reset ran with no follower at all', S.str('__has("[WORLD-RESET]") and __has("dropped every reference")'), (v) => v === 'true');
   expect('and exactly once, not once per pass', S.str('__count("dropped every reference")'), (v) => v === '1');
   expect('the nameplate and boss bars were dropped', S.str('__has("[PalBonds/Indicator] [WORLD-RESET]")'), (v) => v === 'true');
@@ -147,7 +150,7 @@ console.log('\n=== D. Quitting with NOTHING bonded still drops the old world ===
   // A new world comes up: the watch must re-arm, or the next quit goes unnoticed.
   S.must('__ENGINE_ALIVE = true; __IN_WORLD = true; for i = 1, 5 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'newworld');
   expect('a new world re-arms the watch', S.str('__has("a new world is up")'), (v) => v === 'true');
-  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; for i = 1, 5 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'quit2');
+  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; for i = 1, 30 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'quit2');
   expect('and the SECOND quit resets again', S.str('__count("dropped every reference")'), (v) => v === '2');
 }
 
@@ -262,6 +265,56 @@ console.log('\n=== I. A reload keeps the nameplate binds the NEW world already m
   expect('the reset says what it kept', S.str('__has("kept 1 nameplate bind(s) the new world had already made")'), (v) => v === 'true');
   S.must('__CLOCK = __CLOCK + 60; I.ResetForNewWorld()', 'second-reset');
   expect('a later reset drops it like any other old bind', S.str('select(1, I.BindCounts())'), (v) => v === '0');
+}
+
+// ===================================================================
+// J. 2026-09-24: the world change is an EVENT, not a poll
+// ===================================================================
+// Flying made the player unreadable for a moment and the mod wiped a live
+// world (run H: 27 nameplate bars, 39 personality records). The watch is now
+// a slow safety net; the game's own loading screen is the fast path.
+console.log('\n=== J. A world change is detected by event, not by polling ===');
+{
+  const S = newState();
+  S.must('C = require("Combat"); C.Init(); T = require("Trust"); T.Init(); C.StartTrainerReassertLoop()', 'init');
+  S.must('function __count(x) local n = 0 for _, m in ipairs(__ALLLOG) do if m:find(x, 1, true) then n = n + 1 end end return n end', 'count');
+  S.must('for i = 1, 10 do __CLOCK = __CLOCK + 1.0; __PUMP(1) end', 'settle');
+  // ONE unreadable moment, the way flying produces it, then the player is back
+  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; __CLOCK = __CLOCK + 11.0; __PUMP(1)', 'blink');
+  S.must('__ENGINE_ALIVE = true; __IN_WORLD = true; __CLOCK = __CLOCK + 1.0; __PUMP(1)', 'back');
+  expect('one unreadable moment does NOT wipe the world', S.str('__count("dropped every reference")'), (v) => v === '0');
+  // ...but a loading screen means the game really is taking it away
+  S.must('C.NoteLoadingScreen()', 'screen');
+  expect('the loading screen is noticed', S.str('__has("a loading screen is up")'), (v) => v === 'true');
+  S.must('__ENGINE_ALIVE = false; __IN_WORLD = false; __CLOCK = __CLOCK + 1.0; __PUMP(1)', 'gone');
+  expect('with a loading screen, the very first miss resets', S.str('__count("dropped every reference")'), (v) => v === '1');
+  expect('...and says the loading screen took it', S.str('__has("a loading screen took the world away")'), (v) => v === 'true');
+}
+{
+  const S = newState();
+  S.must('C = require("Combat"); C.Init(); T = require("Trust"); T.Init(); C.StartTrainerReassertLoop(); T.StartFollowing(__PAL)', 'init');
+  S.must('function __count(x) local n = 0 for _, m in ipairs(__ALLLOG) do if m:find(x, 1, true) then n = n + 1 end end return n end', 'count');
+  S.must('for i = 1, 10 do __CLOCK = __CLOCK + 0.5; __PUMP(1) end', 'settle');
+  expect('(setup) a Pal is following', S.str('C.HasAnyFollower()'), (v) => v === 'true');
+  // the game says a world finished loading: everything held is from the old one
+  S.must('C.NoteWorldLoaded()', 'loaded');
+  expect('LoadingFinished drops the old world at once', S.str('__count("dropped every reference")'), (v) => v === '1');
+  expect('...naming the reason', S.str('__has("a world finished loading")'), (v) => v === 'true');
+  expect('...and nothing from it is still followed', S.str('C.HasAnyFollower()'), (v) => v === 'false');
+}
+{
+  // The events must be installed from Init, or there is no fast path at all.
+  const combat = fs.readFileSync(path.join(scriptsDir, 'Combat.lua'), 'utf8');
+  expect('LoadingFinished is hooked',
+    String(/RegisterHook\("\/Script\/Pal\.PalGameInstance:LoadingFinished"/.test(combat)), (v) => v === 'true');
+  expect('the loading screen widget is watched',
+    String(/NotifyOnNewObject\("\/Script\/Pal\.PalLoadingScreenWidgetBase"/.test(combat)), (v) => v === 'true');
+  expect('the poll is only the safety net now',
+    String(/local WORLD_WATCH_INTERVAL = 10\.0/.test(combat)), (v) => v === 'true');
+  const sess = fs.readFileSync(path.join(scriptsDir, 'Session.lua'), 'utf8');
+  const gw = sess.indexOf('local function get_world()');
+  expect('the session no longer scans the world for a controller first',
+    String(gw >= 0 && sess.slice(gw, gw + 900).indexOf('Default__PalUtility') < sess.slice(gw, gw + 900).indexOf('UEHelpers')), (v) => v === 'true');
 }
 
 console.log('\n' + (failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'));

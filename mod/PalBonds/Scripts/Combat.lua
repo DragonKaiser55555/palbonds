@@ -2,14 +2,9 @@ local Logger = require("Logger")
 local Combat = {}
 local FOLLOW_ACCEPTANCE_RADIUS = 200.0 
 
--- Two-hundred-and-third pass (2026-09-06): both toggles below MUST be
--- declared here, before Combat.Init references USE_OLD_MOVE_ORDER_NUDGE in
--- its own startup log line — the Two-hundred-and-second pass had declared
--- this same local much further down the file (right before
--- IssueFollowMoveOrder), and Combat.Init's earlier reference to it silently
--- resolved to a nil global instead of the real local (Lua locals don't
--- hoist — this project's own hook-points.md hundred-and-fortieth-pass bug,
--- repeated). Purely cosmetic (Init's log line always printed "disabled for
+-- A local must be declared before anything that reads it: Lua locals do not
+-- hoist, and a reference above its declaration silently resolves to a nil
+-- global instead. This file has made that mistake twice.
 -- this test" regardless of the real value; the actual gating in
 -- IssueFollowMoveOrder was unaffected since it's declared after this point
 -- either way) — fixed by moving the declaration up here, before every use.
@@ -39,42 +34,6 @@ local FOLLOW_ACCEPTANCE_RADIUS = 200.0
 -- purpose before). See CLAUDE.md's Daedream/Dazzi/Floppie research note for
 -- the live investigation into whether/how that's reachable for a Pal that
 -- was never captured at all.
--- Two-hundred-and-seventh pass (2026-09-06): the move-order nudge is back
--- ON, but it is NOT the same nudge that was switched off in the
--- two-hundred-and-third pass. Two things changed around it, both built from
--- calls already proven to work on wild Pals:
---
---   1. Personality.ApplyCompanionPreset (called from StartFollowing) sets
---      the Pal's own "what do I do about the player" responses to Ignore,
---      so its AI stops generating the competing decisions that were
---      overriding the order. The old nudge failed because it was fighting
---      that AI; now there is nothing to fight.
---   2. Each order is preceded by AllCancelAction_Logic_HardScript_Reaction
---      (see IssueFollowMoveOrder), the same interrupt confirmed to succeed
---      5/5 on wild Pals, so whatever action is currently occupying the Pal
---      is dropped immediately before the order lands rather than continuing
---      to run over it.
---
--- The repeated Otomo composite stays OFF: it was tested cleanly on its own
--- in the two-hundred-and-third pass (3/3 Pals broke the leash without
--- moving toward the player once) and depends on ownership this Pal doesn't
--- have. Nothing learned since changes that assessment.
--- Two-hundred-and-twenty-seventh pass (2026-09-07) — OFF, at Dragón's request
--- and for exactly the right reason: "wouldnt it be better to remove the old
--- nudge for now? just so we can check if the new follow intalls? (if it
--- follows we will know for sure its that and if it not follows then we can
--- make sure it didnt install or it doesnt work)". That is clean single-variable
--- isolation, and it is the discipline this project should have applied to the
--- follow work several passes ago instead of stacking mechanisms.
---
--- His second point is recorded as the standing fallback decision: if the follow
--- action fails, we go back to the TIGHT LEASH, not to this nudge. His words:
--- "the old nudge is not as good as the tight leash, so i would say if we ever
--- go back, we will go back to the tight leash instead, the old nudge failed
--- way too often." The evidence agrees — the tight leash held Pals reliably and
--- only failed by caging them, while the nudge never reliably held anything.
-local USE_OLD_MOVE_ORDER_NUDGE = false
-local USE_REPEATED_OTOMO_COMPOSITE = false
 
 -- Combat assist, per Dragón's explicit go-ahead this pass. Applied as part
 -- of the same companion preset: a following Pal's Discover responses to
@@ -105,16 +64,7 @@ local ORBIT_ACCEPTANCE_RADIUS = 60.0
 local ORBIT_STEP_RADIANS = 0.9 
 local orbitPhase = 0.0
 
--- Two-hundred-and-twenty-third pass: see the block in IssueFollowMoveOrder.
-local USE_ORBIT_WHEN_AT_GOAL = false
 
--- Two-hundred-and-eleventh pass: try the continuous move-to-actor follow
--- first (see IssueFollowMoveOrder). Set false to go back to pure
--- location-order following.
--- Two-hundred-and-twenty-seventh pass: also off, for the same isolation. This
--- is what produced the "following but fighting her own AI" movement Dragón
--- described, so leaving it on would make any movement next run ambiguous.
-local USE_MOVE_TO_ACTOR_FOLLOW = false
 local ECC_VISIBILITY = 3 
 local loggedActorMoveOnce = false
 
@@ -337,10 +287,6 @@ local COMBAT_WINDOW_MS = 12000
 -- wraps the call site).
 local AI_REQUEST_PRIORITY_LOGIC = 10 
 
--- Two-hundred-and-second pass: key (GetFullName()) -> { actionComp, composite }.
--- The cached composite is rebuilt automatically if either half goes
--- invalid (Pal despawned, GC'd, etc.) — see get_or_build_otomo_composite.
-local OtomoCompositeCache = {}
 local loggedFollowTickOnce = {}
 local USE_REAL_FOLLOW_ACTION = true
 local FOLLOW_ACTION_CLASS_PATH = "/Game/Pal/Blueprint/Controller/AIAction/Otomo/BP_AIAction_OtomoFollow.BP_AIAction_OtomoFollow_C"
@@ -1368,45 +1314,7 @@ function Combat.OnPlayerCombatTarget(enemyActor, playerActor)
         ExecuteInGameThreadWithDelay(COMBAT_WINDOW_MS, close_combat_window)
     end)
 end
-local function get_or_build_otomo_composite(pal, key)
-    local cached = OtomoCompositeCache[key]
-    if cached then
-        local actionCompValid = safe_call(function() return cached.actionComp:IsValid() end)
-        local compositeValid = safe_call(function() return cached.composite:IsValid() end)
-        if actionCompValid and compositeValid then
-            return cached.actionComp, cached.composite
-        end
-        OtomoCompositeCache[key] = nil
-    end
-    local controller = safe_call(function() return pal.Controller end)
-    local controllerValid = controller ~= nil and safe_call(function() return controller:IsValid() end)
-    if not controllerValid then
-        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — no usable Controller, cannot build the real Otomo composite (move-order nudge, if enabled, stays as the only mechanism)")
-        return nil, nil
-    end
-    local actionComp = safe_call(function() return controller:GetAIActionComponent() end)
-    local actionCompValid = actionComp ~= nil and safe_call(function() return actionComp:IsValid() end)
-    if not actionCompValid then
-        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — no usable AIActionComponent (matches the eighty-sixth pass's open question — this wild Pal's AI likely runs a separate path), cannot build the real Otomo composite")
-        return nil, nil
-    end
-    local nativeClass = safe_call(function() return StaticFindObject("/Script/Pal.PalAIActionOtomoDefault") end)
-    local classValid = nativeClass ~= nil and safe_call(function() return nativeClass:IsValid() end)
-    if not classValid then
-        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — could not resolve the UPalAIActionOtomoDefault class via StaticFindObject, aborting")
-        return nil, nil
-    end
-    local fresh = safe_call(function() return StaticConstructObject(nativeClass, actionComp) end)
-    local freshValid = fresh ~= nil and safe_call(function() return fresh:IsValid() end)
-    Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — StaticConstructObject(UPalAIActionOtomoDefault) " .. (freshValid and "ok (built once, reused every tick from here)" or "FAILED"))
-    if not freshValid then return nil, nil end
-    OtomoCompositeCache[key] = { actionComp = actionComp, composite = fresh }
-    return actionComp, fresh
-end
 
--- Called every tick_followers pass (Trust.lua), same cadence the old
--- move-order nudge already used. See the file-header comment above this
--- section for the full reasoning.
 -- ===================================================================
 -- SELF-DEFENCE OUTSIDE A PLAYER FIGHT (2026-09-12, run 34)
 -- ===================================================================
@@ -1495,210 +1403,11 @@ local function end_self_defence(key, why)
     resume_follow_after_combat(key, "self-defence over: " .. tostring(why))
 end
 
-function Combat.TickRealOtomoFollow(pal, key)
-    if not USE_REPEATED_OTOMO_COMPOSITE then return end
-    if not Combat.IsFollowing(pal) then return end
-    local actionComp, composite = get_or_build_otomo_composite(pal, key)
-    if not actionComp or not composite then return end
-    local wantsCombat = safe_call(function() return composite:ShouldSetCombatAction() end)
-    local modeOk, modeErr
-    if wantsCombat then
-        modeOk, modeErr = pcall(function() composite:SetOtomoCombatAction() end)
-        if modeOk then
-            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — ShouldSetCombatAction()=true, switched to SetOtomoCombatAction()")
-        else
-            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — ShouldSetCombatAction()=true but SetOtomoCombatAction() FAILED: " .. tostring(modeErr))
-        end
-    else
-        modeOk, modeErr = pcall(function() composite:SetOtomoFollowAction() end)
-        if not modeOk then
-            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — SetOtomoFollowAction() FAILED: " .. tostring(modeErr))
-        end
-    end
-    local rootOk, rootErr = pcall(function() actionComp:SetRootComposite(composite, AI_REQUEST_PRIORITY_LOGIC) end)
-    if rootOk then
-        if not loggedFollowTickOnce[key] then
-            loggedFollowTickOnce[key] = true
-            Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — SetRootComposite ok, now being repeated every tick (further successes not logged individually to avoid spam)")
-        end
-    else
-        Logger.log("[PalBonds/Combat] [REAL-FOLLOW] " .. tostring(key) .. " — SetRootComposite (repeated) FAILED: " .. tostring(rootErr))
-    end
-end
 function Combat.Init()
-    Logger.log(string.format(
-        "[PalBonds/Combat] follow logic active — old move-order nudge %s, repeated real-Otomo-composite mechanism %s (see file header, Two-hundred-and-third pass)",
-        USE_OLD_MOVE_ORDER_NUDGE and "ENABLED" or "disabled",
-        USE_REPEATED_OTOMO_COMPOSITE and "ENABLED" or "disabled (confirmed not working live, 3/3 real follow-trigger events)"
-    ))
+    Logger.log("[PalBonds/Combat] follow logic active")
 end
 
 -- ===================================================================
--- NATIVE LEASH FOLLOW (two-hundred-and-seventeenth pass, 2026-09-06)
--- ===================================================================
--- Dragón, after the last run: "the pals still keep drifting away too often...
--- its like they follow for a few seconds then their IA make them ignore me,
--- even if the tick nudge makes them look at me... should we go back to that
--- time we stripped them of their Ai? honestly wouldnt want that, but seems
--- like we are running low on options."
---
--- We are not out of options — and this one is better than any of the six
--- mechanisms tried so far, because it stops fighting the wild AI entirely.
--- Palworld has a COMPLETE NATIVE LEASH SYSTEM that had never been looked at:
---
---     class APalAILeashActor : public APalAILeashActorBase
---         APalAILeashActor* SpawnLeash(APalAIController* InInstigatorController,
---                                      float InLeashInnerRadius,
---                                      float InLeashOuterRadius,
---                                      float InInvokerExtentRadius,
---                                      bool  bInAutoActivateLeash)
---     class APalAILeashActorBase : public AActor
---         void SetLeashLocation(const FVector& NewLeashLocation)
---         void ActivateLeash() / DeactivateLeash() / IsActiveLeash()
---         float LeashInnerRadius / LeashOuterRadius
---         delegate OnCharacterOutOfLeashRange(...)
---
--- A leash is the anchor point a Pal's OWN AI is allowed to roam around. This
--- is the mechanism the game itself uses to keep Pals in an area.
---
--- Why this is categorically different from everything tried before: every
--- previous attempt (move order, orbit, Otomo composite, Funnel, move-to-actor)
--- issued a command the wild AI could out-vote on its next decision, which is
--- exactly the behaviour Dragón keeps describing — "they follow for a few
--- seconds then their AI makes them ignore me". A leash is not a command the AI
--- competes with; it is a CONSTRAINT the AI already obeys when it chooses where
--- to wander. So instead of telling the Pal to come back, we move the boundary
--- it is already staying inside, and its own wandering keeps it near the player.
---
--- It is also precisely the "something like SetActiveAI but less total" Dragón
--- asked for two passes ago, and it does not disable anything: the Pal keeps
--- reacting, fighting and behaving normally, just within a region that follows
--- the player.
---
--- UNVERIFIED, and stated plainly: SpawnLeash is declared on APalAILeashActor
--- and is called here through that class's default object, which is how this
--- project already calls other static/library functions (PalUtility,
--- NiagaraFunctionLibrary, KismetTextLibrary). Whether it accepts being driven
--- this way for a wild Pal is exactly what the next run tests. Every step is
--- pcall-guarded and the previous follow mechanism is left running underneath,
--- so a total failure here is a no-op rather than a regression.
--- ⚠️ TWO-HUNDRED-AND-EIGHTEENTH PASS (2026-09-06) — TURNED OFF, AND WHY.
--- This is my bug and it caused a real regression in Dragón's run: "the lag
--- felt much more this time, in fact it felt like the longer the run the more
--- that the lag was increasing."
---
--- What happened. SpawnLeash returned something the validity check rejected, so
--- ensure_leash_for never cached anything — and because it is called from the
--- follow tick, it RETRIED THE SPAWN EVERY 1.5 SECONDS, FOR EVERY FOLLOWER.
--- The log shows the failure line exactly once (it is throttled by
--- loggedLeashOnce) which hid the retry completely: one quiet line, roughly two
--- hundred spawn attempts behind it in a nine-minute session.
---
--- Why that is a leak and not merely wasted work: SpawnLeash is a SPAWN
--- function. Whether or not the returned handle validated in Lua, the engine
--- very likely created a leash actor in the world on each call. Hundreds of
--- orphaned actors accumulating over a session is precisely the "gets worse the
--- longer I play" shape Dragón described, and it would not have shown up in any
--- log-volume analysis because it produced almost no log lines at all.
---
--- Three separate mistakes on my part, worth naming so they are not repeated:
---   1. A failing operation was retried forever with no attempt cap.
---   2. The retry was of a SPAWN, the one category where a failed retry can
---      accumulate side effects rather than just burning time.
---   3. The throttled log made a loud problem look like a single quiet line —
---      the same "throttle hides the cost, not the cost itself" mistake already
---      made twice in this project (the SetHPPercent hook, the prism poll).
---
--- The mechanism is off by default now. The idea is still sound and the API is
--- still real; if it is revisited, it must be through a route that does not
--- call a spawn function repeatedly — most likely by finding a Pal's EXISTING
--- leash actor (wild Pals plausibly already have one anchoring them to their
--- spawn area) and just moving that, rather than creating new ones.
-local USE_NATIVE_LEASH_FOLLOW = false
-
--- Hard safety rails, so this can never loop again even if switched back on.
-local LEASH_MAX_ATTEMPTS_PER_PAL = 1
-local LEASH_MAX_TOTAL_FAILURES = 3
-local leashAttemptsByKey = {}
-local leashTotalFailures = 0
-local leashDisabledBySafety = false
-local LEASH_INNER_RADIUS = 400.0   
-local LEASH_OUTER_RADIUS = 900.0   
-local LEASH_INVOKER_EXTENT = 900.0
-local LeashByKey = {}
-local loggedLeashOnce = false
-local LeashCDO = nil
-local function get_leash_cdo()
-
-    -- Cached: the previous version resolved this on every single call, which
-    -- was another per-tick cost hidden behind the same throttled log line.
-    if LeashCDO ~= nil then return LeashCDO end
-    LeashCDO = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalAILeashActor") end)
-    return LeashCDO
-end
-local function ensure_leash_for(pal, key)
-    if not USE_NATIVE_LEASH_FOLLOW or leashDisabledBySafety or key == nil then return nil end
-
-    -- Attempt caps: one spawn attempt per Pal, ever, and the whole mechanism
-    -- self-disables after a few failures. See the block at the top of this
-    -- section for why an uncapped retry of a spawn call was so damaging.
-    local attempts = leashAttemptsByKey[key] or 0
-    if attempts >= LEASH_MAX_ATTEMPTS_PER_PAL then return nil end
-    local existing = LeashByKey[key]
-    if existing ~= nil and safe_call(function() return existing:IsValid() end) then
-        return existing
-    end
-    local cdo = get_leash_cdo()
-    if cdo == nil then
-        if not loggedLeashOnce then
-            loggedLeashOnce = true
-            Logger.log("[PalBonds/Combat] [LEASH] could not resolve Default__PalAILeashActor — native leash follow unavailable, falling back to the move order (logged once)")
-        end
-        return nil
-    end
-    local controller = safe_call(function() return pal.Controller end)
-    if not (controller and safe_call(function() return controller:IsValid() end)) then return nil end
-    leashAttemptsByKey[key] = attempts + 1
-    local leash = safe_call(function()
-        return cdo:SpawnLeash(controller, LEASH_INNER_RADIUS, LEASH_OUTER_RADIUS, LEASH_INVOKER_EXTENT, true)
-    end)
-    local leashValid = leash ~= nil and safe_call(function() return leash:IsValid() end)
-    if not leashValid then
-        leashTotalFailures = leashTotalFailures + 1
-        if leashTotalFailures >= LEASH_MAX_TOTAL_FAILURES then
-            leashDisabledBySafety = true
-            Logger.log("[PalBonds/Combat] [LEASH] disabling the leash mechanism entirely after " .. leashTotalFailures .. " failed spawns — it will not be attempted again this session")
-        end
-        if not loggedLeashOnce then
-            loggedLeashOnce = true
-            Logger.log("[PalBonds/Combat] [LEASH] SpawnLeash returned nothing usable — native leash follow not available this way, move order still active (logged once)")
-        end
-        return nil
-    end
-    LeashByKey[key] = leash
-    Logger.log("[PalBonds/Combat] [LEASH] spawned a native AI leash for " .. tostring(key) ..
-        " (inner=" .. LEASH_INNER_RADIUS .. " outer=" .. LEASH_OUTER_RADIUS .. ") — its own AI should now roam around the player instead of its spawn point")
-    return leash
-end
-
--- Moves the anchor. This is the whole point: called every follow tick with the
--- player's current location, so the region the Pal is allowed to wander in
--- travels with the player.
-local function update_leash_anchor(pal, key, playerLoc)
-    if not USE_NATIVE_LEASH_FOLLOW or playerLoc == nil then return end
-    local leash = ensure_leash_for(pal, key)
-    if leash == nil then return end
-    safe_call(function() leash:SetLeashLocation(playerLoc) end)
-end
-local function release_leash(key)
-    local leash = LeashByKey[key]
-    if leash == nil then return end
-    LeashByKey[key] = nil
-    safe_call(function()
-        if leash:IsValid() then leash:DeactivateLeash() end
-    end)
-    Logger.log("[PalBonds/Combat] [LEASH] released the leash for " .. tostring(key))
-end
 
 -- A second, later read. Two timers per Pal only, both one-shot, both bounded by
 -- the same per-Pal attempt cap — deliberately not a polling loop, after the
@@ -2316,7 +2025,31 @@ local PLAYER_CACHE_MAX_AGE_PASSES = 40
 -- pass count that means one second with a follower would have meant TEN
 -- seconds idle -- which is precisely the state a quit with nothing following
 -- happens in, so the check would have been slowest exactly when it matters.
-local WORLD_WATCH_INTERVAL = 1.0               -- while a world is up
+-- ===================================================================
+-- HOW WE NOTICE A WORLD CHANGE (2026-09-24, Dragón's idea)
+-- ===================================================================
+-- This used to ask "is our player still readable?" on every pass. Measured
+-- while flying (perf-captures/2026-09-24_runH): that question, through the
+-- session check behind it, cost 43 ms per world search and fired ~1.7 times a
+-- second; worse, flying fast made the player briefly unreadable and the mod
+-- wiped a live world -- 27 nameplate bars and 39 personality records -- in the
+-- middle of normal play. Dragón: "instead of making it check if the player is
+-- there or not, shouldn't you check for loading screens instead? that would do
+-- a lot less readings."
+--
+-- So the game tells us instead:
+--   * the ESC-menu quit hooks (Combat.OnQuitConfirmed)      -- world is going
+--   * a loading screen widget appears (NoteLoadingScreen)   -- world is going
+--   * UPalGameInstance:LoadingFinished (NoteWorldLoaded)    -- world is back
+-- and the old poll stays only as a slow safety net, because a hook that fails
+-- to install on somebody's UE4SS build must not mean we never notice a world
+-- change at all (stale references across one are what crashed 1.1.2).
+local WORLD_WATCH_INTERVAL = 10.0              -- the safety net, not the detector
+local WORLD_WATCH_AFTER_LOADING_SCREEN = 0.5   -- a loading screen was seen: look properly
+local LOADING_SCREEN_TRUST_SECONDS = 60.0      -- how long that screen explains a missing player
+local loadingScreenSeenAt = nil
+local worldLoadedAt = nil
+local missedPlayerReadings = 0
 local WORLD_WATCH_LATCHED_INTERVAL = 2.0       -- while waiting for a new world
 local WORLD_WATCH_QUIT_EXPECTED_INTERVAL = 0.2 -- right after a quit was asked for
 local WORLD_CLOSING_CANCEL_SECONDS = 10.0      -- same player still there = cancelled
@@ -2606,7 +2339,6 @@ function Combat.ResetForNewWorld(why)
     for _ in pairs(followActionObjects) do actions = actions + 1 end
     BondingState = {}
     FollowerActors = {}
-    OtomoCompositeCache = {}
     loggedFollowTickOnce = {}
     followActionObjects = {}
     followActionAttempts = {}
@@ -2619,7 +2351,6 @@ function Combat.ResetForNewWorld(why)
     aimFrozen = {}
     recallActive = {}
     frozenPals = {}
-    LeashByKey = {}
     lastKnownPlayerActor = nil
     playerCacheAgePasses = 9999
     combatActiveBy, combatWindowGenBy, lastHateTargetNameBy = {}, {}, {}
@@ -2724,12 +2455,26 @@ local function world_change_watch()
     if player ~= nil then
         lastKnownPlayerActor = player
         playerCacheAgePasses = 0
+        missedPlayerReadings = 0
     end
     if player == nil then
+
+        -- One unreadable moment is not a world change: flying fast produces
+        -- them (run H, 2026-09-24). It takes either a loading screen, which is
+        -- the game saying so, or two misses in a row of the slow watch.
+        local now = os.clock()
+        local screenExplainsIt = loadingScreenSeenAt ~= nil
+            and (now - loadingScreenSeenAt) <= LOADING_SCREEN_TRUST_SECONDS
+        missedPlayerReadings = missedPlayerReadings + 1
+        if not (screenExplainsIt or missedPlayerReadings >= 2) then
+            return
+        end
         if not worldResetLatched then
             worldResetLatched = true
             quitExpectedUntilClock = nil
-            Combat.ResetForNewWorld("the player left the world")
+            Combat.ResetForNewWorld(screenExplainsIt
+                and "a loading screen took the world away"
+                or "the player left the world")
         end
         return
     end
@@ -2737,6 +2482,8 @@ local function world_change_watch()
     -- A world is up and the player is readable: re-arm for the next change.
     if worldResetLatched then
         worldResetLatched = false
+        loadingScreenSeenAt = nil
+        missedPlayerReadings = 0
         Logger.log("[PalBonds/Combat] [WORLD-RESET] a player is readable again — a new world is up, watching from scratch")
 
         -- Followers the loading screen left behind: the player hears it now
@@ -2770,6 +2517,27 @@ end
 -- released at all. PlayerRef is told first: it stops handing out the player, so
 -- the nameplate hook, the personality resolver and the trust recorder cannot
 -- refill the tables during the moment the world is still up.
+-- A loading screen is on screen: whatever happens to the player now is the
+-- game taking the world away, not a bad reading.
+function Combat.NoteLoadingScreen()
+    if loadingScreenSeenAt ~= nil and (os.clock() - loadingScreenSeenAt) < 5.0 then return end
+    loadingScreenSeenAt = os.clock()
+    Logger.log("[PalBonds/Combat] [WORLD-RESET] a loading screen is up — the world is changing")
+end
+
+-- UPalGameInstance:LoadingFinished — a world is ready. Anything held from
+-- before belongs to the old one.
+function Combat.NoteWorldLoaded()
+    worldLoadedAt = os.clock()
+    loadingScreenSeenAt = nil
+    missedPlayerReadings = 0
+    if not worldResetLatched then
+        worldResetLatched = true
+        quitExpectedUntilClock = nil
+        Combat.ResetForNewWorld("a world finished loading")
+    end
+end
+
 function Combat.OnQuitConfirmed(why)
     if worldResetLatched then return end
     worldResetLatched = true
@@ -2887,6 +2655,42 @@ function Combat.StartShutdownWatch()
         end
     end
     register_quit_hooks(1)
+
+    -- The two world-change events the game itself raises. Both are cheap to
+    -- install and cost nothing until they fire; the watch above is only the
+    -- safety net if either is missing on this build.
+    local LOAD_HOOK_MAX_ROUNDS = 30
+    local LOAD_HOOK_RETRY_MS = 2000
+    local function register_load_hooks(round)
+        local okLoaded = pcall(function()
+            RegisterHook("/Script/Pal.PalGameInstance:LoadingFinished", function()
+                safe_call(Combat.NoteWorldLoaded)
+            end)
+        end)
+        if okLoaded then
+            Logger.log("[PalBonds/Combat] [WORLD-RESET] LoadingFinished hook INSTALLED (round " .. round .. ")")
+        end
+        local okScreen = pcall(function()
+            NotifyOnNewObject("/Script/Pal.PalLoadingScreenWidgetBase", function()
+                safe_call(Combat.NoteLoadingScreen)
+            end)
+        end)
+        if okScreen then
+            Logger.log("[PalBonds/Combat] [WORLD-RESET] loading-screen watch INSTALLED (round " .. round .. ")")
+        end
+        if okLoaded and okScreen then return end
+        if round >= LOAD_HOOK_MAX_ROUNDS then
+            Logger.log("[PalBonds/Combat] [WORLD-RESET] could not install the load events after " ..
+                round .. " rounds — the slow player watch is the only detector on this build")
+            return
+        end
+        pcall(function()
+            ExecuteInGameThreadWithDelay(LOAD_HOOK_RETRY_MS, function()
+                safe_call(function() register_load_hooks(round + 1) end)
+            end)
+        end)
+    end
+    register_load_hooks(1)
 end
 -- ===================================================================
 -- ACTION-CHANGE PROBE (three-hundred-and-thirteenth pass, 2026-09-12)
@@ -3004,6 +2808,9 @@ function Combat.StartTrainerReassertLoop()
             -- read: no bonding Pal has a follow action, so there is nothing to
             -- do and this costs a single table lookup.
             if trainerReassertDisabled then return end
+            -- Traced (2026-09-26) AFTER the early-out, so a flight with no
+            -- follower stays silent and only real work shows up in the log.
+            Logger.trace("trainer.step")
 
             -- Frozen Pals are maintained here too, so this needs to run whenever
             -- EITHER table has something in it.
@@ -3102,6 +2909,8 @@ function Combat.StartTrainerReassertLoop()
                 end
             elseif worldResetLatched then
                 watchInterval = WORLD_WATCH_LATCHED_INTERVAL
+            elseif loadingScreenSeenAt ~= nil and (nowWatch - loadingScreenSeenAt) <= LOADING_SCREEN_TRUST_SECONDS then
+                watchInterval = WORLD_WATCH_AFTER_LOADING_SCREEN
             end
             if lastWorldWatchAt == nil or (nowWatch - lastWorldWatchAt) >= watchInterval then
                 lastWorldWatchAt = nowWatch
@@ -3258,6 +3067,9 @@ function Combat.StartTrainerReassertLoop()
                 end
             end
             for key, action in pairs(mine(followActionObjects)) do
+                -- Cached action object + cached actor, read every pass: the
+                -- same recycled-pointer shape as Indicator's bar loop.
+                Logger.trace("trainer.follower", key)
                 reassert_follow_trainer(nil, key, player)
 
                 -- reassert may have dropped a dead action; re-read before use.
@@ -3420,55 +3232,6 @@ end
 --     controller dependency above is confirmed structural, this action cannot
 --     work on a wild controller, and the honest recommendation becomes the
 --     tight leash rather than a ninth mechanism.
-local function dump_follow_action_fields(action, key, whenLabel)
-    if action == nil then return end
-    safe_call(function()
-        if not action:IsValid() then
-            Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS] " .. tostring(key) .. " (" .. tostring(whenLabel) ..
-                "): the action object is no longer valid — it was destroyed")
-            return
-        end
-        local function objName(v)
-            if v == nil then return "nil" end
-            local ok = safe_call(function() return v:IsValid() end)
-            if not ok then return "invalid" end
-            return tostring(safe_call(function() return v:GetFullName() end))
-        end
-        local function vec(v)
-            if v == nil then return "nil" end
-            local x = safe_call(function() return v.X end)
-            local y = safe_call(function() return v.Y end)
-            local z = safe_call(function() return v.Z end)
-            return string.format("(%s, %s, %s)", tostring(x), tostring(y), tostring(z))
-        end
-        local function raw(name)
-            return tostring(safe_call(function() return action[name] end))
-        end
-
-        -- Split across several lines rather than one very long one: the logger
-        -- flushes per line, so a crash mid-dump still leaves everything read up
-        -- to that point on disk.
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS] " .. tostring(key) .. " (" .. tostring(whenLabel) .. "):")
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   Trainer  = " .. objName(safe_call(function() return action.Trainer end)))
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   SelfActor= " .. objName(safe_call(function() return action.SelfActor end)))
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   Movement = " .. objName(safe_call(function() return action.Movement end)) ..
-            "   <-- nil here means SetInitialValue() never ran")
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   Destination = " .. vec(safe_call(function() return action.Destination end)) ..
-            "   <-- (0,0,0) while running means the controller never answered")
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   DelayedDestination = " .. vec(safe_call(function() return action.DelayedDestination end)))
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   IsMoveMode=" .. raw("IsMoveMode") ..
-            " IsTurnMode=" .. raw("IsTurnMode") ..
-            " IsForceFitGoal=" .. raw("IsForceFitGoal") ..
-            " FollowState=" .. raw("FollowState"))
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   DefaultMaxSpeed=" .. raw("DefaultMaxSpeed") ..
-            " CurrentMoveSpeedRate=" .. raw("CurrentMoveSpeedRate") ..
-            " CurrentSpeedVsPlayer=" .. raw("CurrentSpeedVsPlayer") ..
-            " ConstMaxSpeedRateVsPlayer=" .. raw("ConstMaxSpeedRateVsPlayer"))
-        Logger.log("[PalBonds/Combat] [FOLLOW-FIELDS]   FolowEndDistance=" .. raw("FolowEndDistance") ..
-            " TargetLocationDistanceForward=" .. raw("TargetLocationDistanceForward") ..
-            " TargetLocationDistanceRight=" .. raw("TargetLocationDistanceRight"))
-    end)
-end
 
 -- Builds a real follow action for this Pal, points it at the player, and hands
 -- it to the Pal's own AI action component. One shot per Pal.
@@ -4172,7 +3935,6 @@ local function try_real_follow_action(pal, key, playerActor)
         "[PalBonds/Combat] [FOLLOW-POS] %s — follow offsets set: forward=%.0f right=%.0f (negative forward = behind the player, so it stays reachable for petting)",
         tostring(key), FOLLOW_OFFSET_FORWARD, get_follow_right_offset(key)
     ))
-    dump_follow_action_fields(action, key, "immediately after push, before anything ticked")
 
     -- The candidate fix. If the dump above showed Movement=nil / DefaultMaxSpeed=0
     -- and the dump below shows them populated, this was the missing step and the
@@ -4184,7 +3946,6 @@ local function try_real_follow_action(pal, key, playerActor)
         Logger.log("[PalBonds/Combat] [FOLLOW-INIT] " .. tostring(key) .. " — SetInitialValue() returned " ..
             (initOk and "ok" or ("FAILED: " .. tostring(initErr))))
         if initOk then
-            dump_follow_action_fields(action, key, "AFTER SetInitialValue()")
         end
     end
     -- REMOVED (pass 327): the 6s RECHECK and the 14s LATE re-read.
@@ -4224,11 +3985,6 @@ function Combat.StartFollowing(pal)
     end
     Logger.log("[PalBonds/Combat] " .. tostring(key) .. " marked as following (bonding)")
 
-    -- Two-hundred-and-second pass: the real composite is no longer built
-    -- (or pushed) here as a one-shot — see TickRealOtomoFollow above.
-    -- Trust.lua's tick_followers calls that function every tick from here
-    -- on, which lazily builds the cached composite on its first real call.
-
     -- Two-hundred-and-seventh pass (2026-09-06): apply the companion preset
     -- the moment a Pal starts following. See Personality.ApplyCompanionPreset
     -- for the full reasoning — in short, this silences the Pal's own AI
@@ -4255,12 +4011,10 @@ end
 -- Every per-follower table, dropped by key. Shared by StopFollowing and
 -- ForgetDespawnedFollower so the two can never drift apart.
 local function forget_follower_tables(key)
-    release_leash(key)
     BondingState[key] = nil
     FollowerActors[key] = nil
     followerOwnerKey[key] = nil
     followerOwnerCtrl[key] = nil
-    OtomoCompositeCache[key] = nil
     loggedFollowTickOnce[key] = nil
 
     -- Two-hundred-and-thirty-first pass: drop the follow-action reference and

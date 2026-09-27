@@ -51,7 +51,9 @@ local mode = nil          -- "singleplayer" | "host" | "client" | "dedicated"
 local announced = nil     -- the mode already written to the log
 local provisional = nil   -- the latest answer while we are not confident yet
 local lastReadAt = -1e9
-local RE_READ_SECONDS = 0.5
+-- While the answer is not final yet the mode is re-read at most this often.
+-- It was 0.5 s, and every re-read cost a world lookup (see get_world above).
+local RE_READ_SECONDS = 2.0
 
 local function safe_call(fn, ...)
     local ok, result = pcall(fn, ...)
@@ -65,15 +67,27 @@ local function is_valid(o)
     return ok and v == true
 end
 
+-- 2026-09-24 (run H): this used to ask UEHelpers.GetWorld() first. That helper
+-- walks the whole object list looking for a PlayerController -- 43 ms a call,
+-- ~1.7 times a second while the session was still settling, and the single
+-- biggest cost the profiler found. The world is reachable from objects we
+-- already hold, so the scan is now the last resort and the answer is cached.
+-- No caching of the world object itself: a new world is a new object, and a
+-- stale one would make a client look like the singleplayer session it used to
+-- be (caught by multiplayertest). The CDO lookup below is a name lookup, not a
+-- world scan, so asking again is cheap.
 local function get_world()
-    local okH, UEHelpers = pcall(require, "UEHelpers")
-    if okH and UEHelpers and UEHelpers.GetWorld then
-        local w = safe_call(UEHelpers.GetWorld)
-        if is_valid(w) then return w end
-    end
+    -- NOT through PlayerRef: it asks Session whether this is a dedicated
+    -- server, so reading the world from the player would be a loop (caught by
+    -- perffixtest the moment it was written). The CDO answers without one.
     local util = safe_call(function() return StaticFindObject("/Script/Pal.Default__PalUtility") end)
     if is_valid(util) then
         local w = safe_call(function() return util:GetWorld() end)
+        if is_valid(w) then return w end
+    end
+    local okH, UEHelpers = pcall(require, "UEHelpers")
+    if okH and UEHelpers and UEHelpers.GetWorld then
+        local w = safe_call(UEHelpers.GetWorld)
         if is_valid(w) then return w end
     end
     return nil
@@ -158,6 +172,13 @@ function Session.Mode()
         end
     end
     return answer
+end
+
+-- The mode we already know, or nil. Never reads, never resolves, never calls
+-- anything -- so code on a hot path (or inside PlayerRef, which Session itself
+-- consults) can ask without risking a loop or a cost.
+function Session.ModeIfKnown()
+    return mode
 end
 
 -- True only when we are a guest in somebody else's world. Everything else --

@@ -238,9 +238,102 @@ local function pick_local(list, now)
     return nil
 end
 
+-- ===================================================================
+-- ASK THE GAME WHICH CHARACTER IS OURS (2026-09-24)
+-- ===================================================================
+-- Everything below used to start from FindAllOf("PalPlayerCharacter") and then
+-- work out which one is ours from IsLocallyControlled. Flying broke that: on a
+-- mount our own character stops answering true, so the mod decided the world
+-- had gone and wiped it -- run I dropped a follower, 29 nameplate bars and 55
+-- personality records in the middle of normal play, and the re-detection that
+-- followed was the mod's biggest cost.
+--
+-- UPalUtility::GetPlayerCharacter(world) answers the question directly, from
+-- the game's own player state, with no world walk and nothing to infer. The
+-- search below stays as the fallback for a build where this is unavailable.
+-- The call needs a world-context object, and a CDO has no world of its own --
+-- which is why the first version of this never fired (run J, 2026-09-24). The
+-- world is taken from what we already hold and kept until a world change, so
+-- it costs one lookup per world rather than one per call.
+local cachedWorld = nil
+local askGameLogged = nil
+
+local function world_context()
+    if is_valid(cachedWorld) then return cachedWorld end
+    cachedWorld = nil
+    if cached ~= nil then
+        local okW, w = pcall(function() return cached:GetWorld() end)
+        if okW and w ~= nil and is_valid(w) then cachedWorld = w; return w end
+    end
+    local okH, UEHelpers = pcall(require, "UEHelpers")
+    if okH and UEHelpers and UEHelpers.GetWorld then
+        local okW, w = pcall(UEHelpers.GetWorld)
+        if okW and w ~= nil and is_valid(w) then cachedWorld = w; return w end
+    end
+
+    -- Last resort: the CDO's own world. It is usually nothing (a class default
+    -- has no world), which is why it is not tried first, but it costs one call.
+    local okU, util = pcall(function() return StaticFindObject("/Script/Pal.Default__PalUtility") end)
+    if okU and util ~= nil then
+        local okW, w = pcall(function() return util:GetWorld() end)
+        if okW and w ~= nil and is_valid(w) then cachedWorld = w; return w end
+    end
+    return nil
+end
+
+-- Called when the world goes away, so the next question re-resolves it.
+function PlayerRef.ForgetWorld()
+    cachedWorld = nil
+end
+
+local function ask_game_for_player()
+    local okU, util = pcall(function() return StaticFindObject("/Script/Pal.Default__PalUtility") end)
+    if not okU or util == nil then
+        if askGameLogged ~= "no-util" then
+            askGameLogged = "no-util"
+            log_line("UPalUtility is not reachable -- falling back to the world search")
+        end
+        return nil
+    end
+    local world = world_context()
+    if world == nil then
+        if askGameLogged ~= "no-world" then
+            askGameLogged = "no-world"
+            log_line("no world context yet -- falling back to the world search")
+        end
+        return nil
+    end
+    local okP, mine = pcall(function() return util:GetPlayerCharacter(world) end)
+    if okP and mine ~= nil and is_valid(mine) then
+        if askGameLogged ~= "ok" then
+            askGameLogged = "ok"
+            log_line("the game names our character directly (UPalUtility.GetPlayerCharacter)")
+        end
+        return mine
+    end
+    if askGameLogged ~= "no-answer" then
+        askGameLogged = "no-answer"
+        log_line("GetPlayerCharacter gave nothing (call ok=" .. tostring(okP) .. ") -- falling back to the world search")
+    end
+    cachedWorld = nil
+    return nil
+end
+
 local function search(now, reason)
     searchCount = searchCount + 1
     cached, cachedName = nil, nil
+
+    -- The game's own answer first: no scan, and it keeps working while mounted.
+    local named = ask_game_for_player()
+    if named ~= nil then
+        cached = named
+        cachedAt = now
+        if not resolvedLogged then
+            resolvedLogged = true
+            log_line("the game names our character directly (UPalUtility.GetPlayerCharacter)")
+        end
+        return named
+    end
     local ok, list = pcall(function() return FindAllOf("PalPlayerCharacter") end)
     if ok then
         local mine = pick_local(list, now)
@@ -348,6 +441,35 @@ local function install_timer_carry()
 end
 install_timer_carry()
 
+-- ===================================================================
+-- IS THIS SOMEBODY ELSE'S CHARACTER? (2026-09-25)
+-- ===================================================================
+-- IsLocallyControlled() is not trustworthy for this: while the player is
+-- MOUNTED their own character answers false. Dragón pressed F9 on a flying
+-- mount and the toast went down the co-op path -- "could not send MSG to a
+-- player: no controller" -- instead of onto his screen, and the second press
+-- crashed. The same lie hid every abandonment message he flew away from.
+--
+-- The game names our own character (ask_game_for_player), so identity is a
+-- comparison, not an inference: anything that is not that character is
+-- somebody else's. IsLocallyControlled stays as the fallback for a build
+-- where the game's answer is unavailable.
+local function is_our_character(player)
+    if player == nil then return false end
+    local mine = ask_game_for_player()
+    if mine == nil then mine = cached end
+    if mine == nil then return nil end          -- unknown, let the caller decide
+    if rawequal(mine, player) then return true end
+    local okA, a = pcall(function() return mine:GetAddress() end)
+    local okB, b = pcall(function() return player:GetAddress() end)
+    if okA and okB and a ~= nil and b ~= nil then return a == b end
+    local okNA, na = pcall(function() return mine:GetFullName() end)
+    local okNB, nb = pcall(function() return player:GetFullName() end)
+    if okNA and okNB and na ~= nil and nb ~= nil then return na == nb end
+    return nil
+end
+PlayerRef.IsOurCharacter = is_our_character
+
 -- A name for "whose bond is this" that survives the player dying: "local" for
 -- the player at this machine (all of singleplayer), and for a player on
 -- another machine the full name of their player CONTROLLER, which the engine
@@ -355,7 +477,15 @@ install_timer_carry()
 -- at every respawn.
 function PlayerRef.OwnerKey(player)
     if player == nil then return "local" end
-    if locally_controlled(player) ~= false then return "local" end
+    local ours = is_our_character(player)
+    if ours == true then return "local" end
+    if ours == nil then
+        local okS, Session = pcall(require, "Session")
+        if okS and Session and Session.ModeIfKnown and Session.ModeIfKnown() == "singleplayer" then
+            return "local"
+        end
+        if locally_controlled(player) ~= false then return "local" end
+    end
     local ctrlName = nil
     local ok = pcall(function()
         local c = player.Controller
@@ -383,8 +513,23 @@ end
 -- True only for a player character another machine controls: a guest, seen
 -- from the machine that owns the world. Unreadable counts as local, which is
 -- what every build before co-op assumed.
+
 function PlayerRef.IsRemote(player)
     if player == nil then return false end
+    local ours = is_our_character(player)
+    if ours ~= nil then return not ours end
+
+    -- The game could not name our character. IsLocallyControlled is the only
+    -- thing left, and it is the check that lied while mounted: it sent
+    -- Dragón's own messages into the co-op path and crashed the second F9
+    -- press (2026-09-25). So it is consulted ONLY where being wrong can still
+    -- be right -- a world with other players in it. In a singleplayer session
+    -- there is nobody else by definition, so every character is ours and the
+    -- lie can no longer reach the network path at all.
+    local okS, Session = pcall(require, "Session")
+    if okS and Session and Session.ModeIfKnown and Session.ModeIfKnown() == "singleplayer" then
+        return false
+    end
     return locally_controlled(player) == false
 end
 
@@ -501,6 +646,7 @@ end
 -- The player CONFIRMED leaving. Nobody gets a player reference from here until
 -- a new world is up (or the quit turns out to have been cancelled).
 function PlayerRef.SetWorldClosing(on)
+    cachedWorld = nil
     if on then
         closingPlayerAddress = cached ~= nil and address_of(cached) or nil
         closingSince = os.clock()

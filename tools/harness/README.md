@@ -39,12 +39,23 @@ node worldchangetest.js <SCRIPTS>                 # the 1.1.2 world-change crash
 node feedtest.js    <SCRIPTS> prelude_emote.lua    # feed amount by item rarity
 node pointstest.js  <SCRIPTS>                      # own trust points: grants, bar, 50% follow, passive, join, hit rules, drift, world reset -- and the game's friendship is only ever written by the join bonus
 node settingstest.js <SCRIPTS>                     # the player's settings file: written defaults, validation, shared-folder location + fallback, never rewritten, sandboxed, and the modules use the values
-node localetest.js   <SCRIPTS>                     # translations: culture code -> language, all 23 strings in all 16 language sets, {name} kept, no '|', the Language setting, engine asked at most every 10 s, modules show translated text
+node localetest.js   <SCRIPTS>                     # translations: culture code -> language, all 74 strings in all 16 language sets, {name} kept, no '|', the Language setting, engine asked at most every 10 s, modules show translated text
 node playstoptest.js <SCRIPTS> prelude_emote.lua   # the player's cheer stops with the Pal's Play animation
 node pairwatchtest.js <SCRIPTS> prelude_emote.lua  # a Pet/Feed whose Pal stops coming releases the player's pose and any leftover animation (and nothing else); a joining boss is reported to the game as hit by the player, so the defeat counts
 node jointest.js    <SCRIPTS>                      # a Pal that joins is forgotten by every module (Personality, Indicator, Interaction) using its id/address read before the capture; preset writes check the sensor first (Esaeon's crash, GitHub #1)
+node menutest.js    <SCRIPTS>                      # the PalBonds entry in the pause menu AND the settings rows on its page: nothing built inside the construction callback, the row on the canvas above the bottom column (never into the VerticalBox), the shared shelf, the page built only on the first click, only our own buttons act, ESC pressed twice, destruct
+node realfilecheck.js                              # the settings save path against Dragon's REAL file (save-backups/), not a synthetic one: values change, comments and line count do not
 python hoistcheck.py <SCRIPTS>                     # calls before their definition
 python undefcheck.py <SCRIPTS>                     # calls to functions never defined
+```
+
+`runall.sh` runs all of the above in one go with the right prelude for each,
+which is the safe way to do it: a suite given the wrong prelude ABORTS rather
+than failing, and an aborted suite reads like a passing one if you only skim.
+
+```bash
+sh runall.sh                                  # defaults to mod/PalBonds/Scripts
+sh runall.sh ../../release/PalBonds/Scripts   # and against what actually ships
 ```
 
 Every suite prints `ALL CHECKS PASSED` or a list of failures and exits non-zero.

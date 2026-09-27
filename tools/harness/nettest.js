@@ -252,12 +252,46 @@ console.log('\n=== G. A guest\'s PET and FEED, on the machine that owns the worl
   expect('a negative amount pays nothing (never takes trust away)', S.str('T.GetPoints(__W)'), '560');
 }
 
+console.log('\n=== H0. Mounted: our own character is still ours (2026-09-25) ===');
+{
+  // On a flying mount the player's own character answers IsLocallyControlled =
+  // false. That made the mod treat Dragón as another player: his F9 toast went
+  // down the co-op path ("could not send MSG to a player: no controller"), the
+  // abandonment messages he flew away from were never drawn, and the second F9
+  // press crashed. Identity is now a comparison against the character the game
+  // itself names, so the engine's answer while mounted cannot mislead it.
+  const S = newState('prelude_323.lua', [
+    'Sess = require("Session"); Sess.SetModeForTest("singleplayer")',
+    'P = require("PlayerRef")',
+    '__MOUNTED = __o("BP_Player_Female_C_1")',
+    '__MOUNTED.IsLocallyControlled = function() return false end',
+    '__ELSE = __o("BP_Player_Male_C_9")',
+    '__ELSE.IsLocallyControlled = function() return false end',
+    '__ELSE.Controller = __ctrl("TheirController", false, __ELSE)',
+    '__GAME_SAYS = __MOUNTED',
+    '__UTIL = __o("Default__PalUtility")',
+    '__UTIL.GetWorld = function() return __o("World") end',
+    '__UTIL.GetPlayerCharacter = function() return __GAME_SAYS end',
+    'local realSFO = StaticFindObject',
+    'StaticFindObject = function(p)',
+    '  if p == "/Script/Pal.Default__PalUtility" then return __UTIL end',
+    '  return realSFO(p)',
+    'end',
+  ].join('\n'));
+  expect('mounted: our own character is NOT somebody else', S.str('tostring(P.IsRemote(__MOUNTED))'), 'false');
+  expect('...so its Pals stay ours', S.str('P.OwnerKey(__MOUNTED)'), 'local');
+  expect('a genuinely different character is still remote', S.str('tostring(P.IsRemote(__ELSE))'), 'true');
+  expect('...and keeps its own owner key', S.str('tostring(P.OwnerKey(__ELSE) ~= "local")'), 'true');
+}
+
 console.log('\n=== H. On a guest, the mod sends instead of granting ===');
 {
   const inter = fs.readFileSync(path.join(scriptsDir, 'Interaction.lua'), 'utf8');
   const care = inter.indexOf('local petTarget = lastRedirectedWildPalActor');
   expect('a guest\'s pet is sent to the host, not checked locally',
-    String(care >= 0 && /if we_are_a_guest\(\) then\s+-- Co-op[^\n]*\n\s+safe_call\(function\(\) send_pet_to_host\(petTarget\) end\)/.test(inter.slice(care, care + 400))), 'true');
+    // the comment between the two lines is optional: the shipped package has
+    // its comments stripped (tools/strip-comments.py), so assert structure.
+    String(care >= 0 && /if we_are_a_guest\(\) then[\s\S]{0,300}?safe_call\(function\(\) send_pet_to_host\(petTarget\) end\)/.test(inter.slice(care, care + 400))), 'true');
   const feedHook = inter.indexOf('if guestFeed then\n                send_feed_to_host(');
   expect('a guest\'s feed is sent to the host, not granted locally', String(feedHook >= 0), 'true');
   expect('a guest never writes its own inventory slot', String(/if guestFeed then\s+Logger\.log\([^\n]*no local write/.test(inter)), 'true');

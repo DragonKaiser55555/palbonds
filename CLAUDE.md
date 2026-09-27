@@ -39,6 +39,632 @@ percentage stays as it was.
 
 ---
 
+## 1.1.9 PACKAGED — awaiting Dragón's upload (2026-09-27)
+
+`release/PalBonds-v1.1.9.zip`, 127,278 bytes, **18 entries, forward-slash
+paths** (Compress-Archive writes backslashes — built with Python's zipfile
+instead; the 1.1.7 notes already flagged this). `release/workshop/PalBonds/`
+synced, `Info.json` Version **1.1.9**. Both trees md5-identical. 27/27 suites
+pass against the stripped tree. **Nothing uploaded, committed or pushed.**
+
+**Dev stack disabled at his request** (the standing "all the local mods" rule):
+`Pal/Binaries/Win64/dwmapi.dll` -> `dwmapi.dll.MODS-DISABLED`, and
+`Pal/Content/Paks/LogicMods/CreativeMenu.pak` -> `.MODS-DISABLED` (it would
+otherwise load under the Workshop loader). No other proxy DLL present.
+Re-enabling is HIS call, never Claude's.
+
+### PERFORMANCE: A CORRECTION CLAUDE HAD TO MAKE TO ITSELF
+The first comparison used `2026-09-24_runF-118-clean.csv` because of its name.
+**runF is the PRE-fix measurement** — its 61 hitches/min is the "before" number
+in this file's own 1.1.8 section ("61/min -> 30/min"). The shipped 1.1.8
+baseline is `2026-09-25_runL-clean-fixed.csv`. Against the right baseline:
+
+| flying, 2 min | 1.1.8 shipped (runL) | 1.1.9 (runJ 0-120s) |
+|---|---|---|
+| avg fps | 56.4 | 62.3 |
+| 1% low | 20.9 | 22.2 |
+| 0.1% low | 11.8 | 9.9 |
+| p99 frame | 33.9 ms | 31.1 ms |
+| worst frame | 107 ms | 138 ms |
+| hitches/min | 30.0 | 27.5 |
+| stall series | none | none |
+
+**1.1.9 is level with 1.1.8, not faster.** Better on average and p99, slightly
+worse at the extreme tail, hitches about the same — all inside run-to-run
+variation on different terrain. **So the changelog must NOT claim a performance
+win.** The trust-bar leak fix is real and measured (flat 11-21 entries vs
+0->603 in 14 minutes) but needs a LONG session to matter, and a two-minute
+capture cannot show it.
+
+**Opening the settings screen costs nothing measurable** (runK): its first 30 s,
+with the screen opened, were the *best* part of that run — worst frame 110 ms
+against 445 ms for the later flying.
+
+**Dragón's own read of the "laggy area", and it fits the data:** that zone is
+one he rarely plays, so the game was streaming uncached resources; it improved
+the more he played there. runJ's minutes 3-4 (that area) were genuinely worse
+than 1-2 — 1% low 22.2 -> 16.6, hitches 27.5 -> 45.5/min, one 413 ms frame.
+A weak ~11.4 s stall series showed up in that window only (6/10 slots, ~0.9 by
+chance); shipped 1.1.8 shows none. Not enough to act on — noted, not chased.
+
+## 1.1.9 RELEASE BUILD — built, tested offline, AWAITING DRAGÓN'S LONG RUN
+
+`release/PalBonds/Scripts` rebuilt from `mod/` through
+`tools/strip-comments.py` (22,097 -> 12,110 lines) and **deployed to the live
+install as the thing that would actually ship**. Nothing is zipped, committed or
+published — that needs his word.
+
+Removed from the source for the release: `MENU_ENABLED` and `INPUT_PROBE`
+(crash-investigation scaffolding) and `InputProbe.lua` itself. Verified off:
+`DEBUG_LOGGING`, `SHOW_DIAGNOSTICS`, `TRACE_PHASES`, `ACTION_CHANGE_PROBE`.
+27/27 suites pass against `mod/` AND against the stripped `release/` tree.
+
+**This run has NO LOG, on purpose** — that is what a player gets, and it is the
+build being tested. If anything goes wrong, redeploy `mod/` with
+`DEBUG_LOGGING`/`TRACE_PHASES` on and reproduce.
+
+### SLEEPING WILD PALS — asked 2026-09-26, answer: NO, and why
+Dragón asked whether interacting with sleeping wild Pals could be a setting,
+explicitly conditional on it being easy and not risking what works. It is not.
+
+* **The game refuses, not us.** The radial substitution has no action-state
+  gate, so the menu does appear; the game's own Pet/Feed simply will not run on
+  a sleeping Pal, and `PET-CHECK` then correctly grants nothing because the
+  interaction never happened. Recorded from his own run 3 (2026-09-16):
+  "Sleeping-Pal pet correctly gave nothing."
+* **Changing it means one of two bad things.** Either wake the Pal — pushing or
+  altering an action on `UPalActionComponent`, which is the exact system that
+  caused CRASH #2 on 2026-09-01 and the reason `play_refusal` still refuses a
+  busy Pal to this day — or bypass `PET-CHECK` and grant friendship for an
+  interaction the player can see did not happen, which breaks the contract the
+  whole interaction model rests on.
+* If it is ever wanted, the route is research: find the game's OWN wake
+  mechanism and use that. Not an add-on.
+
+## 40 MINUTES, NO CRASH (2026-09-26 19:44-20:24) — 1.1.9 candidate
+
+Archived as `docs/bug-reports/2026-09-26_clean-40min-session.log` (12 MB, trace
+on). Dragón played normally, opened the screen twice, bonded Pals.
+
+| | before | this session |
+|---|---|---|
+| crashes | 4 in one evening; 14s and 3m45s with the screen open | **none in 40 min** |
+| `LUA_ERRERR` in UE4SS.log | yes, 43s after the 154 armed | **zero** |
+| tracked bars | 0 -> 603 in 14 min, straight line | **flat, 11-21 all session**, 146 prunes |
+| trace pairs | `gauge.boss` 20/10 | every pair balanced except `gauge.boss` 40/20 |
+
+**The one real finding, now fixed: the boss-gauge hook callback was unguarded.**
+Entered 40 times, reached its end 20 -- exactly the 20 boss bars that attached.
+UE4SS invokes it twice per call and the second invocation's parameters are not
+the shape `hook_get` expects, so it threw. Nothing broke (the bar attaches on
+the first invocation) but an exception raised twice a minute inside a hook is
+not shippable, and every other hook in that file was already wrapped. Now
+`pcall`ed, with a once-only log so a genuine failure stays visible.
+
+**Known cosmetic gap, Dragón's call to leave it:** `SpaceBar` is refused because
+UE4SS names that key differently and separator-stripping cannot bridge it. His
+ruling: *"spacebar is already jump in the game, doubt anyone will swap such a
+core key."* Note that the numpad very likely breaks the same way
+(`NumPadOne` vs `NUM_ONE`) -- offered, not taken.
+
+**NOT YET DONE for a release:** the clean build. `DEBUG_LOGGING`,
+`TRACE_PHASES`, the trace call sites and the `MENU_ENABLED` / `INPUT_PROBE`
+switches all have to come out, and the suite has to pass against
+`release/PalBonds/Scripts` -- a stripped build is a build nobody has tested.
+
+## FIRST LIVE RUN OF THE NEW REBINDING — two faults, both fixed (2026-09-26 14:21)
+
+**1. "It locks me when the key fails, especially F1-F5."** The log names it four
+times:
+```
+14:21:24  ignoring F6: it arrived before the screen finished asking
+14:21:33  ignoring F5: ...   14:21:41  ignoring F4: ...   14:21:46  ignoring F2: ...
+```
+`CAPTURE_MIN_WAIT = 0.25` — a deaf period after the click. It was built for the
+RegisterKeyBind mechanism, where UE4SS's registration burst could deliver a key
+nobody pressed. **That mechanism is gone**, the overlay only reports a key it
+actually received while focused, and the guard's only remaining effect was to
+swallow the player's FIRST press and then keep holding the keyboard until he
+pressed again. **REMOVED.**
+
+Note for the record: it was **not** F1-F5. F5, F4 and F2 each appear in the
+ignored list AND in the succeeded list seconds later — same keys, same session.
+The variable was *speed*: a quarter second is inside human reaction time, and he
+was going quickly down the F-row.
+
+**2. The overlay came up in Japanese.** `KeyConfigParam` is deliberately nil (it
+is what stops the widget rebinding a REAL game action), so the widget never runs
+the game's own text setup and both of its blocks keep their design-time
+defaults. Both are `BP_PalTextBlock_C`, so we now write them ourselves with
+`SetText_GDKInternal` (rule 4 — a raw `.Text =` crashes this game): the title
+becomes the row being rebound, the line under it
+`"Press a key   ·   Esc to cancel"`. New Locale string `menu_press_key_cancel`
+in 16 languages; Locale is now **75 strings**.
+
+Covered: menutest asserts both text blocks are written in the player's language,
+and that a key reported the instant the overlay is up still counts. 27/27.
+
+## BUILT: the settings screen no longer registers a single key watcher (2026-09-26)
+
+**157 key watchers -> 3.** `Menu.lua` now has zero `RegisterKeyBind` calls; the
+only one left in the mod is Interaction's three gameplay hotkeys.
+
+**How rebinding works now.** Clicking a rebind row builds the game's own
+`WBP_OptionSettingsOverLayWindow_C` through the same `native_widget` path as
+every other native widget on the page, fills it over `inst.page` at
+`OVERLAY_Z = 90`, and focuses input on it. One class-wide hook on
+`:OnKeySetting` reads the FKey out of the hook parameter. The handler checks
+`GetAddress()` against the instance WE put up, so a rebind in the game's own
+options screen cannot drive one of our rows. `KeyConfigParam` is left nil so the
+widget's apply-logic has no game action to write to.
+
+**`capturable()` was not deleted, it changed job.** It used to decide which keys
+got a watcher; it now decides which reported keys are ACCEPTED. Escape cancels,
+a mouse button or bare modifier is ignored and the screen keeps waiting.
+
+**A real integration bug the tests caught, not the code review:**
+`key_pressed`'s success path does not go through `stop_capture`, so the overlay
+stayed on screen after a key was accepted. Fixed.
+
+**AND THE ONE THAT WOULD HAVE KILLED THE FEATURE IN GAME:** the overlay reports
+FKey names (`SpaceBar`, `LeftMouseButton`) while `RegisterKeyBind` needs UE4SS's
+table (`SPACE_BAR`, `LEFT_MOUSE_BUTTON`). Uppercasing gives `SPACEBAR`, which
+matches nothing — so **Space, the headline key the old approach could never
+capture, would have been refused the moment it became capturable.**
+`Settings.resolve_key_name` now matches on the name with separators stripped,
+built lazily from whatever `Key` actually holds.
+
+**Tests:** menutest's rebinding section rebuilt on the overlay — no watcher is
+registered at all (`__BINDS` is empty with the page open), the overlay goes up
+as a child of our canvas and comes back down on success, on Escape, on a second
+click and on timeout, Space and W both bind, a fire from a foreign overlay
+instance is ignored, mouse/modifier are refused while waiting, and the keyboard
+is handed back on every exit path. 27/27 suites pass.
+
+## SOLVED: ANY-KEY CAPTURE WITHOUT RegisterKeyBind (2026-09-26 13:54)
+
+Six probe rounds, three of which crashed, ending in a confirmed mechanism.
+Logs: `docs/bug-reports/2026-09-26_probe-round5-real-key-names.log` and the
+round-6 confirmation.
+
+**The answer is the game's own "press a key" modal**, found by grepping the
+CXXHeaderDump for every widget class with a reflected key event:
+
+```cpp
+class UWBP_OptionSettingsOverLayWindow_C : public UPalUserWidgetOverlayUI
+    void OnKeySetting(FKey NewKey);            // FKey as a HOOK PARAMETER
+    FEventReply OnKeyDown(FGeometry, FKeyEvent);
+    UWidget* BP_GetDesiredFocusTarget();
+    UBP_PalTextBlock_C* BP_PalTextBlock_Title / _Command;
+    UBP_HUDDispatchParameter_KeyConfig_C* KeyConfigParam;
+```
+Asset: `/Game/Pal/Blueprint/UI/UserInterface/MainMenu/Option/`
+`WBP_OptionSettingsOverLayWindow.WBP_OptionSettingsOverLayWindow_C`
+
+It takes focus, receives `OnKeyDown`, and passes the pressed key to
+`OnKeySetting` as a plain parameter. Hooking that returned clean names:
+**`W`, `SpaceBar`, `R`, `G`, `H`, `U`, `S`** — including the two keys
+DarnMenu's curated battery explicitly cannot bind. Game thread, no
+`RegisterKeyBind`, no struct crossing the boundary by value.
+
+It also sits in the SAME asset family our settings page already builds from
+(`WBP_OptionSettings_*`), so using it keeps the game's own look and focus
+behaviour instead of imitating them.
+
+**The rule learned across all six rounds — write this down:**
+- **CALL** a function taking/returning an FKey-bearing struct by value →
+  **the process dies** (AV 0x70; rounds 1 and 2, two different functions on two
+  different objects, identical fault).
+- FKey nested in a struct with **no reflected members** (`FKeyEvent`) → a clean,
+  catchable Lua error (round 3).
+- **HOOK** a function and **READ** an FKey as a parameter or as a UObject
+  property → **works** (rounds 4-6).
+- A UE4SS `FName` needs `:ToString()`; `tostring()` prints the userdata address
+  (`Capture.lua:168` has said so all along — round 4 lost a run to it).
+
+**Free bonus:** the same hooks expose the game's own action names and their
+current bindings (`MoveForward`/`Forward`->`W`, `Jump`->`SpaceBar`), which is
+ready-made conflict detection for a future "that key is already Jump" warning.
+
+### Next: build it (NOT yet started — Dragón's call on the design)
+Plan: when a rebind row is clicked, construct the overlay, add it to our page,
+let it take focus, read the key from the `OnKeySetting` hook, close it.
+**Leave `KeyConfigParam` nil** so the widget's own apply-logic has no game
+action to write to — the one real risk is a constructed instance rebinding a
+REAL game binding, and a null parameter is what prevents it. Must be verified in
+the first test run that no game binding changes.
+
+**Still open and not addressed by any of this:** the three gameplay hotkeys
+(F8/F9/F10). The modal needs focus and there is none during normal play, so
+those stay on `RegisterKeyBind` — i.e. player-level exposure, minus the 154-way
+amplification that is crashing Dragón every few minutes.
+
+## THE KEY IS READABLE FROM A HOOK (2026-09-26 13:37) — route found
+
+**All four hooks on the game's own rebinding widget armed and fired, and the
+FKey's name resolved.** Log archived as
+`docs/bug-reports/2026-09-26_probe-round4-keynames-resolve.log`.
+
+```
+hooked :OnKeyUp / :On Action Key Changed / :On UI Action Key Changed / :On Key Config Changing
+KeyConfigChanging -> first FName param = 'FNameUserdata: 0000022C43B4B068'
+ActionKeyChanged  -> action='FNameUserdata: ...' | NewKey.KeyName = 'FNameUserdata: ...'
+OnKeyUp           -> CachedSettingKey.KeyName = 'FNameUserdata: ...'
+```
+
+`FNameUserdata: <address>` is **not** a failure — the property read SUCCEEDED
+and returned a real FName wrapper. `tostring()` on a UE4SS FName gives the
+userdata address; `:ToString()` gives the text, which `Capture.lua:168` has
+documented since it was written. Round 5 fixes only that.
+
+**What this establishes, and it is the thing three crashes were spent looking
+for:** an `FKey` is reachable from Lua **as a property, inside a hook** —
+`widget.CachedSettingKey.KeyName` and the `NewKey` hook parameter both resolved.
+It is only unreachable when it has to cross the boundary **by value in a call**
+(rounds 1-2, both fatal) or when nested in a struct with no reflected members
+(`FKeyEvent`, round 3, a clean error).
+
+**The rule that falls out of all five rounds:**
+- CALL a function taking/returning an FKey-bearing struct → **process dies**.
+- HOOK a function and READ an FKey property off a parameter or a UObject →
+  **works**, and when it does not, it fails as a catchable Lua error.
+
+So the capture route for any-key rebinding is: a UMG key event delivers the
+press, and the key's identity is read as a property. No `RegisterKeyBind`.
+
+**Still open:** the three gameplay hotkeys (F8/F9/F10). `OnKeyUp` needs a
+focused widget and there is none during normal play, so nothing here replaces
+them yet.
+
+## SELF-INFLICTED: the InputProbe crashed the boot (2026-09-26 13:11) — FIXED
+
+`InputProbe.lua`, written to answer "can a key press be read from the game
+thread", **took the game down before it finished loading.** `AV reading 0x70`.
+Removed from the live install within minutes; the probe is `INPUT_PROBE = false`
+in `main.lua` and the file stays in `mod/` only. Evidence archived as
+`docs/bug-reports/2026-09-26_probe-boot-crash.{log,runtime-xml}`.
+
+The log's last line was the probe's own capability-pass header, so it died on
+the **first native call**. Two bugs, both worth not repeating:
+
+1. **A failed read was treated as success.** The guard was
+   `local remote = safe(function() return c.Player == nil end)` /
+   `if remote ~= true then return c end`, and `safe` returns nil when the read
+   throws — so `nil ~= true` handed back a controller too broken to read a field
+   off. **Every gate must require a positive confirmation, never "not false".**
+2. **It ran before the player was in the world.** The line immediately before
+   the crash is Session's "still loading — asking again until the player is in
+   the world". The controller object existed while its internals did not, so the
+   call dereferenced a null `PlayerInput` — `0x70` is a field at a small fixed
+   offset off a null base, the shape `docs/hook-points.md` already describes.
+
+Galling detail: this violated the freshness rule copied into that same file's
+header from DarnMenu's notes two messages earlier — *only touch objects the
+engine handed you recently*. A boot-time `FindAllOf` is the textbook case of a
+poll discovering something unbuilt.
+
+**Fixed in `mod/`:** a `world_is_ready()` gate (PlayerRef valid, not
+world-closing, held for 2s) before anything native; `live_controller` now
+requires `Player` AND `PlayerInput` to both read and validate, and hands both
+objects to the candidates so none re-reads a field; and **a crumb is logged
+before every individual native call**, so a repeat names the exact call instead
+of just the pass. Not redeployed — Dragón's call whether to spend another boot.
+
+## WHAT DARNMENU DOES ABOUT KEYS — checked, and it is NOT a better route (2026-09-26)
+
+Dragón asked whether the reference mod has a safer way to capture a free key
+press. **It does not. It uses the identical mechanism, with a shorter list.**
+From `DarnMenu/Scripts/main.lua:496-678` and `DarnMenu_API.md:159`:
+
+- A one-time battery of `RegisterKeyBind` calls over a **curated ~69-key set**,
+  armed lazily on first use, gated by a capture flag — the same shape as ours,
+  which arms 154.
+- It documents the two hard UE4SS limits: **no any-key listener**, and
+  **keybinds cannot be unregistered.** The second one kills the idea of arming
+  watchers only for the duration of a capture — registrations would accumulate
+  on every capture with no way to release them.
+- It documents the cost of the short list: **Space, Enter, Tab, Esc, arrows,
+  symbols and modifier combos are not capturable.** That is precisely the
+  restricted key list Dragón rejected at milestone 4 ("on the keybinds you set
+  it as options? really?... thats awful"), so copying it walks back his call.
+- `ui.lua:3138` carries their own crash note: a keybind callback that touched a
+  UObject **crashed their game**; their rule is the same marshal-first we
+  already do — which UE4SS issue #1345 says is too late by construction.
+
+**Their docs are still worth mining — three techniques we do not use:**
+1. **`IsValid()` does not prove SAME object.** Freeze `GetFullName()` when a
+   wrapper is accepted, compare before every use, evict on mismatch. Directly
+   applicable to our cached actors (`trackedBars`, `pawnByPalId`, `FollowerActors`).
+2. **"Every crash our instrumentation ever attributed was inside a TIMER poll.
+   Zero were inside hook callbacks."** An object a hook hands you was vouched
+   for at that instant; one a poll discovered is stale by construction. **This
+   is a caution against the polling fix proposed above** — it must re-acquire
+   the controller fresh, not cache it.
+3. **Compare crash stack OFFSETS before trusting any log-tail attribution** —
+   two of their "obvious" suspects were exonerated by byte-identical stacks
+   appearing with the suspect disabled.
+
+**Applying #3 to our five crashes:** no two are identical. crash1/crash2 share 8
+offsets, run3 shares 7 with them and 9 with crash3, run2 shares almost nothing.
+But **four of the five have their top frames inside the same UE4SS region
+(`bcd`–`bdd`)**. Scattered fault points within one subsystem is what a corrupted
+VM looks like; a single broken call site would give a repeating stack. That
+supports the concurrency theory — and note we still have **no crash stack from a
+run with the suspect disabled**, because run 1 simply never crashed.
+
+## RUN 3: THE LUA VM IS PROVABLY BEING CORRUPTED (2026-09-26 12:31)
+
+Crash while flying, `EXCEPTION_ACCESS_VIOLATION reading 0xffffffffffffffff`,
+39 UE4SS frames over a deep Palworld chain — the crash-1/2 shape. Archived as
+`docs/bug-reports/2026-09-26_run3-menu-on-AV-flying.log` and
+`2026-09-26_run3-menu-on-AV.runtime-xml`.
+
+**The find is in UE4SS.log, not the trace:**
+
+```
+12:28:17.848  [Menu] page opened / any key can now be bound (154 key(s) watched)
+12:28:18.091  [ENFORCE] the sense budget skipped 53 sense(s) in the last second
+12:29:00.324  Error: [Lua::call_function] lua_pcall returned LUA_ERRERR
+                                          => error in error handling
+12:31:59      crash
+```
+
+**`LUA_ERRERR` is an error raised while handling an error** — the classic
+fingerprint of a `lua_State` whose stack has been trampled, which is what
+concurrent use of one VM produces. It appeared **43 seconds after the menu armed
+its 154 key watchers**, and the game limped on for three more minutes.
+
+**Second corroboration in the same run:** `gauge.boss` = 20 entries,
+`gauge.boss.done` = **10**. Ten boss-gauge hook invocations entered Lua and
+never came back out. Every other traced pair balances exactly
+(`gauge.bind` 159/159, `gauge.unbind` 151/151, `sense.enforce` 166/166,
+`cache.stableid` 166/166).
+
+**Scoreboard across the three trace runs:**
+
+| | screen never opened | screen opened (run 2) | screen opened (run 3) |
+|---|---|---|---|
+| lasted | 15 min, clean | 14 s | 3 m 45 s |
+| `sense.get` | 15,842 | 353 | 5,283 |
+| VM damage | none | died inside `Context:get()`, `abort()` | `LUA_ERRERR` + 10 lost hook calls |
+
+**What the trace did NOT do this time, stated honestly:** run 3's last line is
+`sense.addr`, which is *also* the normal early-out for the ~97% of senses that
+hit the address dedup — so it is ambiguous between "died inside
+`sensor:GetAddress()`" and "returned normally and the crash was elsewhere".
+**Instrumentation gap to close:** add one trace immediately AFTER the
+`GetAddress()` call so those two cases are distinguishable.
+
+**The leak fix is confirmed working.** Tracked bars per scan this run:
+0 → 22 → 49 → 61 → 50 → 55 → 30 → 13 → 24 — it plateaus and oscillates, with 50
+`[PRUNE]` lines actively releasing. Run 1 at the same elapsed time was at ~287
+and climbing in a straight line to 603.
+
+## RUN 2 RESULT: THE TRACE NAMED IT, AND DRAGÓN WAS RIGHT (2026-09-26 03:13)
+
+**Crashed 14 seconds after the settings screen was opened.** Log archived as
+`docs/bug-reports/2026-09-26_run2-menu-on-TRACE-CRASH.log`, crash context as
+`2026-09-26_run2-menu-on-abort.runtime-xml`.
+
+**The trace pinned the exact call.** 353 `sense.get` lines, 352 `sense.addr`
+lines — exactly one unmatched, and it is the last line in the file:
+
+```
+[T0001017 52.147] sense.get      <-- no sense.addr ever followed
+```
+
+`sense.get` is written immediately before `Context:get()` in the
+`SelectResponseBySenses` hook (`Personality.lua`). The process died inside that
+call. Every other one of the 352 completed.
+
+**The contrast is the result:**
+
+| | Run 1 (screen absent) | Run 2 (screen opened) |
+|---|---|---|
+| duration | ~15 min | ~14 s after opening it |
+| `sense.get` calls | 15,842 | 353 |
+| keybind watchers | 3 | **157** (3 + the menu's 154) |
+| crash | none | yes |
+
+03:13:01 `page opened` + `154 key(s) watched`; 03:13:15 abort. Run 1 survived
+forty-five times as many sense calls with the screen gone.
+
+**New signature: `Abort signal received`, not an access violation** — a C++
+exception escaping into `std::terminate`, which a Lua `pcall` cannot catch. But
+the stack shares frame `UE4SS+bd59e3` with crash 3 (00:13), the one whose shape
+matches all three player reports. Same subsystem, two ways of dying.
+
+**Mechanism (now the working theory, was speculation last turn): a race on the
+Lua state.** `RegisterKeyBind` callbacks run on **UE4SS's own thread** — this
+file already knew that, it is written in `Menu.lua`'s own comment at the capture
+block. The handler marshals its *work* to the game thread via `on_game_thread`,
+but the `if capturing == nil then return end` check still executes in the Lua VM
+on UE4SS's thread. With 157 watchers and keys held down while flying, that
+happens constantly, and the game thread is simultaneously inside `Context:get()`
+in the sense hook. Two threads, one `lua_State`.
+
+**This also explains the players**, which is what makes it more than a menu bug:
+Esaeon, Swordfish and Hakaishin have **three** keybinds registered permanently
+(F8/F9/F10 via Interaction's `bind_key`) and no menu at all. Same race, roughly
+fifty times rarer — which is exactly "rare", "after a while of simply running
+around", and "seconds after the third pet".
+
+**So reducing the count is not the fix.** Three is already enough to crash
+players. The fix has to get the mod's key handling off UE4SS's thread entirely,
+or make the handler never enter the Lua VM from it. Options, none chosen yet
+(Dragón's call):
+1. **Immediate mitigation:** stop arming the 154 watchers — returns Dragón to
+   player-level risk, does not fix players.
+2. **The real fix:** read key presses from a game-thread source instead of
+   `RegisterKeyBind` (a hooked game input function), so nothing enters Lua off
+   the game thread. Would fix the player crashes too. Needs research first:
+   confirm UE4SS's dispatch model, and find a usable game-side input hook.
+
+**Before committing to option 2, verify the threading claim properly** rather
+than inferring it from stacks with no game frames.
+
+## ACTIVE: THE CRASH — Dragón reproduced it himself (2026-09-26)
+
+**This is the open player crash, not a new one, and it is now reproducible on
+Dragón's own machine.** That is the thing this project has been blocked on
+since 19 September, waiting for players to test for us.
+
+**Four crashes in one evening, three with a full Windows crash context**
+(archived as `docs/bug-reports/2026-09-26_dragon-UECC-*.runtime-xml`, and the
+last run's live log as `2026-09-26_dragon-crash4-petallia.log`):
+
+| # | Time | Dragón was doing | Address | Stack shape |
+|---|------|------------------|---------|-------------|
+| 1 | 23:50:08 | flying, watching Pals | `0xffffffffffffffff` | UE4SS ×9 ← **Palworld ×5** ← UE4SS |
+| 2 | 00:04:40 | flying again | `0x24b31c9a909` | UE4SS ×9 ← **Palworld ×5** ← UE4SS |
+| 3 | 00:13:02 | boss Lyleen following | `0x0` | **ucrtbase memcpy** ← UE4SS ×15, no game frames |
+| 4 | 00:41:07 | bonding a Petallia | — | UE4SS dump only, no context file |
+
+**Crash 3's shape is Esaeon's and Hakaishin's** (CRT `memcpy` on top, UE4SS
+Lua frames below, no game frames, reading `0x0`). Different UE4SS builds so the
+offsets differ, but the shape is the same, and Hakaishin's was singleplayer
+with PalBonds alone. **Crashes 1 and 2 are a second shape**: Palworld frames
+*underneath* the UE4SS frames, i.e. the game called a hook, which called our
+Lua, which died.
+
+**Ruled out — the settings screen / keybind capture.** Dragón's own theory, and
+the stacks kill it: a UE4SS keybind fires on UE4SS's own thread with no game
+frames below it, which is not what crashes 1 and 2 show. For crash 4 the log is
+direct: capture ran 00:38:31→00:38:32 and ended cleanly, then two and a half
+minutes of normal play before the crash. The Q/E tab-steal leaves the capture
+sitting and waiting; it holds nothing and touches no game object.
+
+**Working hypothesis (NOT established):** a cached `UObject` pointer read after
+the engine recycled that address. Three *different* faulting addresses (`0x0`,
+`-1`, and a misaligned heap address) is the signature of reading a field off an
+object of the wrong type, not a null we forgot to check. UE4SS's `IsValid()`
+returns true for a recycled address, so every `IsValid` guard in the mod passes
+and the read still goes to garbage. The `memcpy` on top of crash 3 fits:
+building a Lua string from a garbage FName length.
+**Prime suspect: the `SelectResponseBySenses` hook** (`Personality.lua`) —
+fires from deep in the game's AI for every Pal that senses anything, dedupes on
+raw addresses (`handledSensorAddresses`) and holds pawns in `pawnByPalId` /
+`cachedSensorByPalId` between prunes. Flying = maximum actor churn = maximum
+address reuse, which is crashes 1 and 2. The crash run's log shows it saturated
+("the sense budget skipped 2… 4… 8 senses in the last second").
+
+### The trace run — BUILT AND DEPLOYED, awaiting Dragón's test
+
+`Logger.trace` (built 2026-09-20 for Esaeon, never used by us) now writes
+through its **own** path: no `print` (UE4SS's console is the expensive part of a
+log line), no `os.date`, a monotonic sequence number, and the per-line flush
+kept — the last line written is the operation that killed the process.
+Self-tested against the deployed file (format, sequence, detail, flush count).
+
+Trace points added at the hook entries and cached-pointer loops that had none:
+`sense.*` (step level, one line per engine call — the suspect), `cache.*`,
+`gauge.bind.*` / `gauge.unbind.*` / `gauge.boss.*`, `bar.entry` (Indicator's
+tracked-bar loop, keyed), `trainer.step` / `trainer.follower` (after the
+early-out, so a flight with no follower stays silent), `dmg.reaction`,
+`dmg.hate`.
+
+**The settings screen is OFF for this run — Dragón's call**, as the experiment
+that confirms the analysis instead of arguing it: `MENU_ENABLED = false` in
+`main.lua`, and `Menu.lua` renamed to `Menu.lua.DISABLED-crash-test` in the
+deployed copy so it cannot load at all (Interaction's `WaitingForKey` lookup
+fails safely — no screen means nothing is ever waiting for a key).
+- still crashes → the screen is cleared, read the trace lines.
+- does not crash → the screen or something shipped with it IS involved.
+
+**Deployed to the manual install only**
+(`Pal/Binaries/Win64/ue4ss/Mods/PalBonds/Scripts/`), with `DEBUG_LOGGING` and
+`TRACE_PHASES` both true. That is the copy that actually runs: `dwmapi.dll` is
+present, its files are current, and it is the one that wrote tonight's log. The
+Workshop native-mods copy is a stale release build whose loader is not running
+(exactly one `mod loading` line in UE4SS.log). **Release staging was
+deliberately NOT touched** — this is a diagnostic build.
+Tests: 27/27 suites pass against `mod/`; 26/27 against the deployed copy, the
+one failure being `menutest`, which fails *because* the menu is gone.
+
+**To restore afterwards:** `MENU_ENABLED = true` in `main.lua`, copy `Menu.lua`
+from `mod/` into the live install (the parked `Menu.lua.DISABLED-crash-test`
+there is now stale — it is only a marker), and set `TRACE_PHASES = false`.
+
+### RUN 1 RESULT (2026-09-26, ~15 min): no crash, and it found a real leak
+
+Dragón flew and watched Pals for about fifteen minutes with the screen off and
+the trace on. **No crash.** That does NOT clear the settings screen — nothing
+reproduced, so the comparison has no result either way; what the run actually
+bought us is the leak below. 196,115 log lines, 11 MB, no errors, and zero
+`PalBonds/Menu` lines, so the switch-off genuinely took.
+
+The sense hook, the prime suspect, came out well: 15,842 calls but only 677 got
+past the cheap address dedup — a 96% early-out. It is not the hot path.
+
+**89% of the run was one loop.** `bar.entry` fired 139,454 times. Tracked bars
+per scan, over the flight: 0 → 56 → 215 → 339 → 467 → 584 → 603, a straight
+line with no plateau. 636 entries created, ~603 still alive at the end, and the
+first Pal whose nameplate he saw fourteen minutes earlier was still being
+re-validated every two seconds.
+
+**Dragón connected it to something he had reported weeks earlier** — the game
+feeling laggier the longer he played — which had been blamed at the time on the
+debug log accumulating. That explanation was never measured and was very likely
+wrong. This one is measured.
+
+**FIXED (2026-09-26), `Indicator.lua`:** the tracked-bar cache now expires.
+`TRACKED_BAR_UNSEEN_PRUNE_SECONDS = 60.0`. Presence is read from
+`gaugeHandleByKey` — the bind hook fills it, the unbind hook clears it — so an
+entry whose nameplate is on screen refreshes itself with **one table lookup and
+no reflection**, and an entry left behind ages out. On prune,
+`release_tracked_entry` detaches our bar and label from the pooled gauge (the
+same `RemoveChild` pattern `reparent_existing_bar` already uses) and frees
+`barInstalledForGauge` for that gauge, compared by address. Keeping the entry
+past its gauge's recycle is still deliberate — that is what
+`reparent_existing_bar` reuses — the cache just has an expiry now.
+`Indicator.BindCounts()` gained a third return (the tracked-bar count) so the
+table is countable from outside.
+
+### RUN 2 — Dragón's call, and he was right to insist (2026-09-26)
+
+Claude argued the menu-on comparison was not worth doing because it would
+probably also not crash. Dragón: *"but if we turn the log on and i do exactly
+the same thing as before and if it does crash, wouldnt that help us prove that
+maybe the menu or something on the menu's new code is causing the crash?"* That
+is correct and the objection was lopsided — it weighed only the null outcome. A
+crash in run 2 would be the strongest evidence this investigation has had.
+
+**THE SCREEN HAS TO BE OPENED for the run to test anything.** `arm_capture()`
+runs from `open_page`, not from `Menu.Init`, and it is the only place the ~154
+`RegisterKeyBind` calls happen (guarded by `captureArmed`, so once per session).
+A run with the menu present but never opened does not exercise the new code.
+
+**Mechanism worth taking seriously — a Lua-state data race.** Each of those 154
+watchers fires on **UE4SS's own thread** for every key press for the rest of the
+session (the handler's own comment says so). While flying, keys are held down
+constantly. If UE4SS's keybind thread enters the Lua state while a game-thread
+hook is already in it, that is a race on the VM, and a corrupted VM produces
+exactly the signatures seen: `memcpy` on a garbage length, reads of `0x0` and
+`0xffffffffffffffff`. **It would also explain the player reports**: they have
+three keybinds registered permanently (F8/F9/F10 via Interaction's `bind_key`),
+so the same race, roughly fifty times less often. Untested speculation, but it
+fits every data point including the ones the menu cannot be blamed for.
+
+**Correction to the earlier analysis:** ruling the keybind path out was right
+for crashes 1 and 2 (Palworld frames present = game thread) but NOT for crash 3,
+whose stack has no game frames at all — which is what a UE4SS-thread crash looks
+like. The shape does not discriminate there.
+
+**Run 2 protocol:** menu ON, leak fix ON, trace ON. Open the PalBonds screen
+once at the start. Fly the same way for **30+ minutes** — run 1 was ~15 min and
+crash 4 came 28 minutes into its session, so run 1 may simply have been short.
+The leak fix stays ON deliberately: the leak is now a known confound, so
+removing it makes a crash more attributable to the menu, and run 1 had the leak
+present without crashing.
+
+Covered by **perffixtest section D** (8 checks), which tests both directions as
+that suite's header requires: a nameplate still bound is NOT pruned after ten
+minutes, an unbound one is kept for 30s so reuse still works, past the window it
+is dropped AND its widgets are detached, the gauge can host a Pal again
+afterwards, and a 25-Pal flyby tracks all 25 in view and releases all 25 once
+they are behind you. Verified to fail against the unfixed code (3 checks fail,
+25 entries stuck). 27/27 suites pass; deployed.
+
 ## TOMORROW STARTS HERE (end of 2026-09-20)
 
 **Today shipped 1.1.6 to all three places and then spent the rest of the day on
@@ -133,6 +759,777 @@ Built and verified before packaging:
 - KNOWN UNTESTED at ship time, by anybody: two real players at once (claims,
   one leaving mid-bond), a hosted world where the host also plays, the dungeon
   RESYNC, and whether the guest's own food count updates on screen.
+
+## 1.1.8 SHIPPED TO NEXUS + CURSEFORGE (2026-09-25)
+
+**Nexus LIVE, verified on the page:** header 1.1.8, file "PalBonds V1.1.8",
+100 KB (our zip is 103,270 bytes), uploaded 3:56PM, Dragón's changelog and his
+short description. **CurseForge: a THIRD store now** -- he uploaded there too
+and says moderation takes a long time to approve a file. **Workshop LIVE**,
+verified after his test run (`last_published_version` 1.1.8).
+
+**What 1.1.8 is, beyond the clean-ship pass below:**
+- **The mounted-identity bug, found the day of release.** On a mount the
+  player's own character answers `IsLocallyControlled = false`. PlayerRef's
+  `Get` was fixed for that first (the game names our character:
+  `UPalUtility::GetPlayerCharacter`), but `IsRemote` and `OwnerKey` still
+  believed the engine, so while riding the mod treated Dragón as ANOTHER
+  player: his F9 toast and every "left behind" message went into the co-op
+  network path ("could not send MSG to a player: no controller") instead of
+  onto his screen, and the second F9 press CRASHED
+  (`EXCEPTION_ACCESS_VIOLATION`, log at
+  `docs/bug-reports/2026-09-25_f9-mounted-crash.log`). Identity is now a
+  comparison against the character the game names. The `IsLocallyControlled`
+  fallback still exists for co-op, but is unreachable in a singleplayer
+  session (`Session.ModeIfKnown()`), so the lie can no longer reach the
+  network path where it crashed. Removing the fallback outright was tried and
+  broke co-op in 28 checks -- that is why it is fenced rather than deleted.
+  Regression test: nettest H0.
+- **Performance, measured (perf-captures/2026-09-2[45]_*):** flying, the mod
+  went from 25.3 s of game-thread time per 2 minutes to 3.9 s; hitches with
+  the mod on went 61/min -> 30/min against 17/min with it off; the false
+  world-wipes while flying (27 nameplate bars, 39 personality records, once a
+  live follower) are gone. Fixes: the world change is detected from the game's
+  own loading events (`LoadingFinished`, the loading-screen widget) with the
+  old poll demoted to a 10 s safety net needing two misses; Session no longer
+  asks UEHelpers for the world (it walked the object list looking for a
+  PlayerController, 43 ms a call); the sense hook has a refilling per-second
+  budget; the nameplate sweep builds at most 4 bars per tick.
+- **Dragón's verdict before shipping:** tested singleplayer and as a guest,
+  nothing broken, toasts and abandonment correct, no crash.
+
+## SETTINGS SCREEN — milestone 9: the polish pass (2026-09-25)
+
+**THE KEYBOARD HOLD WORKS.** Confirmed live: with the phantom-capture bug fixed
+there was finally a real capture for it to block, and `SetInputMode_UIOnlyEx`
+does stop the game acting on the key being chosen. **Except Q and E.**
+
+### Q and E, and why they are different
+They are the game's own menu-tab navigation, routed through its UI layer --
+above where input mode reaches, because input mode governs GAMEPLAY input. There
+is no Lua-reachable way to consume a CommonUI action. The binding itself still
+takes; what leaked was the tab moving underneath our page. Mitigated rather than
+fixed: after a key is chosen, everything the page covers is covered again, so it
+is never left sitting over a tab the player did not choose. **Excluding Q and E
+from being bindable was deliberately NOT done** -- that is the "limiting which
+keys the player may have" that Dragón rejected on 2026-09-25.
+
+### The rest of the pass
+- **Play now refuses a switched-off personality.** It does not go through the
+  radial menu, so the substitution gate that hides Pet and Feed could not cover
+  it -- it earned nothing, but the animation still played. "Immune" should mean
+  immune.
+- **A rebind row is lettered like the rows around it.** It is the one row whose
+  label the mod draws itself, at its own size; the size is now read from the
+  first native row built and reused, so it cannot drift from the game's.
+- **Nothing is said when a change simply works.** The note line printed the
+  setting's INTERNAL NAME and value -- code words in front of a player, about a
+  row they can already see. It is now only used for the two things a row cannot
+  say by itself: a refusal (named the way the player sees it, not by its key)
+  and "Saved".
+- **`PassiveGainEnabled`**, a switch in Modules: where passive friendship gain
+  STARTS, the same shape as ShowPersonalityTags. The key still toggles it for the
+  session, and it is per machine while the toggle stays per player, so a guest's
+  key still only switches their own followers. The toggle's own message no longer
+  claims it returns to ON next launch -- it returns to the setting.
+
+37 settings across 6 sections. All 25 suites pass; menutest 176 checks,
+settingstest 208.
+
+## SETTINGS SCREEN — milestone 8: the rebind bug, and balancing (2026-09-25)
+
+### The rebind was binding a key nobody pressed
+Dragón: *"i never pressed the d for rebind, it changed to that the first time
+automatically"*. The log has it exactly: `any key can now be bound (154 key(s)
+watched)` and `Play is now D` in the SAME SECOND, six seconds after the page
+opened -- i.e. the instant he clicked the rebind button.
+
+**Cause:** `arm_capture` ran inside `begin_capture`. Registering ~150 key
+watchers is not instantaneous -- UE4SS's own thread fires them a moment later --
+so that first burst arrived when `capturing` had ALREADY been set, and was taken
+as the player's answer.
+
+**And this explains the second symptom too.** *"if i try to change it to a key
+that already does something in the game, it triggers the game instead of setting
+a new key"*: the spurious capture ENDED the capture and handed the keyboard back
+within milliseconds, so the key he then actually pressed reached the game
+normally. One cause, both complaints. **Whether `SetInputMode_UIOnlyEx` really
+blocks input has therefore still never been tested** -- there was never a live
+capture for it to block. The log now says `holding the keyboard while a key is
+chosen` when the call succeeds, so the next run answers it outright.
+
+**Fix:** the watchers are armed when the PAGE OPENS, so the burst lands while
+nothing is waiting and is ignored; plus a 0.25 s settle window, so nothing that
+arrives in the same instant as the click can ever be an answer. Both pinned by
+tests. (It had to be `open_page` rather than `build_page`: `arm_capture` is
+declared below build_page and a Lua local declared further down is not in scope
+above it -- the same lexical-scope trap this file has now hit three times.)
+
+Cost of arming earlier: a player who opens the screen once carries ~150 inert
+watchers for the session. Each returns on a single nil test when nothing is
+waiting.
+
+### The bonding switch was reading the wrong field
+Switching Feral off did nothing to the Feral Pals in front of him. It was keyed
+on `GetRolledTier`; **the tag the player sees comes from `GetDisposition`**, and
+they are not the same: a Pal whose SPECIES is already Kill_All is kept out of the
+roll and carries `rolledTier = "normal"` while wearing the Feral tag. Now keyed
+on the disposition, using Indicator's own `PERSONALITY_DISPLAY_NAMES`
+vocabulary, so the switch and the tag can only ever agree.
+
+**And the option no longer appears at all** (*"it should fail from the beginning,
+not even letting the option appear at all"*). The game's radial menu only offers
+a WILD Pal because of the mod's own `TryGetSpawnedOtomo` substitution, so
+refusing to substitute a non-bondable Pal means there is nothing to refuse later:
+no Pet, no Feed, no Play, and no food spent finding out.
+
+### Balancing (his numbers, both confirmed against the code first)
+- `MAX_FOLLOW_DISTANCE` **3000 -> 3500** (Trust.lua) -- the distance a follower
+  starts losing trust at and is eventually abandoned.
+- `PLAY_HAPPY_FOLLOWUP_DELAY_MS` **6000 -> 5000** (Interaction.lua) -- Play's
+  animation follow-up. A stale comment in Trust.lua calling it "Play's 3000ms"
+  was corrected while in there.
+
+### The two fruits
+They now carry the game's ENGLISH item name in brackets wherever the label is
+not already English -- "Fruta de afecto (Kinship Peach)", "Kleine
+Zuneigungsfrucht (Little Kinship Peach)". His instruction, and the reasoning is
+worth keeping: this project has never had the item's real name in the other 15
+languages, and a translation of our own invention leaves a player unable to tell
+WHICH item a row means; the English name is the one they can match against a
+guide or the wiki.
+
+## SETTINGS SCREEN — milestone 7: a personality can be switched off (2026-09-25)
+
+Dragón: *"i was thinking of adding a check if a personality can be bonded or not,
+for players that maybe dont want some personalities to be interactable at all
+(like feral or aloof, etc)"*. Built. The screen now carries **36 settings across
+6 sections**.
+
+**Layout (his pick, asked before building):** each personality is now two rows --
+its chance, then a switch directly under it reading "Curious — can be bonded", so
+a personality's two settings are always read together. The label is composed from
+`labelPrefix`, which puts the tag's OWN translated word in front of one shared
+string: seven switches cost one new translation, and the switch can never end up
+worded differently from the tag on the Pal's head.
+
+**What such a Pal shows (also his pick):** the tag, but no bar. The tag is how
+the player knows to leave it alone; a bar that could never fill would read as
+broken. Switching one off mid-session hides the bars already on screen.
+
+**Where it is enforced, and why there:**
+- `Trust.MayBond` -- the function that refuses an interaction BEFORE any food is
+  spent, so a switched-off personality never costs the player an item.
+- `Trust.AddPoints` -- the funnel every points path in the mod ends in, as the
+  backstop, so nothing can slip past by taking another route.
+- **Unknown means allowed.** A Pal that has not rolled a personality yet is never
+  refused by a switch that cannot apply to it.
+
+**Tested:** a Feral Pal earns points with its switch on and nothing at all with
+it off, through MayBond and AddPoints both; another personality is untouched;
+every tier the roll can produce is checked to HAVE a switch (so one cannot be
+silently unswitchable) and each switch to be a real setting; and the row is
+verified to sit directly under its own chance, named after its tag, translating
+with the rest of the screen.
+
+## THE TWO WORDS: trust vs friendship — SETTLED, DO NOT "FIX" (2026-09-25)
+
+**The settings screen says FRIENDSHIP points. The toasts still say TRUST. That
+is deliberate and it is Dragón's ruling, not an inconsistency to tidy up.**
+
+His reasoning, which is the part worth keeping: *"we are doing this for the
+settings to not confuse the players, they already know the base game as trust
+points and ranks, so if we call our bar 'trust' to modify, they may think they
+will be modifying the trust from the base game instead of our made up points"*.
+
+So the rule is about WHERE the word appears, not which word is right:
+- **On the settings screen**, where a player is changing numbers, ours must read
+  as *friendship points* — otherwise they think they are editing the base game's
+  trust stat and that the mod is reaching into vanilla systems.
+- **In the toasts and messages**, during play, "trust" keeps reading naturally
+  and there is nothing to confuse it with, so the shipped strings in 16 languages
+  stay exactly as they are. Asked directly whether to change them: *"dont think
+  of changing the toasts messages"*.
+
+## SETTINGS SCREEN — milestone 6: the two switches cover everything (2026-09-25)
+
+A disabled trigger that still shows its message reads as a broken setting, so
+each switch now turns off everything the player would otherwise see:
+
+- **Abandonment off also silences the despawn message**, in both places it can
+  come from (the loading-screen flush and the despawn path). Dragón: *"lets let
+  them just asume their pals despawned and thats it"*. The Pal is still gone --
+  the game despawned it -- the player is simply not told it gave up on them.
+- **Betrayal off means a hit costs NOTHING.** Not a smaller penalty and not a
+  penalty without the ending: no points lost, no trust-shaken effect, no
+  betrayal. His framing: *"lets consider it as an on/off to reduce friendship
+  points from player hits"*. The test is the first line of
+  `Trust.OnFollowerDamaged`, ahead of everything that is a penalty in any form.
+- `trigger_enabled` moved up to sit beside `BONDING_TRIGGER_THRESHOLD_BASE`,
+  because the world-change message asks it far earlier in the file than the
+  bond-loss path does.
+
+Tested behaviourally: with betrayal off a Pal keeps every point through six
+hits and no shaken effect fires; with it on the points drop. All 25 suites pass.
+
+## SETTINGS SCREEN — milestone 5: second screenshot pass (2026-09-25)
+
+Eleven items from a live test. All done; all 25 suites pass (menutest 162
+checks, settingstest 176).
+
+### The bugs
+- **Save now saves WITHOUT closing.** It used to close, and with the page gone
+  the only feedback was the screen vanishing -- which reads exactly like "save
+  doesnt save, instead quits the screen". It writes, says "Saved" on the page,
+  and stays. **And saving now moves the point Cancel goes back to**, or a Cancel
+  after a Save would have undone the values just written to the file.
+- **Changing the language rewrites the screen in front of you.** The subtitle
+  promised it and it did not happen. Every label, heading, hint and button is
+  registered as it is built and rewritten from Locale on a language change, and
+  the lists rebuild their own choices. **The reason it silently did nothing at
+  first: `refresh_texts` was defined AFTER `sync_control`, so the upvalue was nil
+  and its own `pcall` swallowed the failure** -- forward-declared now.
+- **The rebind row no longer overflows the list.** It was a HorizontalBox, which
+  inside a ScrollBox is given as much width as its children ask for, so the
+  fixed-width button hung past the right edge and was clipped. It is an Overlay
+  now: it fills the width it is GIVEN and right-aligns the button, clear of the
+  scrollbar.
+- **Hovering no longer rebinds.** `WBP_OptionSettings_MenuButton_C`'s delegate
+  fires on HOVER -- Dragón could not move the mouse across the screen without a
+  row demanding a key. The rebind buttons are now `WBP_MenuESC_Button_S_C`, the
+  class this file already proves is click-only (the entry, Save, Cancel and
+  Restore defaults all use it).
+- **The keyboard is held while the screen waits for a key.** Pressing the
+  inventory key opened the inventory instead of binding it. UE4SS cannot swallow
+  a key, but the engine can be told to stop routing input to gameplay:
+  `SetInputMode_UIOnlyEx`, which is what the game's own modal screens use. Our
+  bindings are UE4SS-level and still fire, so the key can be read without the
+  game acting on it. **Every exit path hands the keyboard back** -- a chosen key,
+  a second click, the page closing, the menu being destroyed -- **and an 8 s
+  timeout on top**, because the one unacceptable outcome is a player who cannot
+  move. All five paths are tested.
+
+### The wording
+- **Ours are FRIENDSHIP points.** Dragón's rule: the game's own UI calls its stat
+  trust points, so naming ours the same points the player at the wrong system.
+  The section is "Friendship points" in all 16 languages.
+- **"While a Pal follows you" → "Passive friendship gain while following".**
+- **"Display" → "Modules"**, on the screen and in a freshly written file.
+
+### The new settings
+- **Modules:** `AbandonmentEnabled` and `BetrayalEnabled`, both switches. The
+  gate is inside `on_follower_lost_all_trust`, the single point both endings pass
+  through, ahead of everything it guards; with one off the bond survives and the
+  points are floored at 5% of the bar so the same check cannot fire again on the
+  next tick.
+- **Accessibility (new section):** `BarColor`, `TagColor` (including "same as the
+  name", which is what it has always been) and `TagSize`. A new schema kind,
+  `choice`, validates a value against a list the entry itself carries, so the
+  file, the screen and the check all read the same one. The tag size is a SCALE
+  on the Pal's own name font, so it is right at any UI scale. Changing any of
+  them redraws the Pals already on screen (`Indicator.RefreshAppearance`).
+  - **hoistcheck earned its keep twice here:** the colour table and then
+    `compute_trust_bar_color` were both left BELOW code that reads them, and a
+    Lua local declared further down resolves to a nil global -- the tag colour
+    would have silently never applied.
+
+### Open
+- **The toasts still say "trust"** (`passive_on`, `passive_off`, and the bond-lost
+  messages). Those are shipped text in 16 languages; the terminology rule above
+  implies they should say friendship too, but rewriting live player-facing
+  strings is Dragón's call, not a silent edit.
+- The two fruit labels still name an in-game item in wording of our own.
+- Nothing is committed or pushed.
+
+## SETTINGS SCREEN — milestone 4: Dragón's screenshot pass (2026-09-25)
+
+He sent a screenshot of the working screen plus a list. All of it is done.
+
+- **Language is first** now, on the screen and in a freshly written settings
+  file (the LANGUAGE block moved to the top of SCHEMA; an existing file keeps its
+  own order, and the in-place save finds a key by name, never by position).
+- **Every interaction and every food shares one 0..1000 scale, step 10** (Pet,
+  Play, FeedBase, the five rarity bonuses, both fruits), and **the passive drip
+  has its own 0..100, step 1** -- his numbers, after using the first version.
+- **The title, the subtitle and the note line are centred TEXT, not centred
+  boxes.** That was the bug in the screenshot: a TextBlock draws left inside its
+  slot, so a slot centred on the canvas still leaves the words off to the left.
+  `SetJustification(1)` on each, and they span the panel rather than a fixed 700.
+- **Three buttons at the bottom: Save, Cancel, Restore defaults.** Cancel is only
+  possible because the page snapshots every value when it opens; it restores that
+  snapshot live and then `Settings.Discard()`s the pending writes, so the file is
+  untouched. Save writes and closes. Restore defaults applies the shipped values
+  live and deliberately LEAVES THE PAGE OPEN, so the player can still cancel out
+  of it. Bulk restores run in two passes, because "Play = F8" is refused while
+  Tags is still sitting on F8 and succeeds once it has moved.
+- **The language list shows language names** (Español, 日本語, ...) instead of
+  the codes the screenshot showed -- a code name in front of a player is the same
+  mistake as the labels were. The stored value is still the code.
+- The last row can scroll clear of the bottom edge (a trailing spacer), and the
+  rebind buttons sit inside their rows instead of filling them edge to edge.
+
+### Two guards added after looking at his live settings file
+His file came back with a lot of zeros. The file itself was **structurally
+perfect** -- same 88 lines, same 51 comment lines, every comment in place -- so
+the save path is sound, and the values were his own test drags. But the
+inspection surfaced two ways this screen COULD have done it by itself, and both
+are now closed and tested:
+1. **A row is not believed until it hands back the value we put in it.** A native
+   row that has not laid out yet can report 0, and the watch would have taken
+   that for the player's choice and saved it -- a settings screen that empties
+   your settings just by being opened. Bounded to 5 tries so a value a widget
+   genuinely cannot hold is followed rather than fought forever.
+2. **A value already outside the screen's range widens the row instead of being
+   clamped.** The file's bounds are far wider than the screen's, so a hand-edited
+   Pet = 5000 would otherwise have been clamped to the slider maximum and then
+   saved back at that clamp, quietly rewriting a number the player chose.
+
+`menutest.js` is now **135 checks**, covering all of the above including Cancel
+restoring, defaults applying without closing, the widened row, and the
+not-ready-widget guard (the fake can now refuse to accept a seeded value).
+
+### Still his call
+- **A backup of his settings from before this screen existed** is at
+  `save-backups/PalBonds_settings.before-live-screen.lua`. His live file now
+  holds test values; Restore defaults in game will reset it, or the backup can be
+  copied back.
+- Whether the FILE's own 0..100000 ceiling is worth tightening now that the
+  screen has sane ranges. Left alone deliberately: narrowing it would make the
+  mod refuse a value a player already has and replace it with the default.
+- The two fruit labels still name an in-game item in wording of our own.
+- Nothing is committed or pushed.
+
+## SETTINGS SCREEN — milestone 3: REBUILT after Dragón's first look (2026-09-25)
+
+His verdict on the first version was that it needed *"a lot of polishing"*, and
+every point was right. **The root mistake: the whole screen had been derived
+mechanically from the settings schema** — labels from the internal keys, a slider
+for every number, each slider's range from the file's validation bounds, and a
+fixed list of keys to rebind to. A data structure describes what the program
+needs; a screen describes what a person needs. Do not generate the second from
+the first. (Saved as a standing memory.)
+
+### What he said, and what was done about each
+1. **"showing the label names we used on the file should not be like that ...
+   lets keep the labels easy to understand and far from code names"** — every row
+   is now a written label. Each schema entry names a Locale entry (`label =
+   "set_pet"`), and **the seven personality rows reuse `tag_normal..tag_feral`**,
+   the exact words the player already reads over a Pal's head, so the screen and
+   the tags can never drift apart. A test asserts that no row shows a code name.
+2. **"the settings themselves should change language when one changes
+   languages"** — 24 new Locale entries in all 16 language sets (the labels, the
+   five section headings, the rebind prompt and the "changes apply right away"
+   line). `localetest`'s completeness check covers them like every other string;
+   its count canary went 26 → 50.
+3. **"you didnt even use the same style of the game ... the name palbonds gets
+   half cut in between the tabs above and the button touches the border"** — the
+   page is now framed with the game's own `WBP_PalCommonWindow_C`, inset from
+   every edge, with the title and the Close button clear of both. The title was
+   being cut because the first version hid three of the menu's panels and **the
+   ESC menu's own tab strip (`Canvas_TabSet`) kept drawing over the page.** All
+   seven panels the menu can show are now covered — each one's own visibility
+   remembered first, so closing restores exactly what was there, including a
+   panel that was already hidden and is not ours to reveal. Row height is 48 with
+   8 between, matching the game's own Options rows.
+4. **"you went crazy with sliders ... it was impossible for me to try and set pet
+   to anything a bit higher than 50, just a small movement went to the thousands
+   already, and why you put a max of 100000?"** — the 100000 is the FILE's
+   validation bound and always was (1.1.x), not something invented for the
+   screen; the mistake was using it as a slider range. **The schema now carries
+   two ranges per setting:** `min`/`max` for what the file accepts, and
+   `ui.min/max/step` for what the screen offers. The file's bounds stay wide on
+   purpose — narrowing them would make the mod refuse a value a player already
+   has and silently replace it with the default. The screen's ranges are sized
+   against the trust bar being 500 points at equal level: Pet/Play/Feed 0–250
+   step 5, food bonuses 0–100 step 5, the fruits 0–1000 step 25, passive 0–25
+   step 1, join bonus 0–200000 step 5000 (friendship ranks really are that big),
+   chances 0–100 step 5. A test asserts **no slider has more than 60 stops** and
+   that every default lands exactly on a step.
+5. **"on the keybinds you set it as options? really? ... so we are also limiting
+   players which keys they can change to? thats awful"** — gone. A key row is now
+   the label plus the game's own small option button showing the current key;
+   click it and **press the key you want**. Reading an arbitrary press means
+   UE4SS must hold a binding on every key, so it does — but only from the moment
+   the player first opens this screen, never at mod load, and each handler
+   returns immediately unless the screen is waiting. Mouse buttons and modifiers
+   are excluded (a click on the button would otherwise become the binding, and
+   Escape belongs to the menu). Clicking twice gives up. **And while it waits,
+   the mod's own keys hold still** (`Menu.WaitingForKey`), or choosing F8 for Play
+   would also play with a Pal on the way in.
+
+### Why the key row is not the game's own key row
+`WBP_OptionSettings_ListContent_C` *can* show a key, but only through
+`SetKeyIcon(InputType, Key)` and `SetConfigButton(ActionName, FilterType,
+InputType)` — an engine `FKey` and one of the game's OWN input actions. A mod's
+keybind is neither, so pretending otherwise would mean inventing engine key
+objects. The label + `WBP_OptionSettings_MenuButton_C` pairing keeps the game's
+styling without that.
+
+### Tests
+`menutest.js` is now **110 checks**: the labels (no code names, the friendly
+text, the tag reuse, and the whole page in French), the control shapes, the
+screen's ranges and steps with the "aimable" and "default lands on a step"
+rules, the rebind flow end to end (button shows the bound key, no key watched
+until asked, click prompts, any ordinary key takes, Escape/mouse/modifiers
+refused, clicking twice cancels, a clash refused with the button still honest),
+the cover-and-restore of all seven panels, and the save on close. Plus the
+`Menu.WaitingForKey` check on both sides (`settingstest` asserts Interaction
+consults it). All 25 suites pass against `mod/` and the deployed copy;
+`realfilecheck.js` still passes against Dragón's real settings file.
+
+### Still open, and worth his eye rather than my guess
+- **The margins are design-unit guesses** (window inset 300/96/300/56, list
+  344/238/344/188). They cannot be verified offline; they need a look.
+- **Two labels name an in-game ITEM** (`set_peach_lesser`, `set_peach`,
+  written as "Small kinship fruit" / "Kinship fruit"). The project has never had
+  the game's own item name in the other 15 languages, so these are descriptive
+  rather than copied — the same kind of wording he corrected for the tag names on
+  2026-09-18.
+- Nothing is committed or pushed.
+
+## SETTINGS SCREEN — milestone 2: the live settings layer (2026-09-25)
+
+**Dragón, after testing milestone 1:** *"test run done and saw the palbonds
+button, looked neat, so good job ... now lets try to see if you can add the
+settings we currently have and we can make them work and change mid-game"*. He
+also subscribed to Better Mod Manager so its files could be read.
+
+### DONE and fully tested: a setting can now change while the game runs
+This was the real prerequisite (the old "Pending" note said so). All 25 suites
+pass against `mod/` and against the deployed copy.
+
+- **`Settings.Set(key, value)`** validates through the SAME `valid_value` the
+  file goes through, so the screen cannot store a value the file would refuse.
+  **`Settings.OnChange(fn)`** tells listeners. **`Settings.Flush()`** writes the
+  changed keys to the player's file in one pass. **`Settings.Schema()`** exposes
+  the schema so the screen can build itself from it.
+- **Two rules the file never needed**, because a file is validated as a whole
+  while the screen arrives one value at a time: the last personality chance
+  above 0 cannot be zeroed (the roll would have nothing to pick), and two
+  actions cannot share a key. Both refuse with a reason the screen can show.
+- **Persistence is surgical.** `Settings.TextWithValues` replaces the value
+  token after `Key =` and nothing else — comments, order, blank lines and the
+  player's own spacing survive byte for byte — and the result is read back in an
+  empty environment and checked against every expected value before it goes near
+  the disk. A file that does not parse is never overwritten; the values stay live
+  for the session and the console says so.
+  - **A flaw found and fixed by its own tests:** locating the key by
+    line-anchoring could not see `return { Pet = 50 }`, which is exactly the
+    shape of a hand-written file AND of what our own append path produces. It now
+    locates through a mask with comments and string CONTENTS blanked, so a
+    mention in a comment (`-- Pet = 999 is too much`) is never mistaken for the
+    setting, `KinshipPeach` never matches `KinshipPeachLesser`, and a file it
+    cannot read confidently is refused instead of edited.
+- **Every module refreshes its own locals from a listener** rather than asking
+  Settings at use time, so no hot path gained a call: the assignment updates the
+  local every closure already captured. Wired in `Interaction` (all the feed,
+  pet, play and peach amounts), `Trust` (PassivePerTick), `Capture` (JoinBonus),
+  `Personality` (the seven chances, rewritten IN PLACE in the table the roll
+  holds), `Indicator` (ShowPersonalityTags applies now, like the key does).
+  `Language` was already live through `Locale.Current`.
+- **The keys rebind live, and this is the subtle part.** UE4SS can bind a key
+  but cannot UNBIND one, so a rebind cannot take the old key back. Every binding
+  instead asks, at the moment it fires, what that key is FOR right now: a key the
+  player has moved an action off does nothing. The new key is bound only if it has
+  never been bound this session. `Interaction`'s three `RegisterKeyBind` calls
+  went through `bind_key(action, name, fn)`; **coopstage2test locates those
+  handlers by source text, so its anchors moved with them** (the checks stand).
+- **Tests:** `settingstest.js` sections **J** (live changes: validation, the two
+  extra rules, listeners including one that throws, no disk write while a slider
+  drags, in-place saving that keeps the player's file, every refusal case, a
+  broken file left alone) and **K** (the modules follow a change; the old key
+  goes inert and the new one works). `localetest`'s Settings stub gained
+  `OnChange` — a stub without it is a stub of a module that no longer exists.
+
+### DONE: the controls are on the screen, built from the game's own rows
+Applied and tested. **`native_widget(menu, classPath)`** builds any of the game's
+blueprints (find the class, `LoadAsset` on demand, `WidgetBlueprintLibrary:Create`
+with an owning player — a UserWidget without one does not draw); `native_button`
+is now written in terms of it.
+
+**The API the rows are built with, all verified in this build's object dump.**
+One native row class covers every shape we need, so the screen does not imitate
+the game's Options screen, it IS it:
+- `WBP_OptionSettings_ListContent_C` (under
+  `/Game/Pal/Blueprint/UI/UserInterface/MainMenu/Option/`)
+- `row.BP_PalTextBlock_Name` — the label
+- `row:SetSwitcher(bool)` / `row:SetSlider(value, min, max, step, useStep)` /
+  `row:SetSelecter_String(labels, index)` — also `SetInteractable`
+- read back from `row.WBP_OptionSettings_ListContentSwitch.CurrentIsOn`,
+  `...ListContentSlider.CurrentValue`, `...ListContentLR.Current` (0-based)
+- the slider's own number is `...ListContentSlider.BP_PalTextBlock_Value`
+
+**The decisions behind it, so none of this is re-derived later.** The whole list
+is built from `Settings.Schema()`, so a setting added to the file appears on the
+screen with no second place to remember it, and the CONTROL SHAPE is derived from
+the entry rather than chosen by hand: `kind` language/key -> a selector, `min 0
+max 1` -> a switch, anything else -> a slider.
+- **Rows are POLLED every 150 ms while the page is open**, not hooked. The switch
+  and the selector have no delegate we could hook without adding three more
+  native hooks to the mod; polling runs only while the player is standing in a
+  paused menu, the cheapest moment in the game; and one loop that reads every row
+  is far less machinery than a hook per control type. The loop carries a token, so
+  a page opened again cannot also be polled by an older loop, and it stops on
+  close, on supersession and on destruct (all three tested).
+- **A refused value is put back into the row.** A screen still showing a number
+  the mod did not accept is lying about the state of the game. The reason goes on
+  a note line at the bottom, where the player is actually looking.
+- **The slider's step follows the range** (1 / 10 / 100): 0..200000 at step 1 is
+  200000 positions and unusable. The exact number is drawn beside the slider,
+  which is what a player reads anyway.
+- **Keys come from a curated list, not "press any key".** Capturing a press means
+  binding every key on the keyboard to find out which one was pressed, and taking
+  the player's whole keyboard to read one press is what another mod's own notes
+  warn against. Anything UE4SS does not know on this build is dropped from the list.
+- **ScrollBox and VerticalBox are safe here because they are OURS.** The rule that
+  costs crashes is about mutating the GAME's live panels; inside our own subtree a
+  reflow is ordinary UMG.
+- **One write, on close.** A slider drags through dozens of values and none of
+  them touches the disk; closing the page is when the player has finished, and
+  they are standing still in a paused menu while it happens.
+
+**A bug menutest H caught before it ever reached the game, worth remembering
+because of its SHAPE:** a language and a key have no `min`/`max`, so asking them
+for a slider step threw — and because the build loop was unguarded, that one bad
+entry took the WHOLE page down, leaving the rows already built dangling and the
+player with no screen at all. Fixed twice over: the arithmetic is guarded, and
+each row is now built in its own `pcall` so a setting whose shape this code does
+not expect costs that one row and nothing else.
+
+**Verified against Dragón's REAL settings file**, not only synthetic ones
+(`tools/harness/realfilecheck.js`, and his file is backed up at
+`save-backups/PalBonds_settings.before-live-screen.lua`): four values changed, and
+the result parses, keeps every other value identical, keeps the same number of
+comment lines and the same number of lines overall — nothing reflowed.
+
+**Tests:** `menutest.js` section **H**, 30 checks: a row per schema key and the
+sections as headings; the shape derived per entry; rows seeded from the current
+values with the slider's range, step and number; the language list offering auto
+plus every language and starting on the one in use; the key list offering only
+keys UE4SS knows; a drag/switch/selector reaching its setting through the watch;
+the chance-zero refusal snapping the row back AND putting the reason on screen;
+the watch scheduled only while the page is open and stopped on close and on
+destruct; the save happening on close and the value surviving it. The suite's UMG
+fake grew the game's row widget (same methods, same read-back fields) plus
+SizeBox/ScrollBox/VerticalBox.
+
+**One thing to ask Dragón, not to decide:** the row labels. They are currently
+the setting names from the file (`Pet`, `FeedBase`, `ChanceNormal`) because those
+are the only names that already exist, they need no translation, and a player who
+has edited the file recognises them. Nicer wording is a content decision he has
+not made, and inventing it in 17 languages first would be inventing the thing he
+asked to decide later.
+
+**Also still open:** nothing is committed or pushed, and the screen has not been
+seen in game yet — 24 native rows are built on the first click, which is the one
+real risk left (the reference mod's crash family is widget churn inside an open
+menu, though its incidents came from pre-building ~100 rows on EVERY ESC open,
+automatically; ours builds once, on demand).
+
+### Better Mod Manager (studied 2026-09-25, Dragón subscribed so it could be read)
+At `steamapps/workshop/content/1623730/3803996980/`. Credits DarnMenu for the
+groundwork, so there is no new hooking technique — but two things are worth
+knowing. **It does not touch the ESC menu at all:** it adds a real tab to the
+game's main in-game menu (`WBP_InGameMainMenu_C`, `WBP_MainMenu_C`,
+`WBP_MainMenu_Tab_C`) and hooks `WBP_PalCommonButtonBase_C`'s `BP_OnClicked` /
+`BP_OnHovered` / `BP_OnUnhovered`, which are far cleaner than the ESC row's long
+delegate name. That is closer to the "new tab" Dragón originally described, if we
+ever want to move. **And it offers mods an optional registration library**
+(`modconfig.lua`, loaded from ITS folder, ~15 lines in ours, degrades to nothing
+when absent) — a cheap way to appear in its menu later, not a substitute for our
+own screen. Its `ui.lua` (15 KB, vs DarnMenu's 200 KB) is the leaner kit to read
+for primitives: `T_prt_frame_1px` borders, `WBP_PalInvisibleButton_C` as the
+press surface, and a button registry keyed by address + full name (the same
+identity rule this project arrived at independently).
+
+## THE IN-GAME SETTINGS SCREEN — milestone 1 built (2026-09-25)
+
+**Dragón's ruling on where it goes:** *"ideally we simply add it to the game
+menu the player already knows and uses like the esc menu, and we simply add a
+new tab there with the name palbonds mod or something like that - but if that is
+not posible then a shortcut key like f7 to open the settings menu would have to
+do then"*. The ESC route turned out to be possible, so **F7 is not needed** and
+no key is taken from the player.
+
+**And on scope:** *"as for what belongs in it, we can worry about that later,
+first we need to see something visible for the player ingame, no point in adding
+more values to the settings if we cant even achieve the screen itself"*. So this
+milestone is the SHELL only — a row named `PalBonds` and a page with its title
+and a Close button. No setting is on it yet, by his instruction. He also chose
+the safest placement (bottom of the existing list) and the label `PalBonds`.
+
+**It lives in one new file, `mod/PalBonds/Scripts/Menu.lua`,** initialised last
+in `main.lua` inside its own `pcall`. Deliberate: it is the only module that
+builds widgets inside a native menu, so it can be dropped from a package without
+touching a line of what already ships, and it cannot take the mod down.
+
+### The five rules in that file are crashes somebody already paid for
+Do not "simplify" any of them. Each is load-bearing.
+1. **Never build inside the `NotifyOnNewObject` callback.** The engine is still
+   assembling the menu; mutating it there is `AV writing 0x80`. We wait 50 ms on
+   the game thread, which is still inside the open animation, so nothing pops in
+   late. (menutest A pins this.)
+2. **Only ever add a child to a `CanvasPanel`.** Adding to a `VerticalBox`
+   reflows the whole column on the engine's NEXT layout pass — after our Lua has
+   returned, so there is nothing left to `pcall`. That is what killed DarnMenu
+   three times out of three under ESC-spam, and a plain `AddChild` (no tail
+   detach) still reflows, so append-only was never a fix. Our row is therefore
+   positioned ABOVE the bottom column on the shared canvas, never inside it.
+   (menutest B: the parent is `Canvas_Buttons` and the column gains no children.)
+3. **Never `RemoveFromParent` on a menu we no longer own.** A replaced menu
+   lingers and keeps painting; touching its children AVs. The engine frees our
+   widgets when it destroys the menu, so we simply forget them. (menutest F/G.)
+4. **A raw `.Text = "string"` write crashes this game** — our own crash,
+   2026-09-04, `Indicator.lua`. Text goes through the game's own
+   `BP_PalTextBlock_C` (taken off a live instance on this same menu) and
+   `SetText_GDKInternal`, the pair that fixed it. It also means the font and
+   colour arrive already matching the menu.
+5. **Build the page on the FIRST CLICK, never ahead of time.** Widget churn
+   inside an open menu is DarnMenu's crash family: pre-building its page on
+   every ESC open caused seven incidents before it was switched off.
+   (menutest D.)
+
+### The widget names, all verified against THIS build's object dump
+`WBP_MenuESC_C` (the menu) and `WBP_MenuESC_Button_S_C` (its own row
+blueprint), plus `Canvas_Buttons`, `Canvas_Content`, `WorldOptionCanvas`,
+`CanvasPanel_0`, `VerticalBox_293` and `Text_InviteCode`. Note which of these
+are real PROPERTIES on the class (Canvas_Buttons, Canvas_Content, Text_InviteCode)
+and which are only reachable through the widget tree (`VerticalBox_293`,
+`CanvasPanel_0`) — the lookup tries the property first because that is one
+reflection call against the walk's hundreds.
+
+`VerticalBox_293` is the BOTTOM column ("Return to Title"), which is where a mod
+row reads as native. The TOP column (`VerticalBox_148`) is auto-sized and reports
+height 0, so anchoring under it lands in the middle of the native rows.
+
+The row is created with `WidgetBlueprintLibrary:Create(menu, cls, GetOwningPlayer())`,
+NOT `StaticConstructObject` — that is what gives it an owning player. (The older
+note under the DarnMenu study says `StaticConstructObject`; the reference's actual
+code uses `Create`, and so do we.)
+
+### Sharing the shelf with other menu mods
+`Canvas_Buttons` is public space. DarnMenu, **Better Mod Manager** and AntiPhat
+all pin a row above the same column and compute the same spot we do, so whoever
+injects second draws on top of the first. We read the canvas's bottom-anchored
+children (read-only — it mutates nothing, which is what makes it safe on a
+native panel) and sit above whatever is already parked there. Learned once and
+cached for the session: another mod cannot be installed mid-session.
+
+The stretched slot matters here. The bottom column is anchored (0,1)-(1,1), and a
+stretched slot is made of OFFSETS: writing Position/Size into one produces a
+rectangle the slot cannot represent and Slate crashed laying it out. Inheriting
+the column's Left/Right also matches the native row width for free. (menutest B
+asserts the offsets and that no position/size was written.)
+
+### A bug the new suite caught before Dragón ever ran it
+Refusing a click whose widget identity does not match ALSO erased the record for
+our own genuine button, because a foreign widget on a recycled address shares
+that address — so one stray click from another mod's button would have killed our
+entry for the rest of the session. The record is now forgotten only when OUR
+button is the one that went away. A failed probe is evidence about the probe.
+
+### Tests
+**`tools/harness/menutest.js`**, 7 sections, 47 checks: nothing built inside the
+construction callback; the row on the canvas above the column with the column's
+own offsets; the shared shelf; the page built only on the first click and only
+once; only our own buttons act (a native ESC row falls through, a recycled
+address is refused, our entry keeps working); ESC pressed twice leaves the older
+menu alone; destruct forgets it and the next menu still works. Its UMG fake
+reproduces the parts the real crashes came from — a canvas that can REFUSE a
+child by returning nothing, and a stretch-anchored slot.
+
+**`tools/harness/runall.sh`** now runs every suite with the right prelude in one
+command (`sh runall.sh`, or with a scripts path). Written because a suite given
+the wrong prelude ABORTS rather than fails, and an aborted suite reads like a
+passing one if you only skim the output. All 25 suites pass against `mod/` and
+against the deployed copy; hoistcheck 1 / undefcheck 4 unchanged (the known
+false positives). `localetest`'s string-count canary went 25 -> 26 for the one
+new translated word.
+
+### Player-facing text
+`menu_close` ("Close") added to `Locale.lua` in all 17 languages. The entry
+itself reads `PalBonds`, which is the same word everywhere. That is deliberately
+the ONLY translated word on the screen so far — anything else added to the page
+needs its Locale entry in the same pass, and there is no point translating
+placeholder prose that Dragón's content decisions will replace.
+
+### NOT done, and what is next
+- **Nothing is committed or pushed.**
+- **No setting is on the page yet** — his call, and the next decision to make.
+- **The live re-read is still the real prerequisite** (see "Pending"): settings
+  are parsed once at load, so a screen that changes a value cannot apply it yet.
+  Build that before putting controls on the page, not after.
+- **Not verified in game yet.** Deployed to the dev install with
+  `DEBUG_LOGGING = true` for Dragón's test run; every claim above is from the
+  object dump, the reference implementation and the offline suite, not from a
+  screenshot.
+
+## 1.1.8 = THE CLEAN-SHIP PASS (started 2026-09-23)
+
+**Dragón's standing rule, restated after he found disproven mechanisms still
+sitting behind `false` switches in a shipped file:** *"when we work on the mod
+in dev or local, you're free to activate all logs and whatnots - tries and
+tests and old codes [...] but that is ONLY in local and while developing -
+WHEN WE SHIP, NOTHING OF THAT MUST REMAIN - no logs, no trash, no extras, no
+code that was used just once to check something that's now stale."* From now
+on **"let's ship this version" is the whole instruction**: it means produce a
+clean package without being told the cleanup part again. Nothing is lost by
+deleting -- git history and `docs/hook-points.md` keep the record.
+
+**Done so far (all 24 suites pass after every step, syntax-checked per cut):**
+- Combat.lua 4,731 -> 4,431 lines. Deleted: `USE_OLD_MOVE_ORDER_NUDGE`,
+  `USE_REPEATED_OTOMO_COMPOSITE` (with `get_or_build_otomo_composite`,
+  `OtomoCompositeCache`, `Combat.TickRealOtomoFollow` and its call in
+  Trust's tick), `USE_ORBIT_WHEN_AT_GOAL`, `USE_MOVE_TO_ACTOR_FOLLOW`, and the
+  whole 165-line native-leash section (`USE_NATIVE_LEASH_FOLLOW`,
+  `ensure_leash_for`, `update_leash_anchor`, `release_leash`, the CDO cache and
+  the safety counters).
+- The `LoopAsync` fallbacks in Trust and Indicator: a path that would only fire
+  in an emergency it is not safe for. Both now just log the failure.
+
+**Comments: the package ships NONE of them (Dragón, 2026-09-23).** His
+question settled it -- *"why would a player who has no intention to even work
+in the mod need to have files with the story of experiments and comments? isn't
+that meant for github only?"* So `mod/` keeps every comment (development
+source, on GitHub) and `tools/strip-comments.py` builds the shipped trees
+without them. The stripper is string-aware: it never touches text inside quotes
+or long brackets, so the settings file the player edits keeps its explanations
+and messages containing dashes are intact. **18,830 source lines -> 9,748
+shipped.** Line numbers in a player's crash report still resolve, because the
+stripped tree is committed with each release.
+
+**Diagnostics removed in the same pass** (settled questions, their code deleted
+rather than silenced): `dump_follow_action_fields` (15 native reads per follow
+install even with logging off), `log_boss_geometry` + `[BOSS-GEOM]` +
+`[DIAG-GEOM]` (boss bars confirmed in 1.1.3), Capture's `[EXPERIMENT]`
+narration from when the sphere-less capture was one (with `read_owner_id`,
+which only fed it), the `[WORKER-BIND-FIX-DIAG]` widget dump and its
+`lastLoggedPushedClass`, `[HP-WATCH]` with its `HP_WATCH_VERBOSE` switch, and
+`[DAMAGE-WATCH]`. What stays is failure reporting inside live features
+(`[DIAG-CREATE]`/`[DIAG-LABEL]` say why a bar or tag failed to build) and the
+logging system itself, which is how a player produces a bug report.
+
+### RELEASE GATE — no version ships without these, in order
+
+1. `mod/` is the source of truth; the package is built from it
+   (`tools/strip-comments.py`), never edited by hand.
+2. All suites pass **against the built release tree**, not only `mod/`.
+3. **Dragón runs the exact package in game** and says it works. A green
+   harness proves the code behaves the same under stubs; it cannot prove the
+   mod loads, that the hooks register, or that anything appears on screen.
+   Until that run happens the honest words are "packaged, needs a smoke run".
+4. Only then: stores, then GitHub.
+5. **The live version's artifacts stay untouched until its replacement is
+   actually live** — zip, release trees and tag. While a version is serving
+   players it is the rollback and the reference for any bug report about it.
+   (Broken once, 2026-09-23: the 1.1.7 zip was deleted while 1.1.7 was the
+   live version and 1.1.8 was untested. Restored from git.)
+
+**1.1.8 IS PACKAGED, NOT PUBLISHED:** `release/PalBonds-v1.1.8.zip` (17 files,
+101 KB -- 1.1.7's was 339 KB), `Info.json` 1.1.8, both release trees stripped
+and identical, all 24 suites pass AGAINST THE RELEASE TREE, syntax checked
+after every single cut. The 1.1.7 zip was deleted (it is a GitHub release
+asset). Nothing has been committed, pushed or uploaded for 1.1.8.
 
 ## MULTIPLAYER IS THE ACTIVE WORK (2026-09-21)
 
@@ -840,6 +2237,32 @@ the native-mods copy tests nothing either, and looks exactly like "the fix
 didn't work" instead of "the fix never ran" — this already cost one full test
 cycle.
 
+### Shipping a release — the full checklist
+
+Added 2026-09-27 because Claude handed Dragón a changelog and no short
+description, and he had to point out it was missing: *"you forgot to give me the
+short description, seems you've either not checked your mds for this or you
+never added it to your work process"*. It is in the work process now.
+
+1. `mod/` clean: every ship switch off (`DEBUG_LOGGING`, `SHOW_DIAGNOSTICS`,
+   `TRACE_PHASES`, `ACTION_CHANGE_PROBE`, `PROFILING`), no temporary flags, no
+   diagnostic-only files.
+2. `python tools/strip-comments.py mod/PalBonds/Scripts release/PalBonds/Scripts`,
+   then copy those same files to `release/workshop/PalBonds/Scripts` and confirm
+   the two trees are md5-identical.
+3. Bump `release/workshop/PalBonds/Info.json` `"Version"`.
+4. `sh tools/harness/runall.sh release/PalBonds/Scripts` — a stripped build is a
+   build nobody has tested.
+5. Zip with **forward-slash entry names**. PowerShell's `Compress-Archive`
+   writes backslashes; build it with Python's `zipfile` instead.
+6. **Two pieces of text, both needed, both Dragón's to approve:**
+   - a **changelog**, ONE LINE PER ITEM, prefixed `New:` / `Balance:` / `Fixed`;
+   - a **short description**, one or two sentences, the blurb that sits on the
+     file entry.
+   Draft both, never claim more than has been measured, and never promise fixes
+   or dates (see the memory on public text).
+7. Nothing is uploaded, committed or pushed without him saying so, per store.
+
 ### Verifying a change — do this before asking Dragón to test
 
 There is no Lua interpreter on this machine, but `fengari` (a Lua 5.3 VM in
@@ -1427,6 +2850,9 @@ changes nothing until the game restarts. F9 and F10 are the only live
 switches, and they are session-only. A live re-read (poll the file, or reload
 on demand, and have modules ask `Settings.Get` at use time) is the
 prerequisite for the in-game settings screen -- do it first, not after.
+**BUILT 2026-09-25** -- see "SETTINGS SCREEN — milestone 2". Editing the FILE
+still needs a restart to be noticed; what is live is a change made through
+`Settings.Set`, which is how the in-game screen changes one.
 
 
 **New player report (2026-09-21): Hakaishin Beerus, crash with other mods, plays

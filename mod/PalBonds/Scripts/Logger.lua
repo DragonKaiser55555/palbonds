@@ -166,9 +166,30 @@ end
 -- names the operation. Off by default (it is loud); the test builds turn it on.
 local TRACE_PHASES = false
 
+-- 2026-09-26: this now writes through its OWN path instead of Logger.log, for
+-- the run where Dragón reproduces the crash himself. The difference matters at
+-- the volume a step-level trace runs at (the sense hook alone is budgeted at 25
+-- calls a second, and each one is traced per engine call):
+--   * no print() -- UE4SS's console is by far the most expensive part of a log
+--     line, and nobody reads the console during a crash hunt; the file is the
+--     artefact.
+--   * no os.date() -- a C call per line, and the clock already tells us what we
+--     need, which is ORDER and the gap before the game died.
+--   * no diagnostic-tag filtering -- a trace line is never a diagnostic.
+-- The flush stays. It is the entire point: whatever line is last when the
+-- process dies is the operation that killed it.
+local traceSeq = 0
+
 function Logger.trace(phase, detail)
     if not (DEBUG_LOGGING and TRACE_PHASES) then return end
-    Logger.log("[TRACE] " .. tostring(phase) .. (detail ~= nil and (" " .. tostring(detail)) or ""))
+    local f = ensure_open()
+    if not f then return end
+    traceSeq = traceSeq + 1
+    pcall(function()
+        f:write(string.format("[T%07d %.3f] %s%s\n", traceSeq, os.clock(),
+            tostring(phase), detail ~= nil and (" " .. tostring(detail)) or ""))
+        f:flush()
+    end)
 end
 
 function Logger.log(msg)
