@@ -61,27 +61,23 @@ but you still lost it.
 [*][b]F10[/b] - on/off the passive follower friendship gain (so you can hoard minions)
 [/list]
 
-F8, F9 and F10 can be changed in the settings file.
+F8, F9 and F10 can be changed in the settings screen.
 
 
 [size=5][b]Settings[/b][/size]
 
-PalBonds comes with a settings file, created the first time you launch the game with the mod. It lets you change:
+Press [b]ESC[/b] and open [b]PalBonds[/b]. Everything changes while you play - no restart needed.
 
 [list]
-[*]how many points petting, playing and feeding give (including each food rarity and Kinship Peaches)
-[*]how fast your followers warm up to you on their own
-[*]how much trust a Pal gets when it joins you
-[*]how often each personality appears
-[*]the keys for Play, tags and passive bonding
-[*]the language of the tags and messages (it follows your game's language by default)
+[*]language
+[*]friendship points: what petting, playing and each food give, including both Kinship Peaches, the passive gain from followers, and the bonus when a Pal joins
+[*]how often each personality appears, and whether Pals of that personality can be befriended at all
+[*]the abandonment and betrayal triggers, and whether passive gain or tags starts on
+[*]accessibility: friendship bar colour, personality tag colour and tag size
+[*]keybinds - click a row, change the hotkeys
 [/list]
 
-[b]Where to find it:[/b] in the same UE4SS Mods folder you dropped PalBonds into, open [b]shared/PalBonds_settings.lua[/b].
-
-Close the game, open the file with Notepad, change a number, save, and start the game again. Every setting has a short explanation above it, and if anything goes wrong, just delete the file and a fresh one is made.
-
-An in-game settings screen is planned for a future update.
+Your choices are saved to [b]shared/PalBonds_settings.lua[/b] next to the mod, so they survive updates and can be copied between installs or handed to a server. You can still edit that file directly if you prefer; delete it and a fresh one is made.
 
 
 [size=5][b]Requirements[/b][/size]

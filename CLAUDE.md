@@ -39,7 +39,31 @@ percentage stays as it was.
 
 ---
 
-## 1.1.9 PACKAGED — awaiting Dragón's upload (2026-09-27)
+## 1.1.9 IS LIVE (2026-09-27)
+
+- **Nexus:** version 1.1.9, file "PalBonds V1.1.9", 124 KB (our zip is 127,278
+  bytes), uploaded 1:40AM, virus scan Safe to use, 1 main file. Changelog and
+  short description are Dragón's wording.
+- **Steam Workshop:** updated 27 SEP 2:06, full changelog posted.
+- **CurseForge:** uploaded, but **1.1.8 is still not approved there** — their
+  moderation queue is far behind. Nothing to chase.
+- **GitHub:** pushed, `630da5b..a865452`. The repo had been stale since v1.1.7,
+  so that commit carries 1.1.8 as well. **No new issues; nothing further from
+  Hakaishin** — issue #1 is still the only one and still closed.
+
+**Store descriptions rebased from the live pages** into
+`release/nexus-description.txt` and `release/workshop-description.txt`: the
+Settings section now describes the in-game screen, and the "an in-game settings
+screen is planned" promise is gone. Dragón edited the live pages himself and is
+doing the other 15 languages separately.
+
+**STILL STALE — `release/PalBonds/README.txt`.** It ships INSIDE the zip and
+still tells players to close the game and edit `PalBonds_settings.lua` in
+Notepad (lines ~61, 77, 84-120, 216), and still says the screen is "planned for
+a future update". Fixing it means rebuilding and re-uploading the zip, so
+Dragón parked it — do it with 1.1.10 unless he says otherwise.
+
+## 1.1.9 PACKAGED — was awaiting upload (2026-09-27)
 
 `release/PalBonds-v1.1.9.zip`, 127,278 bytes, **18 entries, forward-slash
 paths** (Compress-Archive writes backslashes — built with Python's zipfile
