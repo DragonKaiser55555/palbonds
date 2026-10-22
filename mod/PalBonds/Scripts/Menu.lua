@@ -101,7 +101,20 @@ local WINDOW_CLASS = "/Game/Pal/Blueprint/UI/UserInterface/Common/WBP_PalCommonW
 -- and styling from it instead of inventing either.
 local TEXT_SOURCES   = { "BPPalTextBlock_WorldName", "Text_InviteCode" }
 
-local ENTRY_LABEL  = "PalBonds"
+-- The row in the ESC menu. It is NOT the mod's name any more: Dragón's ruling,
+-- 2026-10-18, is that this screen is shared. PalBonds is the main befriending
+-- mod and the add-ons are befriending mods too, so one row called "Befriending
+-- settings" holds all of them rather than each mod adding a row of its own.
+-- Localised, with the English as the fallback for the languages that have not
+-- been translated yet.
+local ENTRY_LABEL  = "Befriending mods"
+-- THE PINNED TITLE NAMES THE FAMILY, NOT A MOD. It does not scroll, so while a
+-- player reads an add-on's settings it stayed on screen claiming "PalBonds" --
+-- naming the wrong mod, and making the add-on's own heading look like a second
+-- title competing with it. Each mod now gets an identical in-flow heading above
+-- its own settings instead, and this stays true no matter how far down the page
+-- anyone scrolls or how many mods are installed.
+local PAGE_TITLE   = ENTRY_LABEL
 local BUILD_DELAY_MS = 50
 local ENTRY_H, ENTRY_GAP, ENTRY_Z = 56, 8, 30
 -- Only reached if the column's slot cannot be read. On screen in the wrong
@@ -516,6 +529,13 @@ local function translated(key)
 end
 
 local function label_for(entry)
+    -- An add-on's label arrives ALREADY TRANSLATED. It is not a key into this
+    -- mod's Locale -- the add-on resolved it in its own, because only it knows
+    -- its own words -- so looking it up here finds nothing and the row would
+    -- fall back to printing an internal key like "PalFarewell.DurationMinutes".
+    if type(entry.labelText) == "string" and entry.labelText ~= "" then
+        return entry.labelText
+    end
     local text = translated(entry.label)
     if text == nil then return entry.key or entry.section or "?" end
     local prefix = translated(entry.labelPrefix)
@@ -923,10 +943,19 @@ local function add_row(inst, list, entry)
     return true
 end
 
+-- A MOD'S NAME IS NOT A SECTION HEADING. Drawn at the same size as "How long
+-- they walk" it read as one more group of PalBonds settings, and the point --
+-- these belong to a different mod -- was lost. It gets the title size and a gap
+-- above it, so the eye reads a new mod starting rather than another section.
+local MODHEAD_FONT = 26
+local MODHEAD_TOP  = 56
+
 local function add_section(inst, list, entry)
-    local text = make_text(inst, label_for(entry), SECTION_FONT)
+    local font, top = SECTION_FONT, SECTION_TOP
+    if entry.modHead then font, top = MODHEAD_FONT, MODHEAD_TOP end
+    local text = make_text(inst, label_for(entry), font)
     if text == nil then return end
-    add_to_list(inst, list, text, SECTION_TOP)
+    add_to_list(inst, list, text, top)
     inst.texts[#inst.texts + 1] = { w = text, entry = entry }
 end
 
@@ -935,6 +964,17 @@ local function build_page(inst)
         return false
     end
     if inst.disposed or inst.superseded then return false end
+
+    -- READ THE FAMILY HERE, NOT AT MOD LOAD. Settings.Load() runs while this mod
+    -- is starting, and an add-on writes its declaration while IT is starting --
+    -- a race this mod always loses, because UE4SS loads PalBonds before
+    -- PalFarewell alphabetically. The index simply did not exist yet, so the
+    -- add-on section never appeared, every launch, deterministically.
+    --
+    -- By the time a player has pressed ESC and clicked this row, every mod has
+    -- long since loaded. Re-reading on each build also means installing an
+    -- add-on shows up without restarting the game.
+    pcall(Settings.LoadFamily)
 
     local page = construct("/Script/UMG.CanvasPanel", inst.widgetTree)
     if page == nil or not canvas_fill(inst.pageRoot, page, PAGE_Z) then return false end
@@ -966,7 +1006,7 @@ local function build_page(inst)
         log("this build has no common window frame -- the page is drawn without one")
     end
 
-    local title = center_text(make_text(inst, ENTRY_LABEL, TITLE_FONT))
+    local title = center_text(make_text(inst, ui_text("menu_entry", PAGE_TITLE), TITLE_FONT))
     if title ~= nil then canvas_inset(page, title, WIN_L, TITLE_Y, WIN_R, 0, 3) end
 
     -- One quiet line saying the thing a player most needs to know about this
@@ -1651,7 +1691,7 @@ local function inject(menu)
         pageOpen = false,
     }
 
-    local entry = native_button(menu, ENTRY_LABEL)
+    local entry = native_button(menu, ui_text("menu_entry", ENTRY_LABEL))
     if entry == nil then
         return false, "the game's button blueprint was not ready"
     end

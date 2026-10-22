@@ -514,7 +514,7 @@ console.log('\n=== B. The entry sits on the canvas above the bottom column ===')
 {
   const S = newState('__M = __open(); __PUMP()');
   expect('the entry exists', S.str('tostring(__entry(__M) ~= nil)'), 'true');
-  expect('it reads "PalBonds"', S.str('__entry(__M).Text_Main.__text'), 'PalBonds');
+  expect('it reads "Befriending mods"', S.str('__entry(__M).Text_Main.__text'), 'Befriending mods');
   // THE RULE THAT MATTERS: the parent is the canvas, not the VerticalBox.
   expect('its parent is Canvas_Buttons, not the button column',
     S.str('__entry(__M).__parent.__name'), 'Canvas_Buttons');
@@ -644,6 +644,50 @@ console.log('\n=== G. The menu closing forgets it ===');
   expect('the next menu gets its entry', S.str('tostring(__entry(__M2) ~= nil)'), 'true');
   S.must('__click(__entry(__M2))', 'click2');
   expect('...and its page opens', S.str('tostring(__page(__M2) ~= nil)'), 'true');
+}
+
+
+console.log('\n=== Z. An add-on section appears on this page ===');
+{
+  // THE TEST THAT WAS MISSING. familytest proves the declaration is written and
+  // that Settings.Schema() grows; neither proves the MENU draws those rows, and
+  // the real screen showed PalBonds only, twice. This builds the actual page
+  // with a declaration present and reads back how many rows the builder drew.
+  const D = 'Pal/Binaries/Win64/ue4ss/Mods/shared/';
+  const decl = 'return { mod="PalFarewell", order=50, title="PalFarewell", settingsFile="PalFarewell_settings.lua",'
+             + ' entries={ {section="How long they walk"},'
+             + ' {key="DurationMinutes", label="Minutes before they are gone", default=5, min=1, max=120,'
+             + ' ui={kind="slider",min=1,max=60,step=1}} } }';
+  const fsSetup = [
+    'local F = {}',
+    'F["' + D + 'befriending_index.lua"] = \'return { "PalFarewell" }\'',
+    'F["' + D + 'befriending_PalFarewell.lua"] = [==[' + decl + ']==]',
+    'F["' + D + 'PalFarewell_settings.lua"] = "return { DurationMinutes = 7 }"',
+    'F["Pal/Binaries/Win64/ue4ss/Mods/PalFarewell/enabled.txt"] = ""',
+    'io.open = function(p, m)',
+    '  if F[p] == nil then return nil end',
+    '  return { read = function() return F[p] end, write = function() return true end, close = function() end }',
+    'end',
+    'loadfile = function(p) if F[p] == nil then return nil, "no file" end return load(F[p], p, "t", {}) end',
+  ].join('\n');
+
+  const countOf = (S) => S.str('(function() for _, m in ipairs(__LINES) do local n = tostring(m):match("page built with (%d+) setting") if n then return n end end return "none" end)()');
+
+  const plain = newState('__M = __open(); __PUMP()');
+  plain.must('__click(__entry(__M))', 'click');
+  const alone = countOf(plain);
+
+  const withAddon = newState(fsSetup + '\n__M = __open(); __PUMP()');
+  withAddon.must('__click(__entry(__M))', 'click');
+  const together = countOf(withAddon);
+
+  expect('the page builds at all with an add-on present', String(together !== 'none'), 'true');
+  expect('it draws one row MORE than PalBonds alone',
+    String(Number(together) === Number(alone) + 1), 'true');
+  expect('the add-on row is not skipped',
+    withAddon.str('tostring(__said("could not be drawn"))'), 'false');
+  expect('the row is labelled, not showing its internal key',
+    withAddon.str('tostring(__said("PalFarewell.DurationMinutes could not"))'), 'false');
 }
 
 console.log('\n=== H. The settings themselves, on the game\'s own rows ===');

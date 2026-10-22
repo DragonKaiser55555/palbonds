@@ -230,8 +230,8 @@ Low technical risk; mostly bookkeeping.
 
 ```
 32-PalBonds/
-├── CLAUDE.md              <- START HERE: current status + ordered pending list
-├── CLAUDE-archive.md      <- Continuación 1-154, history only
+├── CLAUDE.md              <- START HERE: current status + the open-work list
+├── CLAUDE-archive.md      <- all narrative history. Never read it for status.
 ├── DESIGN.md              <- this file (§12 is SUPERSEDED, see its warning)
 ├── README.md              <- what works today + install
 ├── research/               <- Mappings.usmap only (for FModel)
@@ -1216,12 +1216,12 @@ Sent as a full list after the hundred-and-third pass, with the pick of what to w
 
 **Hundred-and-twentieth pass (2026-09-03): Dragón corrected the whole approach, and a real test confirmed the fix needed is deeper than expected — PAUSED pending his decision.** Dragón rejected the hundred-and-eighteenth/nineteenth passes' "auto-pick the biggest food stack and silently consume it" design outright, correctly pointing out real vanilla Feed opens the actual inventory/item-picker (showing nothing if you're out of food, never auto-selecting or blocking) and that this project's own established method is to find and activate the real system, never approximate one — his words: "dont try to trick the game into doing something, just find how it does and activate it for our feed interaction." That raised a real question: does the existing wild-Pal `TryGetSpawnedOtomo` substitution (already used since roughly the eighty-fifth pass to make wild-Pal Pet/Feed work via the real "4" menu) already unlock the real food-picker system too, since that system also keys off "the current Otomo"? Tested directly — Dragón picked Feed via the real radial menu on wild Pals six times — and the log showed only this project's own gesture approximation firing every time, with zero trace of the real `SelectItemInventory`/`ActionPairStandby/Behavior/Call_FeedItem` machinery that fires reliably for a real Otomo feed. Since hooks in this project are non-blocking, that's clean evidence the game itself won't continue into the real flow for a Pal only substituted at that one getter — there's a deeper eligibility check further in, possibly reading the player's actual authoritative owned-Pal list (`OtomoIndividualIdList`) rather than the substituted getter, which would mean satisfying it means touching a real ownership record — a bigger risk category than anything modified so far. No code changed this pass; work is paused here pending Dragón's call on whether to keep researching that deeper gate or reconsider scope. See `docs/hook-points.md`'s hundred-and-twentieth pass for the full detail.
 
-## 12. Priority TODO list (2026-09-03) — SUPERSEDED, read CLAUDE.md's "EMPEZAR ACÁ" instead
+## 12. Priority TODO list (2026-09-03) — SUPERSEDED, read CLAUDE.md's "OPEN WORK" instead
 
 > **⚠️ STALENESS WARNING added 2026-09-06.** This list is from 2026-09-03 and several
 > of its entries are now wrong. It is kept for its reasoning and evidence, not for its
 > status claims. **The authoritative, current ordered list lives at the top of
-> `CLAUDE.md` ("⚠️ EMPEZAR ACÁ").**
+> `CLAUDE.md`, under "OPEN WORK".**
 >
 > This warning exists because a fresh session on 2026-09-06 produced a technical audit
 > that reported kinship peaches as "fully blocked" — copied straight from item 8 below —

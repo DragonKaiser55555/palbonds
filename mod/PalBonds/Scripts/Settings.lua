@@ -251,6 +251,150 @@ end
 
 -- Checks a table as read from the file. Returns the merged values (every key
 -- present) and a list of human-readable problems. Pure: no file access.
+
+-- ===========================================================================
+--  THE BEFRIENDING FAMILY -- other mods' settings on this screen.
+--
+--  Dragón's design: PalBonds is the main befriending mod, everything beside it
+--  is a befriending add-on, and they share ONE row in the ESC menu. This screen
+--  shows PalBonds first and each add-on after it, so a player with five of them
+--  installed sees one row with five sections -- and a player with only one still
+--  gets a working screen from whichever mod is present.
+--
+--  HOW, given each UE4SS mod runs in its own Lua state and cannot hand another a
+--  table: every member writes a DECLARATION file beside the settings -- what
+--  sections it owns and which file holds its values -- and registers its name in
+--  a shared index, because Lua cannot list a directory. The names are flat
+--  files beside the settings rather than a subfolder, because Lua cannot make a
+--  directory either. This reads the index,
+--  loads each declaration AS DATA in an empty environment, and appends its
+--  entries to the schema. Menu.lua then renders them with no change at all.
+--
+--  Both mods run this same Settings module, so an add-on's values file has the
+--  same format as this one and can be read and written with the same helpers.
+--
+--  An add-on that has been uninstalled leaves its files behind, so each one is
+--  only trusted while its mod folder still has an enabled.txt. That keeps a
+--  removed mod from haunting the screen.
+-- ===========================================================================
+local addonEntries = {}
+local addonValues = {}        -- key -> { file = , value = }
+local addonOwner = {}         -- key -> mod name
+
+-- WHERE THE FAMILY FILES ARE. Asking where this mod's own settings file ended
+-- up is the obvious answer and the wrong one on its own: sourcePath is nil
+-- whenever the mod runs on defaults with no file yet, and hanging the whole
+-- shared screen off a value that is legitimately absent is exactly how the
+-- add-on section failed to appear at all. So the folder is found by looking for
+-- the index, in the same places the settings themselves can live.
+local FAMILY_DIRS = {
+    "Pal/Binaries/Win64/ue4ss/Mods/shared",
+    "Mods/NativeMods/UE4SS/Mods/shared",
+    "ue4ss/Mods/shared",
+}
+
+local function has_index(dir)
+    local f = io.open(dir .. "/befriending_index.lua", "r")
+    if f == nil then return false end
+    f:close()
+    return true
+end
+
+local function shared_dir()
+    if type(sourcePath) == "string" then
+        local d = sourcePath:match("^(.*)[/\\][^/\\]+$")
+        if d ~= nil and has_index(d) then return d end
+    end
+    for _, d in ipairs(FAMILY_DIRS) do
+        if has_index(d) then return d end
+    end
+    return nil
+end
+
+local function read_data(path)
+    local chunk = loadfile(path, "t", {})
+    if chunk == nil then return nil end
+    local ok, v = pcall(chunk)
+    if not ok or type(v) ~= "table" then return nil end
+    return v
+end
+
+local function addon_is_installed(dir, name)
+    -- Mods/shared/ -> Mods/<name>/enabled.txt
+    local mods = dir:match("^(.*)[/\\][^/\\]+$")
+    if mods == nil then return false end
+    local f = io.open(mods .. "/" .. name .. "/enabled.txt", "r")
+    if f == nil then return false end
+    f:close()
+    return true
+end
+
+function Settings.LoadFamily()
+    addonEntries, addonValues, addonOwner = {}, {}, {}
+    local dir = shared_dir()
+    if dir == nil then return 0 end
+
+    local index = read_data(dir .. "/befriending_index.lua")
+    if index == nil then return 0 end
+
+    local members = {}
+    for _, name in ipairs(index) do
+        if type(name) == "string" and name ~= "" and addon_is_installed(dir, name) then
+            local decl = read_data(dir .. "/befriending_" .. name .. ".lua")
+            if decl ~= nil and type(decl.entries) == "table" then
+                members[#members + 1] = { decl = decl, order = tonumber(decl.order) or 1000 }
+            end
+        end
+    end
+    table.sort(members, function(a, b) return a.order < b.order end)
+
+    local n = 0
+    for _, m in ipairs(members) do
+        local decl = m.decl
+        -- The add-on's own values, read from its file with this same module's
+        -- reader, because the format is identical.
+        local vals = read_data(dir .. "/" .. tostring(decl.settingsFile)) or {}
+        -- A heading naming the add-on, so a player can see whose settings these
+        -- are rather than finding unexplained rows under PalBonds'.
+        addonEntries[#addonEntries + 1] = {
+            section = tostring(decl.title or decl.mod),
+            labelText = tostring(decl.title or decl.mod),
+            modHead = true,          -- drawn larger, with a gap above it
+            addon = decl.mod,
+        }
+        for _, e in ipairs(decl.entries) do
+            if e.section ~= nil then
+                addonEntries[#addonEntries + 1] = {
+                    section = e.section, labelText = e.section,
+                    note = e.note, addon = decl.mod,
+                }
+            elseif type(e.key) == "string" then
+                local key = decl.mod .. "." .. e.key
+                addonEntries[#addonEntries + 1] = {
+                    key = key,
+                    -- Already in the player's language: the add-on resolved it.
+                    labelText = e.label,
+                    text = e.text, default = e.default,
+                    min = e.min, max = e.max, kind = e.kind, ui = e.ui, addon = decl.mod,
+                }
+                local v = vals[e.key]
+                if v == nil then v = e.default end
+                addonValues[key] = { file = dir .. "/" .. tostring(decl.settingsFile), raw = e.key, value = v }
+                addonOwner[key] = decl.mod
+                n = n + 1
+            end
+        end
+    end
+    if n > 0 then
+        say(n .. " setting(s) from " .. #members .. " befriending add-on(s) are on this screen")
+    end
+    return n
+end
+
+local function addon_key(key)
+    return type(key) == "string" and addonValues[key] ~= nil
+end
+
 function Settings.Validate(user)
     local merged, found = {}, {}
     for _, entry in ipairs(SCHEMA) do
@@ -545,9 +689,11 @@ function Settings.Load()
         status = "defaults"
         say("settings could not be loaded (" .. tostring(err) .. ") — using the defaults")
     end
+    pcall(Settings.LoadFamily)
 end
 
 function Settings.Get(key)
+    if addon_key(key) then return addonValues[key].value end
     local v = values[key]
     if v == nil then
         for _, entry in ipairs(SCHEMA) do
@@ -612,7 +758,25 @@ end
 
 -- The screen builds itself from this, so the file and the screen can never
 -- offer a different set of settings.
-function Settings.Schema() return SCHEMA end
+-- The schema the SCREEN should show: this mod's own settings, then each
+-- befriending add-on's, in the order they declare. Menu.lua builds its rows from
+-- this and needs no knowledge of add-ons at all.
+-- This mod's OWN heading, drawn exactly like an add-on's so the screen presents
+-- every befriending mod the same way. It only appears when there is something to
+-- distinguish it from: installed alone, a heading naming the only mod on screen
+-- is noise.
+local OWN_HEAD = { section = "PalBonds", labelText = "PalBonds", modHead = true }
+
+function Settings.Schema()
+    if #addonEntries == 0 then return SCHEMA end
+    local out = { OWN_HEAD }
+    for _, e in ipairs(SCHEMA) do out[#out + 1] = e end
+    for _, e in ipairs(addonEntries) do out[#out + 1] = e end
+    return out
+end
+
+function Settings.Path() return sourcePath end
+function Settings.FileName() return FILE_NAME end
 
 -- The keys the player can rebind, so two of them can be checked against each
 -- other. Derived from SCHEMA rather than listed again.
@@ -656,6 +820,35 @@ end
 
 -- Applies a value now. Returns the stored value, or nil plus why it was refused.
 function Settings.Set(key, value)
+    -- An add-on's setting is written into the add-on's OWN file, in the same
+    -- format this module writes its own, so the add-on reads it back unchanged.
+    if addon_key(key) then
+        local rec = addonValues[key]
+        rec.value = value
+        local f = io.open(rec.file, "r")
+        local text = f and f:read("*a") or nil
+        if f then f:close() end
+        if type(text) == "string" then
+            local line = rec.raw .. " = " .. (type(value) == "number" and tostring(value)
+                or string.format("%q", tostring(value)))
+            local replaced, count = text:gsub(rec.raw .. "%s*=%s*[^,\n]*", line, 1)
+            if count == 0 then
+                -- The key is not in the file yet -- a setting the add-on added
+                -- in a later version, or a file the player trimmed. Replacing
+                -- nothing silently dropped the value on Save, so it is INSERTED
+                -- before the closing brace instead.
+                local inserted = text:gsub("}%s*$", "  " .. line .. "\n}\n", 1)
+                if inserted ~= text then replaced, count = inserted, 1 end
+            end
+            if count > 0 then
+                local w = io.open(rec.file, "w")
+                if w then w:write(replaced) w:close() end
+            else
+                say("could not save " .. tostring(rec.raw) .. " into " .. tostring(rec.file))
+            end
+        end
+        return value, nil
+    end
     local entry = Settings.Entry(key)
     if entry == nil then return nil, "not a PalBonds setting" end
     local good, why = valid_value(entry, value)

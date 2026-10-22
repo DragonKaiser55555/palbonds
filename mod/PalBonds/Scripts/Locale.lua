@@ -306,6 +306,12 @@ local S = {
     -- itself reads "PalBonds", which is the same word in every language, so
     -- this is the only word on that screen needing a translation so far. The
     -- game's own menus use the plain verb, not a sentence.
+    -- The ESC-menu row. Shared by PalBonds and its befriending add-ons, so it is
+    -- named for what the screen is rather than for one mod.
+    menu_entry = {
+        en = "Befriending mods", es = "Mods de amistad",
+    },
+
     menu_close = {
         en = "Close", es = "Cerrar", fr = "Fermer", de = "Schließen", it = "Chiudi", pl = "Zamknij",
         pt = "Fechar", ru = "Закрыть", tr = "Kapat", vi = "Đóng", th = "ปิด", id = "Tutup",
